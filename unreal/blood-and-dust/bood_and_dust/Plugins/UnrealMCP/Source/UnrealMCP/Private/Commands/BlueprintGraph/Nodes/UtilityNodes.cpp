@@ -5,6 +5,8 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Json.h"
 
 UK2Node* FUtilityNodeCreator::CreatePrintNode(UEdGraph* Graph, const TSharedPtr<FJsonObject>& Params)
@@ -87,8 +89,40 @@ UK2Node* FUtilityNodeCreator::CreateCallFunctionNode(UEdGraph* Graph, const TSha
 	}
 	else
 	{
-		// Try common Unreal classes
+		// Try KismetSystemLibrary first
 		TargetFunc = UKismetSystemLibrary::StaticClass()->FindFunctionByName(FName(*TargetFunction));
+
+		// Try KismetMathLibrary
+		if (!TargetFunc)
+		{
+			TargetFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(FName(*TargetFunction));
+		}
+
+		// Fallback: search the Blueprint's own class and parent class hierarchy
+		if (!TargetFunc)
+		{
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph);
+			if (Blueprint)
+			{
+				// Search the Blueprint's skeleton generated class first (custom functions)
+				if (Blueprint->SkeletonGeneratedClass)
+				{
+					TargetFunc = Blueprint->SkeletonGeneratedClass->FindFunctionByName(FName(*TargetFunction));
+				}
+				// Then search parent class hierarchy (inherited functions)
+				if (!TargetFunc && Blueprint->ParentClass)
+				{
+					for (UClass* SearchClass = Blueprint->ParentClass; SearchClass; SearchClass = SearchClass->GetSuperClass())
+					{
+						TargetFunc = SearchClass->FindFunctionByName(FName(*TargetFunction));
+						if (TargetFunc)
+						{
+							break;
+						}
+					}
+				}
+			}
+		}
 	}
 
 	if (!TargetFunc)

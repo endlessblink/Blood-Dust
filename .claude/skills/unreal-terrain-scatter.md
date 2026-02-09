@@ -144,3 +144,240 @@ get_height_at_location(-3900, 4000)
 spawn_actor("Rock_03", "StaticMeshActor", "/Game/Meshes/Rocks/SM_Drone_Rock",
             location=[-3900, 4000, 115.1], rotation=[0, 160, 0], scale=[0.1, 0.1, 0.1])
 ```
+
+---
+
+## HISM Bulk Vegetation Scatter (`scatter_foliage`)
+
+For large-scale vegetation placement (grass, ground detail, pebbles), use the `scatter_foliage` tool which creates Hierarchical Instanced Static Mesh (HISM) actors with thousands of instances.
+
+### Overview
+
+`scatter_foliage` uses Poisson disk distribution with slope filtering to scatter mesh instances:
+- Grid-accelerated dart-throwing algorithm (O(N), 5x5 neighbor check, 30 attempts per point)
+- Line traces each candidate for height + slope validation
+- Rejects placements where slope > max_slope
+- Creates single AActor container with UHierarchicalInstancedStaticMeshComponent child
+- Batch adds all instances in one call for performance
+
+### Tool Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mesh_path` | string | UStaticMesh asset path (e.g., `/Game/Meshes/Vegetation/Grass/SM_Grass_Large_A`) |
+| `center` | [float, float] | World coordinates [X, Y] for scatter origin |
+| `radius` | float | Scatter radius in Unreal units (cm) |
+| `count` | int | Target instance count (max 50000, safety cap) |
+| `min_distance` | float | Poisson disk minimum spacing between instances |
+| `max_slope` | float | Maximum terrain slope in degrees (0-90) |
+| `align_to_surface` | bool | Align instance Z-axis to terrain normal (true for grass, false for pebbles/rocks) |
+| `random_yaw` | bool | Randomize yaw rotation per instance |
+| `scale_range` | [float, float] | Uniform scale range [min, max] |
+| `z_offset` | float | Vertical offset in UU (negative = sink into ground) |
+| `actor_name` | string | Container actor name (prefix with `HISM_` by convention) |
+| `cull_distance` | float | LOD culling distance (0 = no culling) |
+| `material_path` | string | Optional material override path |
+
+### v4 Tuned Parameters (PROVEN VALUES for hilly terrain)
+
+These ranges are battle-tested on rolling landscape with 20-35° slopes:
+
+| Grass Size | count | min_distance | max_slope | scale_range | z_offset | Notes |
+|------------|-------|--------------|-----------|-------------|----------|-------|
+| Large | 3000 | 120 | 35 | [5, 10] | -5 | Base grass layer, visible from distance |
+| Mid | 4000-5000 | 80 | 40 | [5, 10] | -4 | Mid-detail fill, moderate density |
+| Small | 5000-6000 | 60 | 45 | [6, 12] | -3 | High-detail close-up, densest coverage |
+| Pebbles | 1500 | 120 | 35 | [0.5, 1.0] | -3 | Ground detail, subtle rocks |
+
+### Zone Coverage Strategy
+
+For full-landscape coverage without visible gaps:
+
+1. **Divide landscape into overlapping zones** — radius should exceed section diagonal to ensure overlap at edges.
+2. **Use different mesh variants per zone** — rotate through grass_large_A/B/C, grass_mid_A/B/C, etc. for visual variety.
+3. **Center each zone at section midpoint** — ensures even coverage across landscape streaming sections.
+4. **Example**: 4-section landscape (25200x25200 UU) = 2 zones with radius 14000 UU each.
+
+### Critical Lessons Learned
+
+1. **max_slope is the #1 coverage driver** — Rolling hills naturally have 20-35° slopes. max_slope=15-20 rejects 55% of candidates, leaving terrain bare. Use 35° for large grass, 40° for mid, 45° for small.
+
+2. **Pebble align_to_surface=false** — When true, pebbles on slopes tilt to match surface normal, looking like tombstones. Set false so they stay naturally upright.
+
+3. **Scale range matters** — Grass meshes are tiny (~30-60 UU height). Scale [5, 12] makes them visible from gameplay camera height. Pebble rocks at [0.5, 1.0] stay subtle ground detail.
+
+4. **z_offset sinks roots** — Negative z_offset hides the flat base of grass meshes, making them appear rooted in terrain. -3 to -5 for grass, -3 for pebbles.
+
+5. **HEAVY operation** — scatter_foliage is in HEAVY_COMMANDS_COOLDOWN (2.0s). Always call strictly sequentially, never in parallel.
+
+6. **Actor naming convention** — Use descriptive names: `HISM_Grass_Large_A`, `HISM_Grass_Mid_B`, `HISM_Pebbles_A` etc. Makes scene management easier.
+
+7. **Mesh paths** — Grass typically at `/Game/Meshes/Vegetation/Grass/SM_Grass_*`, rocks at `/Game/Meshes/Rocks/rock_moss_*`.
+
+8. **Delete before re-scatter** — Use `delete_actors_by_pattern("HISM_Grass")` and `delete_actors_by_pattern("HISM_Pebbles")` to clean up before re-running scatter operations.
+
+### Example: Full-Landscape 2-Zone Scatter
+
+```python
+# Step 1: Clean up old vegetation
+delete_actors_by_pattern("HISM_Grass")
+delete_actors_by_pattern("HISM_Pebbles")
+
+# Step 2: Zone 1 - Left half of landscape
+scatter_foliage(
+    mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Large_A",
+    center=[-18900, 12600],
+    radius=14000,
+    count=3000,
+    min_distance=120,
+    max_slope=35,
+    align_to_surface=True,
+    random_yaw=True,
+    scale_range=[5, 10],
+    z_offset=-5,
+    actor_name="HISM_Grass_Large_A",
+    material_path="/Game/Materials/Vegetation/M_Grass_Foliage"
+)
+
+# Wait for response, then mid grass
+scatter_foliage(
+    mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Mid_A",
+    center=[-18900, 12600],
+    radius=14000,
+    count=4500,
+    min_distance=80,
+    max_slope=40,
+    align_to_surface=True,
+    random_yaw=True,
+    scale_range=[5, 10],
+    z_offset=-4,
+    actor_name="HISM_Grass_Mid_A",
+    material_path="/Game/Materials/Vegetation/M_Grass_Foliage"
+)
+
+# Small grass for high detail
+scatter_foliage(
+    mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Small",
+    center=[-18900, 12600],
+    radius=14000,
+    count=5500,
+    min_distance=60,
+    max_slope=45,
+    align_to_surface=True,
+    random_yaw=True,
+    scale_range=[6, 12],
+    z_offset=-3,
+    actor_name="HISM_Grass_Small_A",
+    material_path="/Game/Materials/Vegetation/M_Grass_Foliage"
+)
+
+# Step 3: Zone 2 - Right half (use different mesh variants for variety)
+scatter_foliage(
+    mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Large_B",
+    center=[-6300, 12600],
+    radius=14000,
+    count=3000,
+    min_distance=120,
+    max_slope=35,
+    align_to_surface=True,
+    random_yaw=True,
+    scale_range=[5, 10],
+    z_offset=-5,
+    actor_name="HISM_Grass_Large_B",
+    material_path="/Game/Materials/Vegetation/M_Grass_Foliage"
+)
+
+# ... repeat with Mid and Small variants for Zone 2 ...
+
+# Step 4: Pebbles (align_to_surface=false to prevent tombstone effect!)
+scatter_foliage(
+    mesh_path="/Game/Meshes/Rocks/rock_moss_set_01_rock03",
+    center=[-18900, 12600],
+    radius=14000,
+    count=1500,
+    min_distance=120,
+    max_slope=35,
+    align_to_surface=False,  # CRITICAL: false for pebbles!
+    random_yaw=True,
+    scale_range=[0.5, 1.0],
+    z_offset=-3,
+    actor_name="HISM_Pebbles_A"
+)
+
+scatter_foliage(
+    mesh_path="/Game/Meshes/Rocks/rock_moss_set_01_rock03",
+    center=[-6300, 12600],
+    radius=14000,
+    count=1500,
+    min_distance=120,
+    max_slope=35,
+    align_to_surface=False,
+    random_yaw=True,
+    scale_range=[0.5, 1.0],
+    z_offset=-3,
+    actor_name="HISM_Pebbles_B"
+)
+```
+
+### v4 Production Results (Actual Data)
+
+From real production scatter on 4-section landscape:
+
+**Instance Counts:**
+- Zone 1 grass: 11,699 instances
+  - Large: 2,880
+  - Mid A: 3,030
+  - Mid B: 2,533
+  - Small: 3,256
+- Zone 2 grass: 13,518 instances
+  - Large B: 2,679
+  - Large C: 2,313
+  - Mid C: 3,834
+  - Small: 4,692
+- Pebbles: 1,635 instances
+  - Zone 1: 745
+  - Zone 2: 890
+
+**Total: 26,852 instances across 10 HISM actors**
+
+**Performance:**
+- Average slope rejection: ~20% (down from 55% in v3 with max_slope 15-20°)
+- Coverage: ~85% of terrain (only steep cliff faces remain bare)
+- Frame time impact: Negligible with HISM (all instances batched into single draw call per actor)
+
+### Debugging Failed Scatters
+
+If scatter returns low instance counts:
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| 50-80% rejection rate | max_slope too restrictive for terrain | Increase max_slope to 35-45° for rolling hills |
+| All placements rejected | Center outside landscape bounds | Use `get_landscape_info()` to verify center is within bounds |
+| Instances invisible | Scale too small for camera distance | Increase scale_range minimum (grass needs 5+ for visibility) |
+| Tombstone effect (pebbles) | align_to_surface=true on slopes | Set align_to_surface=false for rocks/pebbles |
+| Patchy coverage | min_distance too large for count | Decrease min_distance or increase count |
+
+### Performance Considerations
+
+- **Safety cap**: 4M grid cells max, count clamped to 50000 per actor
+- **HISM benefits**: All instances of one actor are a single draw call, extremely efficient
+- **Cull distance**: Set to 0 for no culling, or tune per grass size (e.g., 10000 for small, 20000 for large)
+- **Container actor organization**: All vegetation actors placed in "Foliage" editor folder automatically
+
+### Mesh Asset Requirements
+
+Grass meshes need:
+- FBX exports at `blender/models/grass_medium_01/fbx/` (8 variants tested: 3 large, 3 mid, 2 small)
+- Textures at `blender/models/grass_medium_01/textures/` (diff, alpha, nor_gl, rough - 1k resolution)
+- Imported to Unreal at `/Game/Meshes/Vegetation/Grass/SM_Grass_*`
+- Material setup with alpha masking for grass blades
+
+### When to Use Manual vs HISM Scatter
+
+| Use Manual Placement | Use HISM Scatter |
+|---------------------|------------------|
+| Hero assets (unique rocks, props) | Ground cover (grass, pebbles) |
+| < 20 objects | > 100 objects |
+| Need individual material overrides | Shared material OK |
+| Precise artistic placement | Organic natural distribution |
+| Large objects (boulders, trees) | Small repetitive detail |

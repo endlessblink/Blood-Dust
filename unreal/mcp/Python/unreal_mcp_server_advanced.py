@@ -1150,26 +1150,25 @@ def create_landscape_material(
     grass_d: str = "",
     grass_n: str = "",
     detail_uv_scale: float = 0.004,
-    macro_uv_scale: float = 0.00025,
-    bomb_offset_x: float = 0.5137,
-    bomb_offset_y: float = 0.7291,
-    noise_scale: float = 0.01,
-    macro_blend_amount: float = 0.15,
+    warp_scale: float = 0.00005,
+    warp_amount: float = 0.05,
+    macro_scale: float = 0.00003,
+    macro_strength: float = 0.4,
     slope_sharpness: float = 3.0,
     grass_amount: float = 0.5,
     roughness: float = 0.85,
 ) -> Dict[str, Any]:
     """
-    Create a complete landscape material with texture bombing anti-tiling.
+    Create a complete landscape material with UV noise distortion anti-tiling.
 
     Builds the entire material graph in C++ with:
-    - Texture bombing: diffuse AND normal sampled twice at offset UVs, blended
-      with 5-octave turbulent noise to destroy tiling grid in color AND specular
-    - Multiplicative macro modulation: macro-scale sample modulates brightness
-      without replacing detail (Multiply, not Lerp)
+    - UV noise distortion: continuous noise warps UV coordinates before sampling,
+      breaking the tile grid at every pixel (not texture bombing)
+    - Macro brightness variation: very low-frequency noise modulates brightness
+      for natural large-scale color variation
     - Slope-based rock/mud blend, noise-based grass overlay
     - 7 color-coded comment boxes organizing the graph
-    - ~53 expression nodes, 15 texture samplers (of 16 max)
+    - ~35 expression nodes, 6 texture samplers (of 16 max)
 
     All nodes created and connected in a single tick. Uses WorldPosition-based
     UVs (not LandscapeLayerCoords) for reliable persistence.
@@ -1180,15 +1179,14 @@ def create_landscape_material(
     - rock_d/rock_n: Rock diffuse + normal (slopes)
     - mud_d/mud_n: Mud diffuse + normal (flat areas)
     - grass_d/grass_n: Grass diffuse + normal (overlay)
-    - detail_uv_scale: WorldPos UV multiplier for detail (default 0.004)
-    - macro_uv_scale: WorldPos UV multiplier for macro variation (default 0.00025)
-    - bomb_offset_x: UV offset X for texture bombing (default 0.5137, ~half tile)
-    - bomb_offset_y: UV offset Y for texture bombing (default 0.7291, ~73% offset)
-    - noise_scale: Noise scale matching tile frequency (default 0.004)
-    - macro_blend_amount: Multiplicative brightness modulation 0-1 (default 0.15, MI-editable)
-    - slope_sharpness: Power exponent for slope (default 3.0, MI-editable)
-    - grass_amount: Grass blend amount (default 0.5, MI-editable)
-    - roughness: Roughness value (default 0.85, MI-editable)
+    - detail_uv_scale: WorldPos UV multiplier for detail textures (default 0.004)
+    - warp_scale: Noise scale for UV distortion (default 0.00005, very low frequency)
+    - warp_amount: UV distortion strength (default 0.05, in UV space units)
+    - macro_scale: Noise scale for brightness variation (default 0.00003)
+    - macro_strength: Brightness modulation amount 0-1 (default 0.4, MI-editable)
+    - slope_sharpness: Power exponent for slope detection (default 3.0, MI-editable)
+    - grass_amount: Grass overlay blend amount (default 0.5, MI-editable)
+    - roughness: Surface roughness value (default 0.85, MI-editable)
 
     Returns:
         Dictionary with material path, expression count, and sampler count.
@@ -1221,11 +1219,10 @@ def create_landscape_material(
         if grass_n:
             params["grass_n"] = grass_n
         params["detail_uv_scale"] = detail_uv_scale
-        params["macro_uv_scale"] = macro_uv_scale
-        params["bomb_offset_x"] = bomb_offset_x
-        params["bomb_offset_y"] = bomb_offset_y
-        params["noise_scale"] = noise_scale
-        params["macro_blend_amount"] = macro_blend_amount
+        params["warp_scale"] = warp_scale
+        params["warp_amount"] = warp_amount
+        params["macro_scale"] = macro_scale
+        params["macro_strength"] = macro_strength
         params["slope_sharpness"] = slope_sharpness
         params["grass_amount"] = grass_amount
         params["roughness"] = roughness
@@ -3605,6 +3602,7 @@ def add_node(
     variable_name: str = "",
     target_function: str = "",
     target_blueprint: Optional[str] = None,
+    target_class: Optional[str] = None,
     function_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -3666,6 +3664,7 @@ def add_node(
         variable_name: For Variable nodes, the variable name
         target_function: For CallFunction nodes, the function to call
         target_blueprint: For CallFunction nodes, optional path to target Blueprint
+        target_class: For CallFunction nodes, UClass name to search for the function (e.g. "Pawn", "Character", "Actor", "CharacterMovementComponent"). Without this, only searches UKismetSystemLibrary.
         function_name: Optional name of function graph to add node to (if None, uses EventGraph)
 
     Returns:
@@ -3696,6 +3695,8 @@ def add_node(
             node_params["target_function"] = target_function
         if target_blueprint:
             node_params["target_blueprint"] = target_blueprint
+        if target_class:
+            node_params["target_class"] = target_class
         if function_name:
             node_params["function_name"] = function_name
 
@@ -5077,8 +5078,8 @@ def add_layer_to_landscape(
 @mcp.tool()
 def scatter_foliage(
     mesh_path: str,
-    center: List[float],
-    radius: float,
+    center: List[float] = None,
+    radius: float = 0,
     count: int = 100,
     min_distance: float = 50.0,
     max_slope: float = 30.0,
@@ -5088,7 +5089,8 @@ def scatter_foliage(
     z_offset: float = 0.0,
     actor_name: str = "HISM_Foliage",
     cull_distance: float = 0.0,
-    material_path: str = ""
+    material_path: str = "",
+    bounds: List[float] = None
 ) -> Dict[str, Any]:
     """
     Scatter vegetation/foliage using HISM (HierarchicalInstancedStaticMesh) with
@@ -5100,8 +5102,8 @@ def scatter_foliage(
 
     Parameters:
     - mesh_path: UStaticMesh asset path (e.g., "/Game/Meshes/Vegetation/Grass/SM_Grass_01")
-    - center: World XY center [X, Y]
-    - radius: Scatter radius in Unreal units
+    - center: World XY center [X, Y] (required if bounds not provided)
+    - radius: Scatter radius in Unreal units (required if bounds not provided)
     - count: Target instance count (default: 100, max: 50000)
     - min_distance: Minimum distance between instances (default: 50)
     - max_slope: Maximum terrain slope in degrees for placement (default: 30)
@@ -5112,12 +5114,14 @@ def scatter_foliage(
     - actor_name: Name for the container actor (default: "HISM_Foliage")
     - cull_distance: Instance culling distance in UU (0 = no culling)
     - material_path: Optional material override path
+    - bounds: Optional rectangular bounds [min_x, max_x, min_y, max_y]. When provided,
+      overrides center+radius for uniform rectangular coverage. Ideal for full-landscape scatter.
 
     Returns:
         Dictionary with instance_count, candidates_generated, rejected_slope,
         rejected_no_hit, actor_name, and status message.
 
-    Example usage:
+    Example usage (circular):
         scatter_foliage(
             mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Large_A",
             center=[-12600, 12600],
@@ -5129,15 +5133,29 @@ def scatter_foliage(
             z_offset=-3,
             actor_name="HISM_Grass_Large_A"
         )
+
+    Example usage (rectangular bounds for full landscape):
+        scatter_foliage(
+            mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Large_A",
+            bounds=[-25200, 0, 0, 25200],
+            count=5000,
+            min_distance=80,
+            max_slope=45,
+            scale_range=[5, 10],
+            z_offset=-5,
+            actor_name="HISM_Grass_Large_A"
+        )
     """
     unreal = get_unreal_connection()
     if not unreal:
         return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
+    # Validate: need either bounds or center+radius
+    if bounds is None and center is None:
+        return {"success": False, "message": "Must provide either 'bounds' or 'center'+'radius'"}
+
     params = {
         "mesh_path": mesh_path,
-        "center": center,
-        "radius": radius,
         "count": count,
         "min_distance": min_distance,
         "max_slope": max_slope,
@@ -5147,6 +5165,19 @@ def scatter_foliage(
         "actor_name": actor_name,
         "cull_distance": cull_distance,
     }
+
+    if bounds is not None:
+        params["bounds"] = bounds
+        # Compute center for C++ (it'll be overridden but required by parser)
+        if center is None:
+            center = [(bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2]
+        if radius == 0:
+            half_w = (bounds[1] - bounds[0]) / 2
+            half_h = (bounds[3] - bounds[2]) / 2
+            radius = (half_w**2 + half_h**2) ** 0.5
+
+    params["center"] = center
+    params["radius"] = radius
 
     if scale_range is not None:
         params["scale_range"] = scale_range

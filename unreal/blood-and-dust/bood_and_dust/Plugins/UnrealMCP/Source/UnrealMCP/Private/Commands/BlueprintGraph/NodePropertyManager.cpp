@@ -345,6 +345,60 @@ TSharedPtr<FJsonObject> FNodePropertyManager::DispatchEditAction(
 		}
 	}
 
+	// === SPLIT PIN: Split a struct pin into sub-pins ===
+	if (Action.Equals(TEXT("split_pin"), ESearchCase::IgnoreCase))
+	{
+		FString PinName;
+		if (!Params->TryGetStringField(TEXT("pin_name"), PinName))
+		{
+			return CreateErrorResponse(TEXT("Missing 'pin_name' parameter"));
+		}
+
+		UEdGraphPin* Pin = Node->FindPin(FName(*PinName));
+		if (!Pin)
+		{
+			return CreateErrorResponse(FString::Printf(TEXT("Pin not found: %s"), *PinName));
+		}
+
+		// Check if already split
+		if (Pin->SubPins.Num() > 0)
+		{
+			TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+			Response->SetBoolField(TEXT("success"), true);
+			Response->SetStringField(TEXT("action"), TEXT("split_pin"));
+			Response->SetStringField(TEXT("message"), TEXT("Pin already split"));
+
+			TArray<TSharedPtr<FJsonValue>> SubPinNames;
+			for (UEdGraphPin* SubPin : Pin->SubPins)
+			{
+				SubPinNames.Add(MakeShareable(new FJsonValueString(SubPin->PinName.ToString())));
+			}
+			Response->SetArrayField(TEXT("sub_pins"), SubPinNames);
+			return Response;
+		}
+
+		const UEdGraphSchema_K2* K2Schema = Cast<const UEdGraphSchema_K2>(Graph->GetSchema());
+		if (!K2Schema)
+		{
+			return CreateErrorResponse(TEXT("Failed to get K2 schema for graph"));
+		}
+
+		K2Schema->SplitPin(Pin, true);
+
+		TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+		Response->SetBoolField(TEXT("success"), true);
+		Response->SetStringField(TEXT("action"), TEXT("split_pin"));
+		Response->SetStringField(TEXT("pin_name"), PinName);
+
+		TArray<TSharedPtr<FJsonValue>> SubPinNames;
+		for (UEdGraphPin* SubPin : Pin->SubPins)
+		{
+			SubPinNames.Add(MakeShareable(new FJsonValueString(SubPin->PinName.ToString())));
+		}
+		Response->SetArrayField(TEXT("sub_pins"), SubPinNames);
+		return Response;
+	}
+
 	// Unknown action
 	return CreateErrorResponse(FString::Printf(TEXT("Unknown action: %s"), *Action));
 }

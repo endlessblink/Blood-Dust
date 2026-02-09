@@ -6,6 +6,8 @@
 #include "ImageUtils.h"
 #include "HighResScreenshot.h"
 #include "Engine/GameViewportClient.h"
+#include "Slate/SceneViewport.h"
+#include "Widgets/SViewport.h"
 #include "Misc/FileHelper.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
@@ -93,6 +95,9 @@
 
 // HISM for foliage scatter
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+
+// AppendVector for UV distortion
+#include "Materials/MaterialExpressionAppendVector.h"
 
 FEpicUnrealMCPEditorCommands::FEpicUnrealMCPEditorCommands()
 {
@@ -1949,22 +1954,20 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Params->TryGetStringField(TEXT("grass_d"), GrassD);
     Params->TryGetStringField(TEXT("grass_n"), GrassNPath);
 
-    // Scalar parameters with FIXED defaults
+    // Scalar parameters — UV Noise Distortion + Macro Variation approach
     double DetailUVScale = 0.004;
-    double MacroUVScale = 0.00025;
-    double BombOffsetX = 0.5137;   // frac(0.5137)=0.5137 ~ half tile shift
-    double BombOffsetY = 0.7291;   // frac(0.7291)=0.7291 ~ 73% offset
-    double NoiseScale = 0.01;      // 2.5 features per tile = blend WITHIN tiles
-    double MacroBlendAmount = 0.15; // subtle modulation, not replacement
+    double WarpScale = 0.00005;     // Low-frequency warp noise (large features)
+    double WarpAmount = 0.05;       // How much UVs are distorted (in UV space)
+    double MacroScale = 0.00003;    // Very low-frequency brightness variation
+    double MacroStrength = 0.4;     // Brightness modulation amount 0-1
     double SlopeSharpness = 3.0;
     double GrassAmount = 0.5;
     double RoughnessVal = 0.85;
     Params->TryGetNumberField(TEXT("detail_uv_scale"), DetailUVScale);
-    Params->TryGetNumberField(TEXT("macro_uv_scale"), MacroUVScale);
-    Params->TryGetNumberField(TEXT("bomb_offset_x"), BombOffsetX);
-    Params->TryGetNumberField(TEXT("bomb_offset_y"), BombOffsetY);
-    Params->TryGetNumberField(TEXT("noise_scale"), NoiseScale);
-    Params->TryGetNumberField(TEXT("macro_blend_amount"), MacroBlendAmount);
+    Params->TryGetNumberField(TEXT("warp_scale"), WarpScale);
+    Params->TryGetNumberField(TEXT("warp_amount"), WarpAmount);
+    Params->TryGetNumberField(TEXT("macro_scale"), MacroScale);
+    Params->TryGetNumberField(TEXT("macro_strength"), MacroStrength);
     Params->TryGetNumberField(TEXT("slope_sharpness"), SlopeSharpness);
     Params->TryGetNumberField(TEXT("grass_amount"), GrassAmount);
     Params->TryGetNumberField(TEXT("roughness"), RoughnessVal);
@@ -2019,91 +2022,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         Mat->GetExpressionCollection().AddComment(C);
     };
 
-    // =================================================================
-    // COMMENT BOX 1: UV Generation (Yellow)
-    // =================================================================
-    AddComment(TEXT("UV Generation"), FLinearColor(0.8f, 0.7f, 0.1f), -2500, -250, 850, 650);
-
-    // =================================================================
-    // SECTION 1: World UVs (6 nodes)
-    // WorldPos -> MaskRG(XY) -> DetailUV = Multiply(MaskRG, 0.004)
-    //                        -> MacroUV  = Multiply(MaskRG, 0.00025)
-    // =================================================================
-    auto* WorldPos = NewObject<UMaterialExpressionWorldPosition>(Mat);
-    AddExpr(WorldPos, -2400, 0);
-
-    auto* MaskRG = NewObject<UMaterialExpressionComponentMask>(Mat);
-    MaskRG->R = true; MaskRG->G = true; MaskRG->B = false; MaskRG->A = false;
-    MaskRG->Input.Connect(0, WorldPos);
-    AddExpr(MaskRG, -2100, 0);
-
-    auto* DetailScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
-    DetailScaleConst->R = DetailUVScale;
-    AddExpr(DetailScaleConst, -2100, 150);
-
-    auto* MacroScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
-    MacroScaleConst->R = MacroUVScale;
-    AddExpr(MacroScaleConst, -2100, 300);
-
-    auto* DetailUV = NewObject<UMaterialExpressionMultiply>(Mat);
-    DetailUV->A.Connect(0, MaskRG);
-    DetailUV->B.Connect(0, DetailScaleConst);
-    AddExpr(DetailUV, -1800, 0);
-
-    auto* MacroUV = NewObject<UMaterialExpressionMultiply>(Mat);
-    MacroUV->A.Connect(0, MaskRG);
-    MacroUV->B.Connect(0, MacroScaleConst);
-    AddExpr(MacroUV, -1800, 300);
-
-    // =================================================================
-    // COMMENT BOX 2: Texture Bombing UV Offset (Orange)
-    // =================================================================
-    AddComment(TEXT("Texture Bombing UV Offset"), FLinearColor(0.9f, 0.5f, 0.1f), -1900, 500, 600, 250);
-
-    // =================================================================
-    // SECTION 2: Bombing UV Offset (2 nodes)
-    // BombOffset = Constant2Vector(0.5137, 0.7291) -- half-tile shifts
-    // BombedUV = Add(DetailUV, BombOffset)
-    // =================================================================
-    auto* BombOffset = NewObject<UMaterialExpressionConstant2Vector>(Mat);
-    BombOffset->R = BombOffsetX;
-    BombOffset->G = BombOffsetY;
-    AddExpr(BombOffset, -1800, 600);
-
-    auto* BombedUV = NewObject<UMaterialExpressionAdd>(Mat);
-    BombedUV->A.Connect(0, DetailUV);
-    BombedUV->B.Connect(0, BombOffset);
-    AddExpr(BombedUV, -1500, 600);
-
-    // =================================================================
-    // COMMENT BOX 3: Noise Blend Mask (Cyan)
-    // =================================================================
-    AddComment(TEXT("Noise Blend Mask (5 octaves, turbulence)"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 800, 550, 250);
-
-    // =================================================================
-    // SECTION 3: Noise Blend Mask (1 node)
-    // FIXED: 5 octaves, turbulence=true, quality=2, scale from param
-    // =================================================================
-    auto* NoiseMask = NewObject<UMaterialExpressionNoise>(Mat);
-    NoiseMask->NoiseFunction = NOISEFUNCTION_GradientALU;
-    NoiseMask->Scale = NoiseScale;
-    NoiseMask->Quality = 2;        // FIXED: was 1, reduces banding
-    NoiseMask->Levels = 5;         // FIXED: was 1, multi-octave = organic
-    NoiseMask->OutputMin = 0.0f;
-    NoiseMask->OutputMax = 1.0f;
-    NoiseMask->bTurbulence = true;  // FIXED: was false, sharper boundaries
-    NoiseMask->bTiling = false;
-    NoiseMask->LevelScale = 2.0f;
-    NoiseMask->Position.Connect(0, WorldPos);
-    AddExpr(NoiseMask, -1500, 900);
-
-    // =================================================================
-    // SECTION 4: Per-Layer Texture Bombing with Normal Bombing
-    // Each layer: DiffA(Detail) + DiffB(Bombed) -> Lerp(Noise) -> BombBlend
-    //             MacroSamp(MacroUV) -> Multiply(BombBlend, Lerp(1,Macro,Amt))
-    //             NormA(Detail) + NormB(Bombed) -> Lerp(Noise) -> BombedNormal
-    // 5 samplers per layer x 3 layers = 15 samplers (of 16 max)
-    // =================================================================
     auto CreateTexSample = [&](UTexture* Tex, EMaterialSamplerType SamplerType,
                                UMaterialExpression* UV, float X, float Y) -> UMaterialExpressionTextureSample* {
         if (!Tex) return nullptr;
@@ -2115,17 +2033,151 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         return S;
     };
 
-    // Shared nodes for all layers
-    auto* MacroAmtParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
-    MacroAmtParam->ParameterName = FName(TEXT("MacroBlendAmount"));
-    MacroAmtParam->DefaultValue = MacroBlendAmount;
-    AddExpr(MacroAmtParam, -1000, 1700);
+    // =================================================================
+    // COMMENT BOX 1: UV Generation (Yellow)
+    // =================================================================
+    AddComment(TEXT("UV Generation"), FLinearColor(0.8f, 0.7f, 0.1f), -2600, -300, 700, 400);
+
+    // =================================================================
+    // SECTION 1: Base UVs (3 nodes)
+    // WorldPos -> MaskXY(R,G) -> Multiply(DetailScale) -> BaseUV
+    // =================================================================
+    auto* WorldPos = NewObject<UMaterialExpressionWorldPosition>(Mat);
+    AddExpr(WorldPos, -2500, -200);
+
+    auto* MaskRG = NewObject<UMaterialExpressionComponentMask>(Mat);
+    MaskRG->R = true; MaskRG->G = true; MaskRG->B = false; MaskRG->A = false;
+    MaskRG->Input.Connect(0, WorldPos);
+    AddExpr(MaskRG, -2200, -200);
+
+    auto* DetailScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
+    DetailScaleConst->R = DetailUVScale;
+    AddExpr(DetailScaleConst, -2200, -50);
+
+    auto* BaseUV = NewObject<UMaterialExpressionMultiply>(Mat);
+    BaseUV->A.Connect(0, MaskRG);
+    BaseUV->B.Connect(0, DetailScaleConst);
+    AddExpr(BaseUV, -2000, -200);
+
+    // =================================================================
+    // COMMENT BOX 2: UV Noise Distortion (Orange)
+    // =================================================================
+    AddComment(TEXT("UV Noise Distortion"), FLinearColor(0.9f, 0.5f, 0.1f), -2100, 300, 1200, 700);
+
+    // =================================================================
+    // SECTION 2: UV Distortion (~10 nodes)
+    // Two noise nodes sample WorldPos at WarpScale for X and Y warp.
+    // WarpNoiseY uses an offset WorldPos for a different pattern.
+    // DistortedUV = BaseUV + AppendVector(WarpX, WarpY) * WarpAmount
+    // =================================================================
+
+    // WarpNoiseX: Noise(WorldPos, WarpScale)
+    auto* WarpNoiseX = NewObject<UMaterialExpressionNoise>(Mat);
+    WarpNoiseX->NoiseFunction = NOISEFUNCTION_GradientALU;
+    WarpNoiseX->Scale = WarpScale;
+    WarpNoiseX->Quality = 2;
+    WarpNoiseX->Levels = 4;
+    WarpNoiseX->OutputMin = -1.0f;
+    WarpNoiseX->OutputMax = 1.0f;
+    WarpNoiseX->bTurbulence = false;
+    WarpNoiseX->bTiling = false;
+    WarpNoiseX->LevelScale = 2.0f;
+    WarpNoiseX->Position.Connect(0, WorldPos);
+    AddExpr(WarpNoiseX, -2000, 400);
+
+    // Offset for WarpNoiseY: Add(WorldPos, Constant3Vector(1000, 2000, 0))
+    auto* WarpOffsetVec = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+    WarpOffsetVec->Constant = FLinearColor(1000.0f, 2000.0f, 0.0f, 0.0f);
+    AddExpr(WarpOffsetVec, -2000, 700);
+
+    auto* WarpPosOffset = NewObject<UMaterialExpressionAdd>(Mat);
+    WarpPosOffset->A.Connect(0, WorldPos);
+    WarpPosOffset->B.Connect(0, WarpOffsetVec);
+    AddExpr(WarpPosOffset, -1800, 700);
+
+    // WarpNoiseY: Noise(WorldPos + offset, WarpScale)
+    auto* WarpNoiseY = NewObject<UMaterialExpressionNoise>(Mat);
+    WarpNoiseY->NoiseFunction = NOISEFUNCTION_GradientALU;
+    WarpNoiseY->Scale = WarpScale;
+    WarpNoiseY->Quality = 2;
+    WarpNoiseY->Levels = 4;
+    WarpNoiseY->OutputMin = -1.0f;
+    WarpNoiseY->OutputMax = 1.0f;
+    WarpNoiseY->bTurbulence = false;
+    WarpNoiseY->bTiling = false;
+    WarpNoiseY->LevelScale = 2.0f;
+    WarpNoiseY->Position.Connect(0, WarpPosOffset);
+    AddExpr(WarpNoiseY, -1600, 700);
+
+    // WarpAmount constant
+    auto* WarpAmountConst = NewObject<UMaterialExpressionConstant>(Mat);
+    WarpAmountConst->R = WarpAmount;
+    AddExpr(WarpAmountConst, -1600, 500);
+
+    // WarpX = Multiply(WarpNoiseX, WarpAmountConst)
+    auto* WarpX = NewObject<UMaterialExpressionMultiply>(Mat);
+    WarpX->A.Connect(0, WarpNoiseX);
+    WarpX->B.Connect(0, WarpAmountConst);
+    AddExpr(WarpX, -1400, 400);
+
+    // WarpY = Multiply(WarpNoiseY, WarpAmountConst)
+    auto* WarpY = NewObject<UMaterialExpressionMultiply>(Mat);
+    WarpY->A.Connect(0, WarpNoiseY);
+    WarpY->B.Connect(0, WarpAmountConst);
+    AddExpr(WarpY, -1400, 700);
+
+    // AppendWarp = AppendVector(WarpX, WarpY) -> float2
+    auto* AppendWarp = NewObject<UMaterialExpressionAppendVector>(Mat);
+    AppendWarp->A.Connect(0, WarpX);
+    AppendWarp->B.Connect(0, WarpY);
+    AddExpr(AppendWarp, -1200, 500);
+
+    // DistortedUV = Add(BaseUV, AppendWarp)
+    auto* DistortedUV = NewObject<UMaterialExpressionAdd>(Mat);
+    DistortedUV->A.Connect(0, BaseUV);
+    DistortedUV->B.Connect(0, AppendWarp);
+    AddExpr(DistortedUV, -1000, 400);
+
+    // =================================================================
+    // COMMENT BOX 3: Macro Brightness Variation (Cyan)
+    // =================================================================
+    AddComment(TEXT("Macro Brightness Variation"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 1100, 700, 400);
+
+    // =================================================================
+    // SECTION 3: Macro Variation Noise (4 nodes)
+    // MacroNoise(WorldPos, MacroScale) -> Lerp(1.0, MacroNoise, MacroStrength) -> MacroMod
+    // =================================================================
+    auto* MacroNoise = NewObject<UMaterialExpressionNoise>(Mat);
+    MacroNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+    MacroNoise->Scale = MacroScale;
+    MacroNoise->Quality = 2;
+    MacroNoise->Levels = 4;
+    MacroNoise->OutputMin = 0.5f;
+    MacroNoise->OutputMax = 1.0f;
+    MacroNoise->bTurbulence = false;
+    MacroNoise->bTiling = false;
+    MacroNoise->LevelScale = 2.0f;
+    MacroNoise->Position.Connect(0, WorldPos);
+    AddExpr(MacroNoise, -1500, 1200);
+
+    auto* MacroStrengthParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    MacroStrengthParam->ParameterName = FName(TEXT("MacroStrength"));
+    MacroStrengthParam->DefaultValue = MacroStrength;
+    AddExpr(MacroStrengthParam, -1500, 1400);
 
     auto* OneConst = NewObject<UMaterialExpressionConstant>(Mat);
     OneConst->R = 1.0f;
-    AddExpr(OneConst, -1000, 1600);
+    AddExpr(OneConst, -1300, 1200);
 
+    auto* MacroMod = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+    MacroMod->A.Connect(0, OneConst);
+    MacroMod->B.Connect(0, MacroNoise);
+    MacroMod->Alpha.Connect(0, MacroStrengthParam);
+    AddExpr(MacroMod, -1100, 1300);
+
+    // =================================================================
     // Load textures
+    // =================================================================
     UTexture* TexRockD = LoadTex(RockD);
     UTexture* TexRockN = LoadTex(RockN);
     UTexture* TexMudD = LoadTex(MudD);
@@ -2133,74 +2185,37 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     UTexture* TexGrassD = LoadTex(GrassD);
     UTexture* TexGrassN = LoadTex(GrassNPath);
 
-    // Per-layer bombing lambda with NORMAL BOMBING (fix #4)
-    // and MULTIPLICATIVE macro blend (fix #3)
+    // =================================================================
+    // SECTION 4: Per-Layer Textures with UV Distortion + Macro Modulation
+    // Each layer: DiffSample(DistortedUV) -> Multiply(MacroMod) -> MacroDiff
+    //             NormSample(DistortedUV) -> Normal
+    // Only 2 samplers per layer = 6 total (massive headroom!)
+    // =================================================================
     struct FLayerResult {
         UMaterialExpression* Diffuse = nullptr;
         UMaterialExpression* Normal = nullptr;
     };
 
-    auto BuildBombedLayer = [&](UTexture* DiffTex, UTexture* NormTex, float BaseY) -> FLayerResult {
+    auto BuildDistortedLayer = [&](UTexture* DiffTex, UTexture* NormTex, float BaseY) -> FLayerResult {
         FLayerResult Result;
         if (!DiffTex) return Result;
 
-        // --- Diffuse bombing ---
-        auto* TexA = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DetailUV, -1200, BaseY);
-        auto* TexB = CreateTexSample(DiffTex, SAMPLERTYPE_Color, BombedUV, -1200, BaseY + 150);
-
-        if (TexA && TexB)
+        auto* DiffSamp = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DistortedUV, -800, BaseY);
+        if (DiffSamp)
         {
-            auto* BombBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-            BombBlend->A.Connect(0, TexA);
-            BombBlend->B.Connect(0, TexB);
-            BombBlend->Alpha.Connect(0, NoiseMask);
-            AddExpr(BombBlend, -900, BaseY);
-
-            auto* MacroSamp = CreateTexSample(DiffTex, SAMPLERTYPE_Color, MacroUV, -1200, BaseY + 300);
-            if (MacroSamp)
-            {
-                // FIX #3: Multiplicative macro blend preserves detail
-                // MacroMod = Lerp(1.0, MacroSamp, MacroAmtParam)
-                auto* MacroMod = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-                MacroMod->A.Connect(0, OneConst);
-                MacroMod->B.Connect(0, MacroSamp);
-                MacroMod->Alpha.Connect(0, MacroAmtParam);
-                AddExpr(MacroMod, -900, BaseY + 300);
-
-                // FinalDiff = Multiply(BombBlend, MacroMod) -- modulates brightness
-                auto* FinalDiff = NewObject<UMaterialExpressionMultiply>(Mat);
-                FinalDiff->A.Connect(0, BombBlend);
-                FinalDiff->B.Connect(0, MacroMod);
-                AddExpr(FinalDiff, -600, BaseY + 100);
-                Result.Diffuse = FinalDiff;
-            }
-            else
-            {
-                Result.Diffuse = BombBlend;
-            }
-        }
-        else if (TexA)
-        {
-            Result.Diffuse = TexA;
+            auto* MacroDiff = NewObject<UMaterialExpressionMultiply>(Mat);
+            MacroDiff->A.Connect(0, DiffSamp);
+            MacroDiff->B.Connect(0, MacroMod);  // shared macro modulation
+            AddExpr(MacroDiff, -500, BaseY);
+            Result.Diffuse = MacroDiff;
         }
 
-        // --- Normal bombing (FIX #4: eliminates specular grid) ---
         if (NormTex)
         {
-            auto* NormA = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DetailUV, -1200, BaseY + 450);
-            auto* NormB = CreateTexSample(NormTex, SAMPLERTYPE_Normal, BombedUV, -1200, BaseY + 600);
-            if (NormA && NormB)
+            auto* NormSamp = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DistortedUV, -800, BaseY + 200);
+            if (NormSamp)
             {
-                auto* NormBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-                NormBlend->A.Connect(0, NormA);
-                NormBlend->B.Connect(0, NormB);
-                NormBlend->Alpha.Connect(0, NoiseMask);
-                AddExpr(NormBlend, -900, BaseY + 450);
-                Result.Normal = NormBlend;
-            }
-            else if (NormA)
-            {
-                Result.Normal = NormA;
+                Result.Normal = NormSamp;
             }
         }
 
@@ -2208,25 +2223,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     };
 
     // COMMENT BOX 4: Rock Layer (Red)
-    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -1300, -900, 850, 800);
-    FLayerResult RockLayer = BuildBombedLayer(TexRockD, TexRockN, -800);
+    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -900, -900, 600, 500);
+    FLayerResult RockLayer = BuildDistortedLayer(TexRockD, TexRockN, -800);
 
     // COMMENT BOX 5: Mud Layer (Brown)
-    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -1300, -100, 850, 800);
-    FLayerResult MudLayer = BuildBombedLayer(TexMudD, TexMudN, 0);
+    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -900, -300, 600, 500);
+    FLayerResult MudLayer = BuildDistortedLayer(TexMudD, TexMudN, -200);
 
     // COMMENT BOX 6: Grass Layer (Green)
-    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -1300, 700, 850, 800);
-    FLayerResult GrassLayer = BuildBombedLayer(TexGrassD, TexGrassN, 800);
+    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -900, 300, 600, 500);
+    FLayerResult GrassLayer = BuildDistortedLayer(TexGrassD, TexGrassN, 400);
 
     // =================================================================
-    // COMMENT BOX 7: Slope Detection (Purple)
+    // COMMENT BOX 7: Slope Detection + Outputs (Purple)
     // =================================================================
-    AddComment(TEXT("Slope Detection"), FLinearColor(0.5f, 0.2f, 0.7f), -400, -1700, 850, 400);
+    AddComment(TEXT("Slope Detection + Outputs"), FLinearColor(0.5f, 0.2f, 0.7f), -400, -1700, 1500, 4000);
 
     // =================================================================
     // SECTION 5: Slope Detection (5 nodes)
-    // VertexNormalWS -> MaskZ(B) -> Abs -> Power(SlopeSharpness) -> SlopeMask
+    // VertexNormalWS -> MaskZ(B) -> Abs -> Power(SlopeSharpness) -> SlopePow
     // =================================================================
     auto* VNormal = NewObject<UMaterialExpressionVertexNormalWS>(Mat);
     AddExpr(VNormal, -300, -1500);
@@ -2251,39 +2266,52 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(SlopePow, 300, -1500);
 
     // =================================================================
-    // SECTION 6: Grass Noise Mask (4 nodes)
-    // NoiseMask -> Power(2.0) -> GrassNoiseThresh
-    // GrassParam("GrassAmount", 0.5) -> Multiply(GrassNoiseThresh, GrassParam) -> GrassMask
+    // SECTION 6: Grass Mask (6 nodes) - SEPARATE noise for grass distribution
+    // GrassNoise(WorldPos, 0.0001) -> Power(2) -> Multiply(GrassAmount) -> GrassMask
+    // SlopeGrassMask = Multiply(GrassMask, SlopePow) -- only on flat areas
     // =================================================================
+    auto* GrassNoise = NewObject<UMaterialExpressionNoise>(Mat);
+    GrassNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+    GrassNoise->Scale = 0.0001f;
+    GrassNoise->Quality = 1;
+    GrassNoise->Levels = 3;
+    GrassNoise->OutputMin = 0.0f;
+    GrassNoise->OutputMax = 1.0f;
+    GrassNoise->bTurbulence = true;
+    GrassNoise->bTiling = false;
+    GrassNoise->LevelScale = 2.0f;
+    GrassNoise->Position.Connect(0, WorldPos);
+    AddExpr(GrassNoise, -300, 1600);
+
     auto* GrassPowConst = NewObject<UMaterialExpressionConstant>(Mat);
     GrassPowConst->R = 2.0f;
-    AddExpr(GrassPowConst, -300, 1900);
+    AddExpr(GrassPowConst, -300, 1800);
 
     auto* GrassNoisePow = NewObject<UMaterialExpressionPower>(Mat);
-    GrassNoisePow->Base.Connect(0, NoiseMask);
+    GrassNoisePow->Base.Connect(0, GrassNoise);
     GrassNoisePow->Exponent.Connect(0, GrassPowConst);
-    AddExpr(GrassNoisePow, 0, 1800);
+    AddExpr(GrassNoisePow, 0, 1700);
 
     auto* GrassParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     GrassParam->ParameterName = FName(TEXT("GrassAmount"));
     GrassParam->DefaultValue = GrassAmount;
-    AddExpr(GrassParam, 0, 2000);
+    AddExpr(GrassParam, 0, 1900);
 
     auto* GrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
     GrassMask->A.Connect(0, GrassNoisePow);
     GrassMask->B.Connect(0, GrassParam);
-    AddExpr(GrassMask, 300, 1800);
+    AddExpr(GrassMask, 300, 1700);
 
     // Slope-filtered grass: grass only on flat areas, not slopes
     auto* SlopeGrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
     SlopeGrassMask->A.Connect(0, GrassMask);
     SlopeGrassMask->B.Connect(0, SlopePow);
-    AddExpr(SlopeGrassMask, 500, 1800);
+    AddExpr(SlopeGrassMask, 500, 1700);
 
     // =================================================================
-    // SECTION 7: BaseColor + Normal Blend Chains
-    // SlopeBC = Lerp(Rock, Mud, SlopeMask) -> GrassBC = Lerp(SlopeBC, Grass, SlopeGrassMask)
-    // SlopeN  = Lerp(RockN, MudN, SlopeMask) -> GrassN = Lerp(SlopeN, GrassN, SlopeGrassMask)
+    // SECTION 7: Blend Chains + Outputs
+    // SlopeBC = Lerp(Rock, Mud, SlopePow) -> GrassBC = Lerp(SlopeBC, Grass, SlopeGrassMask)
+    // SlopeN  = Lerp(RockN, MudN, SlopePow) -> GrassN = Lerp(SlopeN, GrassN, SlopeGrassMask)
     // =================================================================
     UMaterialExpression* FinalBC = nullptr;
 
@@ -2380,7 +2408,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
     Result->SetNumberField(TEXT("comment_count"), 7);
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material created with FIXED anti-tiling: proper bomb offsets (0.5/0.7), 5-octave turbulent noise, multiplicative macro blend, normal bombing, 7 organized comment boxes"));
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material with UV noise distortion anti-tiling: continuous UV warp breaks grid at every pixel, macro brightness variation, 6 samplers (of 16), 7 organized comment boxes"));
 
     return Result;
 }
@@ -3477,21 +3505,70 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor viewport found"));
     }
 
-    // Force a viewport redraw to ensure we capture the latest frame.
-    // Note: ReadPixels internally calls FlushRenderingCommands, so we don't call it separately
-    // to avoid potential deadlocks in FTSTicker context.
-    if (UsedClient)
-    {
-        UsedClient->Invalidate();
-        Viewport->Draw(false);
-    }
-
+    // Ensure viewport has a valid size before capturing.
+    // After editor restart, the FViewport render target may be 0x0 even though
+    // the Slate widget is visible. We fix this by getting the size from the
+    // owning SViewport widget and forcing a resize + redraw.
     int32 Width = Viewport->GetSizeXY().X;
     int32 Height = Viewport->GetSizeXY().Y;
 
     if (Width == 0 || Height == 0)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Viewport has zero size - make sure an editor viewport is visible"));
+        // Attempt 1: Force all viewports to redraw (triggers Slate layout + render)
+        if (GEditor)
+        {
+            GEditor->RedrawAllViewports();
+        }
+        Width = Viewport->GetSizeXY().X;
+        Height = Viewport->GetSizeXY().Y;
+    }
+
+    if (Width == 0 || Height == 0)
+    {
+        // Attempt 2: Get size from the owning Slate widget and force viewport RHI resize.
+        // We CANNOT ReadPixels immediately after resize — the Vulkan render target
+        // needs a full rendering frame through Slate's pipeline before it's valid.
+        // Instead, resize + request redraw, then ask the caller to retry.
+        FSceneViewport* SceneVP = static_cast<FSceneViewport*>(Viewport);
+        if (SceneVP)
+        {
+            TSharedPtr<SViewport> ViewportWidget = SceneVP->GetViewportWidget().Pin();
+            if (ViewportWidget.IsValid())
+            {
+                FVector2D WidgetSize = ViewportWidget->GetCachedGeometry().GetLocalSize();
+                int32 W = FMath::TruncToInt(WidgetSize.X);
+                int32 H = FMath::TruncToInt(WidgetSize.Y);
+                if (W > 0 && H > 0)
+                {
+                    // Resize the RHI viewport to match the Slate widget
+                    SceneVP->UpdateViewportRHI(false, W, H, EWindowMode::Windowed, PF_Unknown);
+                    // Trigger a proper redraw through Slate's rendering pipeline
+                    if (GEditor)
+                    {
+                        GEditor->RedrawAllViewports();
+                    }
+                    // Return WITHOUT ReadPixels — Vulkan surface needs a full frame
+                    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                    Result->SetBoolField(TEXT("success"), false);
+                    Result->SetBoolField(TEXT("viewport_initialized"), true);
+                    Result->SetNumberField(TEXT("width"), W);
+                    Result->SetNumberField(TEXT("height"), H);
+                    Result->SetStringField(TEXT("message"),
+                        FString::Printf(TEXT("Viewport render target initialized to %dx%d. Call take_screenshot again to capture."), W, H));
+                    return Result;
+                }
+            }
+        }
+
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Viewport has zero size and could not be recovered. Try clicking in the viewport first."));
+    }
+
+    // Normal path: force redraw for fresh frame (viewport already has valid RHI surface)
+    if (UsedClient)
+    {
+        UsedClient->Invalidate();
+        Viewport->Draw(false);
     }
 
     // Read pixels from the viewport
@@ -4037,6 +4114,31 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'radius' must be positive"));
     }
 
+    // --- Parse optional rectangular bounds (overrides center+radius) ---
+    bool bUseRectBounds = false;
+    double BoundsMinX = 0.0, BoundsMaxX = 0.0, BoundsMinY = 0.0, BoundsMaxY = 0.0;
+
+    if (Params->HasField(TEXT("bounds")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>& BoundsArr = Params->GetArrayField(TEXT("bounds"));
+        if (BoundsArr.Num() >= 4)
+        {
+            BoundsMinX = BoundsArr[0]->AsNumber();
+            BoundsMaxX = BoundsArr[1]->AsNumber();
+            BoundsMinY = BoundsArr[2]->AsNumber();
+            BoundsMaxY = BoundsArr[3]->AsNumber();
+            bUseRectBounds = true;
+
+            // Override center and radius for grid calculations
+            CenterX = (BoundsMinX + BoundsMaxX) * 0.5;
+            CenterY = (BoundsMinY + BoundsMaxY) * 0.5;
+            // Radius still needed for grid sizing - use half-diagonal
+            double HalfW = (BoundsMaxX - BoundsMinX) * 0.5;
+            double HalfH = (BoundsMaxY - BoundsMinY) * 0.5;
+            Radius = FMath::Sqrt(HalfW * HalfW + HalfH * HalfH);
+        }
+    }
+
     // --- Parse optional parameters ---
     int32 Count = 100;
     double CountD = 100.0;
@@ -4092,19 +4194,32 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     // --- Phase A: Poisson Disk Sampling (grid-accelerated) ---
     // Grid cell size = MinDistance / sqrt(2) for optimal Poisson disk coverage
     const double CellSize = MinDistance / FMath::Sqrt(2.0);
-    const double AreaSize = Radius * 2.0;
-    const int32 GridDim = FMath::CeilToInt(AreaSize / CellSize);
+    double AreaSizeX, AreaSizeY;
+    int32 GridDimX, GridDimY;
+
+    if (bUseRectBounds)
+    {
+        AreaSizeX = BoundsMaxX - BoundsMinX;
+        AreaSizeY = BoundsMaxY - BoundsMinY;
+    }
+    else
+    {
+        AreaSizeX = Radius * 2.0;
+        AreaSizeY = Radius * 2.0;
+    }
+    GridDimX = FMath::CeilToInt(AreaSizeX / CellSize);
+    GridDimY = FMath::CeilToInt(AreaSizeY / CellSize);
 
     // Safety cap: 4M cells max (~16MB memory)
-    if ((int64)GridDim * GridDim > 4000000)
+    if ((int64)GridDimX * GridDimY > 4000000)
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Grid too large: %dx%d cells. Increase min_distance or decrease radius."), GridDim, GridDim));
+            FString::Printf(TEXT("Grid too large: %dx%d cells. Increase min_distance or decrease area."), GridDimX, GridDimY));
     }
 
     // Grid stores index into Points array (-1 = empty)
     TArray<int32> Grid;
-    Grid.Init(-1, GridDim * GridDim);
+    Grid.Init(-1, GridDimX * GridDimY);
 
     struct FPoint2D { double X; double Y; };
     TArray<FPoint2D> Points;
@@ -4114,16 +4229,71 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     TArray<int32> ActiveList;
     ActiveList.Reserve(Count);
 
+    // Grid origin: bottom-left corner of the scatter area
+    double GridOriginX = bUseRectBounds ? BoundsMinX : (CenterX - Radius);
+    double GridOriginY = bUseRectBounds ? BoundsMinY : (CenterY - Radius);
+
     // Lambda to get grid index from world-relative position
     auto GridIndex = [&](double PX, double PY) -> int32
     {
-        int32 GX = FMath::Clamp((int32)((PX - (CenterX - Radius)) / CellSize), 0, GridDim - 1);
-        int32 GY = FMath::Clamp((int32)((PY - (CenterY - Radius)) / CellSize), 0, GridDim - 1);
-        return GY * GridDim + GX;
+        int32 GX = FMath::Clamp((int32)((PX - GridOriginX) / CellSize), 0, GridDimX - 1);
+        int32 GY = FMath::Clamp((int32)((PY - GridOriginY) / CellSize), 0, GridDimY - 1);
+        return GY * GridDimX + GX;
     };
 
-    // Seed first point at center
+    // Seed initial points
+    if (bUseRectBounds)
     {
+        // Multi-seed: place seed points RANDOMLY across the rectangle.
+        // Random placement eliminates grid artifacts that appear when seeds
+        // are on a regular grid (growth fronts create Voronoi-like cells).
+        double SeedSpacing = MinDistance * 5.0;
+        int32 TargetSeeds = FMath::Max(1, FMath::CeilToInt((AreaSizeX * AreaSizeY) / (SeedSpacing * SeedSpacing)));
+        int32 MaxSeedAttempts = TargetSeeds * 10; // Extra attempts for rejections
+
+        for (int32 Attempt = 0; Attempt < MaxSeedAttempts && ActiveList.Num() < TargetSeeds; ++Attempt)
+        {
+            double PX = FMath::FRandRange(BoundsMinX, BoundsMaxX);
+            double PY = FMath::FRandRange(BoundsMinY, BoundsMaxY);
+
+            // Check this cell and neighbors for min_distance from existing seeds
+            int32 CandGX = FMath::Clamp((int32)((PX - GridOriginX) / CellSize), 0, GridDimX - 1);
+            int32 CandGY = FMath::Clamp((int32)((PY - GridOriginY) / CellSize), 0, GridDimY - 1);
+            int32 GIdx = CandGY * GridDimX + CandGX;
+
+            if (Grid[GIdx] >= 0) continue; // Cell already occupied
+
+            bool bTooClose = false;
+            for (int32 NY = FMath::Max(0, CandGY - 2); NY <= FMath::Min(GridDimY - 1, CandGY + 2) && !bTooClose; ++NY)
+            {
+                for (int32 NX = FMath::Max(0, CandGX - 2); NX <= FMath::Min(GridDimX - 1, CandGX + 2) && !bTooClose; ++NX)
+                {
+                    int32 NIdx = NY * GridDimX + NX;
+                    if (Grid[NIdx] >= 0)
+                    {
+                        const FPoint2D& Neighbor = Points[Grid[NIdx]];
+                        double NDX = PX - Neighbor.X;
+                        double NDY = PY - Neighbor.Y;
+                        if (NDX * NDX + NDY * NDY < MinDistance * MinDistance)
+                        {
+                            bTooClose = true;
+                        }
+                    }
+                }
+            }
+
+            if (!bTooClose)
+            {
+                FPoint2D P = { PX, PY };
+                int32 Idx = Points.Add(P);
+                ActiveList.Add(Idx);
+                Grid[GIdx] = Idx;
+            }
+        }
+    }
+    else
+    {
+        // Circular mode: single seed at center
         FPoint2D P = { CenterX, CenterY };
         int32 Idx = Points.Add(P);
         ActiveList.Add(Idx);
@@ -4148,24 +4318,34 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
             double CandX = BasePoint.X + Dist * FMath::Cos(Angle);
             double CandY = BasePoint.Y + Dist * FMath::Sin(Angle);
 
-            // Check bounds (must be within scatter circle)
-            double DX = CandX - CenterX;
-            double DY = CandY - CenterY;
-            if (DX * DX + DY * DY > Radius * Radius)
+            // Check bounds
+            if (bUseRectBounds)
             {
-                continue;
+                if (CandX < BoundsMinX || CandX > BoundsMaxX || CandY < BoundsMinY || CandY > BoundsMaxY)
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                double DX = CandX - CenterX;
+                double DY = CandY - CenterY;
+                if (DX * DX + DY * DY > Radius * Radius)
+                {
+                    continue;
+                }
             }
 
             // Check grid neighbors (5x5 around candidate cell)
-            int32 CandGX = FMath::Clamp((int32)((CandX - (CenterX - Radius)) / CellSize), 0, GridDim - 1);
-            int32 CandGY = FMath::Clamp((int32)((CandY - (CenterY - Radius)) / CellSize), 0, GridDim - 1);
+            int32 CandGX = FMath::Clamp((int32)((CandX - GridOriginX) / CellSize), 0, GridDimX - 1);
+            int32 CandGY = FMath::Clamp((int32)((CandY - GridOriginY) / CellSize), 0, GridDimY - 1);
 
             bool bTooClose = false;
-            for (int32 NY = FMath::Max(0, CandGY - 2); NY <= FMath::Min(GridDim - 1, CandGY + 2) && !bTooClose; ++NY)
+            for (int32 NY = FMath::Max(0, CandGY - 2); NY <= FMath::Min(GridDimY - 1, CandGY + 2) && !bTooClose; ++NY)
             {
-                for (int32 NX = FMath::Max(0, CandGX - 2); NX <= FMath::Min(GridDim - 1, CandGX + 2) && !bTooClose; ++NX)
+                for (int32 NX = FMath::Max(0, CandGX - 2); NX <= FMath::Min(GridDimX - 1, CandGX + 2) && !bTooClose; ++NX)
                 {
-                    int32 NIdx = NY * GridDim + NX;
+                    int32 NIdx = NY * GridDimX + NX;
                     if (Grid[NIdx] >= 0)
                     {
                         const FPoint2D& Neighbor = Points[Grid[NIdx]];
@@ -4365,6 +4545,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     Result->SetNumberField(TEXT("center_x"), CenterX);
     Result->SetNumberField(TEXT("center_y"), CenterY);
     Result->SetNumberField(TEXT("radius"), Radius);
+    if (bUseRectBounds)
+    {
+        TArray<TSharedPtr<FJsonValue>> BoundsJsonArr;
+        BoundsJsonArr.Add(MakeShared<FJsonValueNumber>(BoundsMinX));
+        BoundsJsonArr.Add(MakeShared<FJsonValueNumber>(BoundsMaxX));
+        BoundsJsonArr.Add(MakeShared<FJsonValueNumber>(BoundsMinY));
+        BoundsJsonArr.Add(MakeShared<FJsonValueNumber>(BoundsMaxY));
+        Result->SetArrayField(TEXT("bounds"), BoundsJsonArr);
+    }
     Result->SetStringField(TEXT("message"),
         FString::Printf(TEXT("Scattered %d instances of %s via HISM (Poisson disk, %d candidates, %d slope-rejected, %d no-hit)"),
             ValidInstances.Num(), *Mesh->GetName(), Points.Num(), RejectedSlope, RejectedNoHit));

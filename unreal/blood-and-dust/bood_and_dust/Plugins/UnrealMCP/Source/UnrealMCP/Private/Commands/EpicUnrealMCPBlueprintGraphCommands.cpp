@@ -520,6 +520,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddEnhancedI
     ActionNode->PostPlacedNewNode();
     ActionNode->AllocateDefaultPins();
 
+    // Auto-split the ActionValue pin for Axis2D/3D actions so sub-pins are immediately usable
+    UEdGraphPin* ActionValuePin = ActionNode->FindPin(TEXT("ActionValue"), EGPD_Output);
+    if (ActionValuePin && ActionValuePin->SubPins.Num() == 0 &&
+        ActionValuePin->PinType.PinCategory != UEdGraphSchema_K2::PC_Boolean)
+    {
+        const UEdGraphSchema_K2* K2Schema = Cast<const UEdGraphSchema_K2>(Graph->GetSchema());
+        if (K2Schema)
+        {
+            K2Schema->SplitPin(ActionValuePin, false);
+        }
+    }
+
     // Notify changes
     Graph->NotifyGraphChanged();
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);

@@ -191,7 +191,16 @@
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add unreal/ .claude/ CLAUDE.md MASTER_PLAN.md .gitignore .mcp.json)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: current level state with landscape bombed material + new actors\n\nLevel actor changes, MI_Landscape_Bombed added, MCP plugin updates\n\\(BlueprintGraphCommands, EditorCommands, Bridge\\), Python server updates.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/settings.local.json unreal/blood-and-dust/)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: minor level actor updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: minor level actor updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "mcp__unrealMCP__analyze_blueprint_graph",
+      "mcp__unrealMCP__connect_nodes",
+      "mcp__unrealMCP__set_node_property",
+      "mcp__unrealMCP__compile_blueprint",
+      "mcp__unrealMCP__spawn_blueprint_actor_in_level",
+      "Bash(while ps aux)",
+      "Bash(do sleep 5)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/ CLAUDE.md unreal/)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: landscape distorted material, character input skill, level updates\n\nNew: M_Landscape_Distorted + 2 MIs, unreal-character-input skill.\nUpdated: BP_RobotCharacter, MCP plugin \\(NodePropertyManager, UtilityNodes,\nBlueprintGraphCommands, EditorCommands\\), Python server, CLAUDE.md.\nLevel actors reorganized.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,
