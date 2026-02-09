@@ -188,7 +188,10 @@
       "WebFetch(domain:concretecaptain.com)",
       "WebFetch(domain:galaxy.ai)",
       "mcp__unrealMCP__add_node",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add unreal/ .claude/ CLAUDE.md MASTER_PLAN.md .gitignore .mcp.json)"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add unreal/ .claude/ CLAUDE.md MASTER_PLAN.md .gitignore .mcp.json)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: current level state with landscape bombed material + new actors\n\nLevel actor changes, MI_Landscape_Bombed added, MCP plugin updates\n\\(BlueprintGraphCommands, EditorCommands, Bridge\\), Python server updates.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/settings.local.json unreal/blood-and-dust/)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: minor level actor updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,
