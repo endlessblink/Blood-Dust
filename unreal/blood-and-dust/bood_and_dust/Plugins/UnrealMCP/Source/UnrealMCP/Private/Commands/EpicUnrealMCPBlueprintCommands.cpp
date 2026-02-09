@@ -149,6 +149,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     {
         return HandleSetupLocomotionStateMachine(Params);
     }
+    else if (CommandType == TEXT("set_character_properties"))
+    {
+        return HandleSetCharacterProperties(Params);
+    }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
@@ -2615,4 +2619,103 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	ResultObj->SetNumberField(TEXT("transition_count"), bHasRun ? 4 : 2);
 	ResultObj->SetStringField(TEXT("message"), TEXT("Locomotion state machine created with speed-based transitions"));
 	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterProperties(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	// Load the Blueprint
+	UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+	if (!BP)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load Blueprint: %s"), *BlueprintPath));
+	}
+
+	if (!BP->GeneratedClass)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no GeneratedClass - compile it first"));
+	}
+
+	ACharacter* CDO = Cast<ACharacter>(BP->GeneratedClass->GetDefaultObject());
+	if (!CDO)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint is not a Character Blueprint"));
+	}
+
+	USkeletalMeshComponent* MeshComp = CDO->GetMesh();
+	if (!MeshComp)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Character has no SkeletalMeshComponent"));
+	}
+
+	TArray<FString> ChangesApplied;
+
+	// Set AnimBlueprint if provided
+	FString AnimBPPath;
+	if (Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath) && !AnimBPPath.IsEmpty())
+	{
+		UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+		if (AnimBP && AnimBP->GeneratedClass)
+		{
+			MeshComp->SetAnimInstanceClass(AnimBP->GeneratedClass);
+			ChangesApplied.Add(FString::Printf(TEXT("AnimBP set to %s"), *AnimBPPath));
+		}
+		else
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+		}
+	}
+
+	// Set SkeletalMesh if provided
+	FString MeshPath;
+	if (Params->TryGetStringField(TEXT("skeletal_mesh_path"), MeshPath) && !MeshPath.IsEmpty())
+	{
+		USkeletalMesh* SkelMesh = LoadObject<USkeletalMesh>(nullptr, *MeshPath);
+		if (SkelMesh)
+		{
+			MeshComp->SetSkeletalMesh(SkelMesh);
+			ChangesApplied.Add(FString::Printf(TEXT("SkeletalMesh set to %s"), *MeshPath));
+		}
+		else
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load SkeletalMesh: %s"), *MeshPath));
+		}
+	}
+
+	// Set mesh relative transform if provided
+	double MeshOffsetZ = 0;
+	if (Params->TryGetNumberField(TEXT("mesh_offset_z"), MeshOffsetZ))
+	{
+		FVector Loc = MeshComp->GetRelativeLocation();
+		Loc.Z = MeshOffsetZ;
+		MeshComp->SetRelativeLocation(Loc);
+		ChangesApplied.Add(FString::Printf(TEXT("Mesh Z offset set to %.1f"), MeshOffsetZ));
+	}
+
+	if (ChangesApplied.Num() == 0)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties provided to change (use anim_blueprint_path, skeletal_mesh_path, or mesh_offset_z)"));
+	}
+
+	// Compile and mark dirty
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	BP->GetPackage()->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("blueprint"), BlueprintPath);
+
+	TArray<TSharedPtr<FJsonValue>> ChangesArray;
+	for (const FString& Change : ChangesApplied)
+	{
+		ChangesArray.Add(MakeShared<FJsonValueString>(Change));
+	}
+	Result->SetArrayField(TEXT("changes"), ChangesArray);
+	return Result;
 }

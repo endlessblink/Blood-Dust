@@ -47,4 +47,7 @@ private:
     // AnimBP state machine setup
     TSharedPtr<FJsonObject> HandleSetupLocomotionStateMachine(const TSharedPtr<FJsonObject>& Params);
 
+    // Update existing character blueprint properties (AnimBP, mesh, etc.)
+    TSharedPtr<FJsonObject> HandleSetCharacterProperties(const TSharedPtr<FJsonObject>& Params);
+
 }; 

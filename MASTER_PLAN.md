@@ -55,6 +55,14 @@
 | TASK-010L | Wire Enhanced Input (WASD, mouse look, sprint, attack) | P0 | OPEN | TASK-010J |
 | TASK-010M | Integration test: fully playable character in level | P0 | OPEN | TASK-010K, TASK-010L |
 | TASK-010N | Create `/unreal-character-import` skill | P1 | OPEN | TASK-010M |
+| ~~**FEATURE-012**~~ | ~~**Vegetation scatter with HISM persistence**~~ | **P1** | ✅ **DONE** (2026-02-09) | - |
+| ~~TASK-012A~~ | ~~Fix Poisson disk grid pattern (random seeds)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-012B~~ | ~~Landscape-only trace filter (no floating on rocks)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-012C~~ | ~~HISM persistence (RF_Transactional, AddInstanceComponent, OFPA)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-012D~~ | ~~Import trees from PolyHaven (6 variants + textures + materials)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-012E~~ | ~~Fix tree material slot assignments (per-slot)~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012D |
+| ~~TASK-012F~~ | ~~Create `/vegetation-scatter` skill with all paths~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012A..E |
+| ~~TASK-012G~~ | ~~Fix AnimBP transition crash (AllocateDefaultPins order)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
 
 ## Active Work
 
