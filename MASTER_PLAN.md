@@ -41,17 +41,17 @@
 | TASK-011E | Apply MI to all landscape sections, verify persistence | P1 | OPEN | TASK-011A |
 | TASK-011F | Update landscape skills with reliability fixes | P2 | OPEN | TASK-011A |
 | **FEATURE-010** | **Playable character pipeline: import, rig, animate, play** | **P0** | IN PROGRESS | - |
-| ~~TASK-010A~~ | ~~C++ `import_skeletal_mesh` MCP tool~~ | P0 | DONE | - |
-| ~~TASK-010B~~ | ~~C++ `import_animation` MCP tool~~ | P0 | DONE | TASK-010A |
-| ~~TASK-010C~~ | ~~C++ `create_character_blueprint` MCP tool~~ | P0 | DONE | - |
-| ~~TASK-010D~~ | ~~C++ `create_anim_blueprint` MCP tool~~ | P0 | DONE | TASK-010A |
-| ~~TASK-010E~~ | ~~Python MCP server: register 4 new tools~~ | P0 | DONE | TASK-010A..D |
-| ~~TASK-010F~~ | ~~Rebuild C++ plugin & test each tool~~ | P0 | DONE | TASK-010E |
-| TASK-010G | Import Meshy robot skeletal mesh + textures | P0 | OPEN | TASK-010F |
-| TASK-010H | Import robot animations (walk, idle, run, kick) | P0 | OPEN | TASK-010G |
-| TASK-010I | Create robot PBR material | P0 | OPEN | TASK-010G |
-| TASK-010J | Create Character Blueprint with camera + movement | P0 | OPEN | TASK-010G |
-| TASK-010K | Create Animation Blueprint with state machine | P0 | OPEN | TASK-010H, TASK-010J |
+| ~~TASK-010A~~ | ~~C++ `import_skeletal_mesh` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-010B~~ | ~~C++ `import_animation` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010A |
+| ~~TASK-010C~~ | ~~C++ `create_character_blueprint` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-010D~~ | ~~C++ `create_anim_blueprint` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010A |
+| ~~TASK-010E~~ | ~~Python MCP server: register 4 new tools~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010A..D |
+| ~~TASK-010F~~ | ~~Rebuild C++ plugin & test each tool~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010E |
+| ~~TASK-010G~~ | ~~Import Meshy robot skeletal mesh + textures~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010F |
+| ~~TASK-010H~~ | ~~Import robot animations (walk, idle, run, kick)~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010G |
+| ~~TASK-010I~~ | ~~Create robot PBR material~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010G |
+| ~~TASK-010J~~ | ~~Create Character Blueprint with camera + movement~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010G |
+| ~~TASK-010K~~ | ~~Create Animation Blueprint (shell)~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010H, TASK-010J |
 | TASK-010L | Wire Enhanced Input (WASD, mouse look, sprint, attack) | P0 | OPEN | TASK-010J |
 | TASK-010M | Integration test: fully playable character in level | P0 | OPEN | TASK-010K, TASK-010L |
 | TASK-010N | Create `/unreal-character-import` skill | P1 | OPEN | TASK-010M |
@@ -120,7 +120,7 @@ Based on TASK-011C research, implement the chosen approach. Currently building C
 
 ### FEATURE-010: Playable Character Pipeline — Import, Rig, Animate, Play
 
-**Status**: IN PROGRESS (research complete, implementation pending)
+**Status**: IN PROGRESS (010A-010K DONE — assets imported, BP + ABP created; 010L-010N remaining)
 **Priority**: P0
 **Goal**: Import the Meshy AI robot character into Unreal Engine 5.7 via MCP tools and make it fully playable with third-person camera, movement, sprint, and attack — matching the Godot implementation.
 

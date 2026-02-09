@@ -58,6 +58,8 @@
 #include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
+#include "Materials/MaterialExpressionNoise.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
 #include "MaterialEditingLibrary.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -87,6 +89,9 @@
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
+
+// HISM for foliage scatter
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 
 FEpicUnrealMCPEditorCommands::FEpicUnrealMCPEditorCommands()
 {
@@ -226,6 +231,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     else if (CommandType == TEXT("set_nanite_enabled"))
     {
         return HandleSetNaniteEnabled(Params);
+    }
+    // HISM foliage scatter
+    else if (CommandType == TEXT("scatter_foliage"))
+    {
+        return HandleScatterFoliage(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -1930,28 +1940,30 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     if (!MaterialPath.EndsWith(TEXT("/"))) MaterialPath += TEXT("/");
 
     // Texture paths
-    FString RockD, RockN, MudD, MudN, GrassD, GrassNPath, MacroTexPath;
+    FString RockD, RockN, MudD, MudN, GrassD, GrassNPath;
     Params->TryGetStringField(TEXT("rock_d"), RockD);
     Params->TryGetStringField(TEXT("rock_n"), RockN);
     Params->TryGetStringField(TEXT("mud_d"), MudD);
     Params->TryGetStringField(TEXT("mud_n"), MudN);
     Params->TryGetStringField(TEXT("grass_d"), GrassD);
     Params->TryGetStringField(TEXT("grass_n"), GrassNPath);
-    Params->TryGetStringField(TEXT("macro_texture"), MacroTexPath);
-    if (MacroTexPath.IsEmpty()) MacroTexPath = MudD; // fallback
 
     // Scalar parameters with defaults
-    double GroundUVScale = 0.002;
-    double MacroScale1Val = 0.3;
-    double MacroScale2Val = 2.5;
-    double MacroAmountVal = 0.4;
+    double DetailUVScale = 0.004;
+    double MacroUVScale = 0.00025;
+    double BombOffsetX = 23.17;
+    double BombOffsetY = 47.11;
+    double NoiseScale = 0.001;
+    double MacroBlendAmount = 0.3;
     double SlopeSharpness = 3.0;
     double GrassAmount = 0.5;
     double RoughnessVal = 0.85;
-    Params->TryGetNumberField(TEXT("ground_uv_scale"), GroundUVScale);
-    Params->TryGetNumberField(TEXT("macro_scale_1"), MacroScale1Val);
-    Params->TryGetNumberField(TEXT("macro_scale_2"), MacroScale2Val);
-    Params->TryGetNumberField(TEXT("macro_amount"), MacroAmountVal);
+    Params->TryGetNumberField(TEXT("detail_uv_scale"), DetailUVScale);
+    Params->TryGetNumberField(TEXT("macro_uv_scale"), MacroUVScale);
+    Params->TryGetNumberField(TEXT("bomb_offset_x"), BombOffsetX);
+    Params->TryGetNumberField(TEXT("bomb_offset_y"), BombOffsetY);
+    Params->TryGetNumberField(TEXT("noise_scale"), NoiseScale);
+    Params->TryGetNumberField(TEXT("macro_blend_amount"), MacroBlendAmount);
     Params->TryGetNumberField(TEXT("slope_sharpness"), SlopeSharpness);
     Params->TryGetNumberField(TEXT("grass_amount"), GrassAmount);
     Params->TryGetNumberField(TEXT("roughness"), RoughnessVal);
@@ -1986,8 +1998,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         return Cast<UTexture>(UEditorAssetLibrary::LoadAsset(Path));
     };
 
-    // Layout constants: 300px horizontal, 150px vertical spacing
-    // Flow: left (-1800) to right (900), material output at right
     auto AddExpr = [Mat](UMaterialExpression* Expr, float X, float Y) {
         Expr->MaterialExpressionEditorX = X;
         Expr->MaterialExpressionEditorY = Y;
@@ -1996,54 +2006,73 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     };
 
     // =================================================================
-    // COLUMN 1 (-1800): WorldPosition
+    // SECTION 1: World UVs (6 nodes)
+    // WorldPos -> MaskRG(XY) -> DetailUV = Multiply(MaskRG, 0.004)
+    //                        -> MacroUV  = Multiply(MaskRG, 0.00025)
     // =================================================================
     auto* WorldPos = NewObject<UMaterialExpressionWorldPosition>(Mat);
-    AddExpr(WorldPos, -1800, 0);
+    AddExpr(WorldPos, -2400, 0);
 
-    // =================================================================
-    // COLUMN 2 (-1500): ComponentMask + UV scale constants
-    // =================================================================
     auto* MaskRG = NewObject<UMaterialExpressionComponentMask>(Mat);
     MaskRG->R = true; MaskRG->G = true; MaskRG->B = false; MaskRG->A = false;
     MaskRG->Input.Connect(0, WorldPos);
-    AddExpr(MaskRG, -1500, 0);
+    AddExpr(MaskRG, -2100, 0);
 
-    auto* GroundScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
-    GroundScaleConst->R = GroundUVScale;
-    AddExpr(GroundScaleConst, -1500, -150);
+    auto* DetailScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
+    DetailScaleConst->R = DetailUVScale;
+    AddExpr(DetailScaleConst, -2100, 150);
 
-    // =================================================================
-    // COLUMN 3 (-1200): UV Multiply + Macro scale constants
-    // =================================================================
-    auto* GroundUV = NewObject<UMaterialExpressionMultiply>(Mat);
-    GroundUV->A.Connect(0, MaskRG);
-    GroundUV->B.Connect(0, GroundScaleConst);
-    AddExpr(GroundUV, -1200, 0);
+    auto* MacroScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
+    MacroScaleConst->R = MacroUVScale;
+    AddExpr(MacroScaleConst, -2100, 300);
 
-    auto* MacroScaleC1 = NewObject<UMaterialExpressionConstant>(Mat);
-    MacroScaleC1->R = MacroScale1Val;
-    AddExpr(MacroScaleC1, -1200, 700);
+    auto* DetailUV = NewObject<UMaterialExpressionMultiply>(Mat);
+    DetailUV->A.Connect(0, MaskRG);
+    DetailUV->B.Connect(0, DetailScaleConst);
+    AddExpr(DetailUV, -1800, 0);
 
-    auto* MacroScaleC2 = NewObject<UMaterialExpressionConstant>(Mat);
-    MacroScaleC2->R = MacroScale2Val;
-    AddExpr(MacroScaleC2, -1200, 850);
+    auto* MacroUV = NewObject<UMaterialExpressionMultiply>(Mat);
+    MacroUV->A.Connect(0, MaskRG);
+    MacroUV->B.Connect(0, MacroScaleConst);
+    AddExpr(MacroUV, -1800, 300);
 
     // =================================================================
-    // COLUMN 4 (-900): Macro UV multiplies
+    // SECTION 2: Bombing UV Offset (2 nodes)
+    // BombOffset = Constant2Vector(23.17, 47.11)
+    // BombedUV = Add(DetailUV, BombOffset)
     // =================================================================
-    auto* MacroUV1 = NewObject<UMaterialExpressionMultiply>(Mat);
-    MacroUV1->A.Connect(0, GroundUV);
-    MacroUV1->B.Connect(0, MacroScaleC1);
-    AddExpr(MacroUV1, -900, 700);
+    auto* BombOffset = NewObject<UMaterialExpressionConstant2Vector>(Mat);
+    BombOffset->R = BombOffsetX;
+    BombOffset->G = BombOffsetY;
+    AddExpr(BombOffset, -1800, 600);
 
-    auto* MacroUV2 = NewObject<UMaterialExpressionMultiply>(Mat);
-    MacroUV2->A.Connect(0, GroundUV);
-    MacroUV2->B.Connect(0, MacroScaleC2);
-    AddExpr(MacroUV2, -900, 850);
+    auto* BombedUV = NewObject<UMaterialExpressionAdd>(Mat);
+    BombedUV->A.Connect(0, DetailUV);
+    BombedUV->B.Connect(0, BombOffset);
+    AddExpr(BombedUV, -1500, 600);
 
     // =================================================================
-    // COLUMN 5 (-600): Texture Samples (ground + macro)
+    // SECTION 3: Noise Blend Mask (1 node)
+    // NoiseMask = Noise(WorldPos, GradientALU, Scale=0.001)
+    // =================================================================
+    auto* NoiseMask = NewObject<UMaterialExpressionNoise>(Mat);
+    NoiseMask->NoiseFunction = NOISEFUNCTION_GradientALU;
+    NoiseMask->Scale = NoiseScale;
+    NoiseMask->Quality = 1;
+    NoiseMask->Levels = 1;
+    NoiseMask->OutputMin = 0.0f;
+    NoiseMask->OutputMax = 1.0f;
+    NoiseMask->bTurbulence = false;
+    NoiseMask->bTiling = false;
+    NoiseMask->LevelScale = 2.0f;
+    NoiseMask->Position.Connect(0, WorldPos);
+    AddExpr(NoiseMask, -1500, 800);
+
+    // =================================================================
+    // SECTION 4: Per-Layer Texture Bombing (18 nodes + 1 shared param)
+    // Each layer: TexA(Detail) + TexB(Bombed) -> Lerp(NoiseMask) -> BombBlend
+    //             MacroSample(MacroUV) -> Lerp(BombBlend, Macro, MacroAmt)
+    //             NormalSample(DetailUV)
     // =================================================================
     auto CreateTexSample = [&](UTexture* Tex, EMaterialSamplerType SamplerType,
                                UMaterialExpression* UV, float X, float Y) -> UMaterialExpressionTextureSample* {
@@ -2056,136 +2085,157 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         return S;
     };
 
-    // Ground textures (all share GroundUV)
-    auto* RockDSample  = CreateTexSample(LoadTex(RockD),     SAMPLERTYPE_Color,  GroundUV, -600, -400);
-    auto* RockNSample  = CreateTexSample(LoadTex(RockN),     SAMPLERTYPE_Normal, GroundUV, -600, -250);
-    auto* MudDSample   = CreateTexSample(LoadTex(MudD),      SAMPLERTYPE_Color,  GroundUV, -600, -100);
-    auto* MudNSample   = CreateTexSample(LoadTex(MudN),      SAMPLERTYPE_Normal, GroundUV, -600, 50);
-    auto* GrassDSample = CreateTexSample(LoadTex(GrassD),    SAMPLERTYPE_Color,  GroundUV, -600, 200);
-    auto* GrassNSample = CreateTexSample(LoadTex(GrassNPath),SAMPLERTYPE_Normal, GroundUV, -600, 350);
+    // Shared MacroBlendAmount parameter
+    auto* MacroAmtParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    MacroAmtParam->ParameterName = FName(TEXT("MacroBlendAmount"));
+    MacroAmtParam->DefaultValue = MacroBlendAmount;
+    AddExpr(MacroAmtParam, -900, 1200);
 
-    // Macro variation samples (each at different UV scale)
-    UTexture* MacroTex = LoadTex(MacroTexPath);
-    auto* MacroSample1 = CreateTexSample(MacroTex, SAMPLERTYPE_Color, MacroUV1, -600, 700);
-    auto* MacroSample2 = CreateTexSample(MacroTex, SAMPLERTYPE_Color, MacroUV2, -600, 850);
+    // Load textures
+    UTexture* TexRockD = LoadTex(RockD);
+    UTexture* TexRockN = LoadTex(RockN);
+    UTexture* TexMudD = LoadTex(MudD);
+    UTexture* TexMudN = LoadTex(MudN);
+    UTexture* TexGrassD = LoadTex(GrassD);
+    UTexture* TexGrassN = LoadTex(GrassNPath);
+
+    // Per-layer bombing lambda
+    // Returns: [0]=bombed+macro blended diffuse, [1]=normal sample
+    struct FLayerResult {
+        UMaterialExpression* Diffuse = nullptr;
+        UMaterialExpression* Normal = nullptr;
+    };
+
+    auto BuildBombedLayer = [&](UTexture* DiffTex, UTexture* NormTex, float BaseY) -> FLayerResult {
+        FLayerResult Result;
+        if (!DiffTex) return Result;
+
+        // Sample A: diffuse at DetailUV
+        auto* TexA = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DetailUV, -1200, BaseY);
+        // Sample B: diffuse at BombedUV
+        auto* TexB = CreateTexSample(DiffTex, SAMPLERTYPE_Color, BombedUV, -1200, BaseY + 150);
+        // Bomb blend: Lerp(A, B, NoiseMask)
+        if (TexA && TexB)
+        {
+            auto* BombBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+            BombBlend->A.Connect(0, TexA);
+            BombBlend->B.Connect(0, TexB);
+            BombBlend->Alpha.Connect(0, NoiseMask);
+            AddExpr(BombBlend, -900, BaseY);
+
+            // Sample C: diffuse at MacroUV
+            auto* MacroSamp = CreateTexSample(DiffTex, SAMPLERTYPE_Color, MacroUV, -1200, BaseY + 300);
+            if (MacroSamp)
+            {
+                // Macro blend: Lerp(BombBlend, MacroSample, MacroAmt)
+                auto* MacroBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+                MacroBlend->A.Connect(0, BombBlend);
+                MacroBlend->B.Connect(0, MacroSamp);
+                MacroBlend->Alpha.Connect(0, MacroAmtParam);
+                AddExpr(MacroBlend, -600, BaseY);
+                Result.Diffuse = MacroBlend;
+            }
+            else
+            {
+                Result.Diffuse = BombBlend;
+            }
+        }
+        else if (TexA)
+        {
+            Result.Diffuse = TexA;
+        }
+
+        // Normal sample at DetailUV
+        if (NormTex)
+        {
+            Result.Normal = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DetailUV, -1200, BaseY + 450);
+        }
+
+        return Result;
+    };
+
+    // Build layers: Rock at Y=-600, Mud at Y=0, Grass at Y=600
+    FLayerResult RockLayer = BuildBombedLayer(TexRockD, TexRockN, -600);
+    FLayerResult MudLayer = BuildBombedLayer(TexMudD, TexMudN, 0);
+    FLayerResult GrassLayer = BuildBombedLayer(TexGrassD, TexGrassN, 600);
 
     // =================================================================
-    // COLUMN 6 (-300): Macro blend + Slope detection
+    // SECTION 5: Slope Detection (5 nodes)
+    // VertexNormalWS -> MaskZ(B) -> Abs -> Power(SlopeSharpness) -> SlopeMask
     // =================================================================
-
-    // Macro variation: sample1 * sample2 -> raw macro mask
-    UMaterialExpressionMultiply* MacroRaw = nullptr;
-    if (MacroSample1 && MacroSample2)
-    {
-        MacroRaw = NewObject<UMaterialExpressionMultiply>(Mat);
-        MacroRaw->A.Connect(0, MacroSample1);
-        MacroRaw->B.Connect(0, MacroSample2);
-        AddExpr(MacroRaw, -300, 770);
-    }
-
-    // Macro amount parameter + Lerp(1, MacroRaw, amount) for controllable intensity
-    UMaterialExpressionLinearInterpolate* MacroFinal = nullptr;
-    if (MacroRaw)
-    {
-        auto* MacroParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
-        MacroParam->ParameterName = FName(TEXT("MacroVariation"));
-        MacroParam->DefaultValue = MacroAmountVal;
-        AddExpr(MacroParam, -300, 1000);
-
-        auto* OneConst = NewObject<UMaterialExpressionConstant>(Mat);
-        OneConst->R = 1.0f;
-        AddExpr(OneConst, -300, 1100);
-
-        MacroFinal = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-        MacroFinal->A.Connect(0, OneConst);      // no effect when amount=0
-        MacroFinal->B.Connect(0, MacroRaw);       // full macro when amount=1
-        MacroFinal->Alpha.Connect(0, MacroParam);
-        AddExpr(MacroFinal, 0, 900);
-    }
-
-    // Slope detection: VertexNormalWS.Z -> Abs -> Power(sharpness)
     auto* VNormal = NewObject<UMaterialExpressionVertexNormalWS>(Mat);
-    AddExpr(VNormal, -300, -700);
+    AddExpr(VNormal, -300, -1200);
 
     auto* MaskZ = NewObject<UMaterialExpressionComponentMask>(Mat);
     MaskZ->R = false; MaskZ->G = false; MaskZ->B = true; MaskZ->A = false;
     MaskZ->Input.Connect(0, VNormal);
-    AddExpr(MaskZ, 0, -700);
+    AddExpr(MaskZ, 0, -1200);
 
     auto* AbsNode = NewObject<UMaterialExpressionAbs>(Mat);
     AbsNode->Input.Connect(0, MaskZ);
-    AddExpr(AbsNode, 0, -550);
+    AddExpr(AbsNode, 0, -1050);
 
     auto* SlopeParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     SlopeParam->ParameterName = FName(TEXT("SlopeSharpness"));
     SlopeParam->DefaultValue = SlopeSharpness;
-    AddExpr(SlopeParam, 0, -850);
+    AddExpr(SlopeParam, 0, -1350);
 
     auto* SlopePow = NewObject<UMaterialExpressionPower>(Mat);
     SlopePow->Base.Connect(0, AbsNode);
     SlopePow->Exponent.Connect(0, SlopeParam);
-    AddExpr(SlopePow, 300, -700);
-
-    // Grass mask from MacroSample1 R channel (reuse macro sample as noise source)
-    UMaterialExpressionComponentMask* GrassNoiseR = nullptr;
-    UMaterialExpressionScalarParameter* GrassParam = nullptr;
-    UMaterialExpressionMultiply* GrassMask = nullptr;
-    if (MacroSample1)
-    {
-        GrassNoiseR = NewObject<UMaterialExpressionComponentMask>(Mat);
-        GrassNoiseR->R = true; GrassNoiseR->G = false; GrassNoiseR->B = false; GrassNoiseR->A = false;
-        GrassNoiseR->Input.Connect(0, MacroSample1);
-        AddExpr(GrassNoiseR, -300, 500);
-
-        GrassParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
-        GrassParam->ParameterName = FName(TEXT("GrassAmount"));
-        GrassParam->DefaultValue = GrassAmount;
-        AddExpr(GrassParam, -300, 600);
-
-        GrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
-        GrassMask->A.Connect(0, GrassNoiseR);
-        GrassMask->B.Connect(0, GrassParam);
-        AddExpr(GrassMask, 0, 500);
-    }
+    AddExpr(SlopePow, 300, -1200);
 
     // =================================================================
-    // COLUMN 7 (0-300): BaseColor blend chain
+    // SECTION 6: Grass Noise Mask (4 nodes)
+    // NoiseMask -> Power(2.0) -> GrassNoiseThresh
+    // GrassParam("GrassAmount", 0.5) -> Multiply(GrassNoiseThresh, GrassParam) -> GrassMask
     // =================================================================
+    auto* GrassNoisePow = NewObject<UMaterialExpressionPower>(Mat);
+    GrassNoisePow->Base.Connect(0, NoiseMask);
+    // Use a constant for the exponent
+    auto* GrassPowConst = NewObject<UMaterialExpressionConstant>(Mat);
+    GrassPowConst->R = 2.0f;
+    AddExpr(GrassPowConst, -300, 900);
+    GrassNoisePow->Exponent.Connect(0, GrassPowConst);
+    AddExpr(GrassNoisePow, 0, 800);
 
+    auto* GrassParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    GrassParam->ParameterName = FName(TEXT("GrassAmount"));
+    GrassParam->DefaultValue = GrassAmount;
+    AddExpr(GrassParam, 0, 1000);
+
+    auto* GrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
+    GrassMask->A.Connect(0, GrassNoisePow);
+    GrassMask->B.Connect(0, GrassParam);
+    AddExpr(GrassMask, 300, 800);
+
+    // =================================================================
+    // SECTION 7: BaseColor + Normal Blend Chains (4 nodes)
+    // SlopeBC = Lerp(Rock, Mud, SlopeMask) -> GrassBC = Lerp(SlopeBC, Grass, GrassMask)
+    // SlopeN  = Lerp(RockN, MudN, SlopeMask) -> GrassN = Lerp(SlopeN, GrassN, GrassMask)
+    // =================================================================
     UMaterialExpression* FinalBC = nullptr;
 
-    // Slope blend: Lerp(Rock, Mud, slope_mask) — rock on steep, mud on flat
-    if (RockDSample && MudDSample)
+    if (RockLayer.Diffuse && MudLayer.Diffuse)
     {
         auto* SlopeBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-        SlopeBC->A.Connect(0, RockDSample);
-        SlopeBC->B.Connect(0, MudDSample);
+        SlopeBC->A.Connect(0, RockLayer.Diffuse);
+        SlopeBC->B.Connect(0, MudLayer.Diffuse);
         SlopeBC->Alpha.Connect(0, SlopePow);
-        AddExpr(SlopeBC, 0, -200);
+        AddExpr(SlopeBC, 300, -200);
         FinalBC = SlopeBC;
     }
-    else if (RockDSample) { FinalBC = RockDSample; }
-    else if (MudDSample) { FinalBC = MudDSample; }
+    else if (RockLayer.Diffuse) { FinalBC = RockLayer.Diffuse; }
+    else if (MudLayer.Diffuse) { FinalBC = MudLayer.Diffuse; }
 
-    // Grass overlay
-    if (GrassDSample && GrassMask && FinalBC)
+    if (GrassLayer.Diffuse && FinalBC)
     {
         auto* GrassBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         GrassBC->A.Connect(0, FinalBC);
-        GrassBC->B.Connect(0, GrassDSample);
+        GrassBC->B.Connect(0, GrassLayer.Diffuse);
         GrassBC->Alpha.Connect(0, GrassMask);
-        AddExpr(GrassBC, 300, -200);
+        AddExpr(GrassBC, 600, -200);
         FinalBC = GrassBC;
-    }
-
-    // Apply macro variation to BaseColor
-    if (MacroFinal && FinalBC)
-    {
-        auto* MacroApply = NewObject<UMaterialExpressionMultiply>(Mat);
-        MacroApply->A.Connect(0, FinalBC);
-        MacroApply->B.Connect(0, MacroFinal);
-        AddExpr(MacroApply, 600, -200);
-        FinalBC = MacroApply;
     }
 
     if (FinalBC)
@@ -2193,31 +2243,28 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         Mat->GetEditorOnlyData()->BaseColor.Connect(0, FinalBC);
     }
 
-    // =================================================================
-    // COLUMN 7-8 (0-600): Normal blend chain (mirrors BaseColor)
-    // =================================================================
-
+    // Normal blend chain
     UMaterialExpression* FinalN = nullptr;
 
-    if (RockNSample && MudNSample)
+    if (RockLayer.Normal && MudLayer.Normal)
     {
         auto* SlopeN = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-        SlopeN->A.Connect(0, RockNSample);
-        SlopeN->B.Connect(0, MudNSample);
+        SlopeN->A.Connect(0, RockLayer.Normal);
+        SlopeN->B.Connect(0, MudLayer.Normal);
         SlopeN->Alpha.Connect(0, SlopePow);
-        AddExpr(SlopeN, 0, 1400);
+        AddExpr(SlopeN, 300, 1400);
         FinalN = SlopeN;
     }
-    else if (RockNSample) { FinalN = RockNSample; }
-    else if (MudNSample) { FinalN = MudNSample; }
+    else if (RockLayer.Normal) { FinalN = RockLayer.Normal; }
+    else if (MudLayer.Normal) { FinalN = MudLayer.Normal; }
 
-    if (GrassNSample && GrassMask && FinalN)
+    if (GrassLayer.Normal && FinalN)
     {
         auto* GrassNLerp = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         GrassNLerp->A.Connect(0, FinalN);
-        GrassNLerp->B.Connect(0, GrassNSample);
-        GrassNLerp->Alpha.Connect(0, GrassMask); // reuse same mask (single node, multiple outputs OK)
-        AddExpr(GrassNLerp, 300, 1400);
+        GrassNLerp->B.Connect(0, GrassLayer.Normal);
+        GrassNLerp->Alpha.Connect(0, GrassMask);
+        AddExpr(GrassNLerp, 600, 1400);
         FinalN = GrassNLerp;
     }
 
@@ -2227,9 +2274,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     }
 
     // =================================================================
-    // COLUMN 9 (900): Roughness & Metallic outputs
+    // SECTION 8: Material Outputs — Roughness & Metallic
     // =================================================================
-
     auto* RoughParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     RoughParam->ParameterName = FName(TEXT("Roughness"));
     RoughParam->DefaultValue = RoughnessVal;
@@ -2244,7 +2290,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // =========================================================
     // FINALIZE
     // =========================================================
-
     Mat->PostEditChange();
     Package->MarkPackageDirty();
     IAssetRegistry::Get()->AssetCreated(Mat);
@@ -2263,7 +2308,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("name"), MaterialName);
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material created atomically with macro variation anti-tiling, slope blend, grass overlay, normals, roughness, metallic"));
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material created with texture bombing anti-tiling, multi-scale UV blending, slope blend, grass overlay, normals, roughness, metallic"));
 
     return Result;
 }
@@ -3883,5 +3928,374 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetNaniteEnabled(con
             bEnabled ? TEXT("enabled") : TEXT("disabled"),
             *Mesh->GetName(),
             bWasEnabled ? TEXT("enabled") : TEXT("disabled")));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    // --- Parse required parameters ---
+    FString MeshPath;
+    if (!Params->TryGetStringField(TEXT("mesh_path"), MeshPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required 'mesh_path' parameter"));
+    }
+
+    if (!Params->HasField(TEXT("center")))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required 'center' parameter [x, y]"));
+    }
+    const TArray<TSharedPtr<FJsonValue>>& CenterArr = Params->GetArrayField(TEXT("center"));
+    if (CenterArr.Num() < 2)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'center' must have at least 2 elements [x, y]"));
+    }
+    double CenterX = CenterArr[0]->AsNumber();
+    double CenterY = CenterArr[1]->AsNumber();
+
+    double Radius = 5000.0;
+    Params->TryGetNumberField(TEXT("radius"), Radius);
+    if (Radius <= 0.0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'radius' must be positive"));
+    }
+
+    // --- Parse optional parameters ---
+    int32 Count = 100;
+    double CountD = 100.0;
+    if (Params->TryGetNumberField(TEXT("count"), CountD))
+    {
+        Count = FMath::Clamp((int32)CountD, 1, 50000);
+    }
+
+    double MinDistance = 50.0;
+    Params->TryGetNumberField(TEXT("min_distance"), MinDistance);
+    MinDistance = FMath::Max(MinDistance, 1.0);
+
+    double MaxSlope = 30.0;
+    Params->TryGetNumberField(TEXT("max_slope"), MaxSlope);
+
+    bool bAlignToSurface = false;
+    Params->TryGetBoolField(TEXT("align_to_surface"), bAlignToSurface);
+
+    bool bRandomYaw = true;
+    Params->TryGetBoolField(TEXT("random_yaw"), bRandomYaw);
+
+    double ScaleMin = 1.0, ScaleMax = 1.0;
+    if (Params->HasField(TEXT("scale_range")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>& ScaleArr = Params->GetArrayField(TEXT("scale_range"));
+        if (ScaleArr.Num() >= 2)
+        {
+            ScaleMin = ScaleArr[0]->AsNumber();
+            ScaleMax = ScaleArr[1]->AsNumber();
+        }
+    }
+
+    double ZOffset = 0.0;
+    Params->TryGetNumberField(TEXT("z_offset"), ZOffset);
+
+    FString ActorName = TEXT("HISM_Foliage");
+    Params->TryGetStringField(TEXT("actor_name"), ActorName);
+
+    double CullDistance = 0.0;
+    Params->TryGetNumberField(TEXT("cull_distance"), CullDistance);
+
+    FString MaterialPath;
+    Params->TryGetStringField(TEXT("material_path"), MaterialPath);
+
+    // --- Load mesh ---
+    UStaticMesh* Mesh = Cast<UStaticMesh>(UEditorAssetLibrary::LoadAsset(MeshPath));
+    if (!Mesh)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Static mesh not found: %s"), *MeshPath));
+    }
+
+    // --- Phase A: Poisson Disk Sampling (grid-accelerated) ---
+    // Grid cell size = MinDistance / sqrt(2) for optimal Poisson disk coverage
+    const double CellSize = MinDistance / FMath::Sqrt(2.0);
+    const double AreaSize = Radius * 2.0;
+    const int32 GridDim = FMath::CeilToInt(AreaSize / CellSize);
+
+    // Safety cap: 4M cells max (~16MB memory)
+    if ((int64)GridDim * GridDim > 4000000)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Grid too large: %dx%d cells. Increase min_distance or decrease radius."), GridDim, GridDim));
+    }
+
+    // Grid stores index into Points array (-1 = empty)
+    TArray<int32> Grid;
+    Grid.Init(-1, GridDim * GridDim);
+
+    struct FPoint2D { double X; double Y; };
+    TArray<FPoint2D> Points;
+    Points.Reserve(Count);
+
+    // Active list for dart-throwing
+    TArray<int32> ActiveList;
+    ActiveList.Reserve(Count);
+
+    // Lambda to get grid index from world-relative position
+    auto GridIndex = [&](double PX, double PY) -> int32
+    {
+        int32 GX = FMath::Clamp((int32)((PX - (CenterX - Radius)) / CellSize), 0, GridDim - 1);
+        int32 GY = FMath::Clamp((int32)((PY - (CenterY - Radius)) / CellSize), 0, GridDim - 1);
+        return GY * GridDim + GX;
+    };
+
+    // Seed first point at center
+    {
+        FPoint2D P = { CenterX, CenterY };
+        int32 Idx = Points.Add(P);
+        ActiveList.Add(Idx);
+        Grid[GridIndex(P.X, P.Y)] = Idx;
+    }
+
+    const int32 MaxAttempts = 30; // Standard Poisson disk attempts per point
+
+    while (ActiveList.Num() > 0 && Points.Num() < Count)
+    {
+        // Pick random active point
+        int32 ActiveIdx = FMath::RandRange(0, ActiveList.Num() - 1);
+        int32 PointIdx = ActiveList[ActiveIdx];
+        const FPoint2D& BasePoint = Points[PointIdx];
+
+        bool bFoundCandidate = false;
+        for (int32 Attempt = 0; Attempt < MaxAttempts; ++Attempt)
+        {
+            // Generate candidate in annulus [MinDistance, 2*MinDistance]
+            double Angle = FMath::FRandRange(0.0, 2.0 * PI);
+            double Dist = FMath::FRandRange(MinDistance, 2.0 * MinDistance);
+            double CandX = BasePoint.X + Dist * FMath::Cos(Angle);
+            double CandY = BasePoint.Y + Dist * FMath::Sin(Angle);
+
+            // Check bounds (must be within scatter circle)
+            double DX = CandX - CenterX;
+            double DY = CandY - CenterY;
+            if (DX * DX + DY * DY > Radius * Radius)
+            {
+                continue;
+            }
+
+            // Check grid neighbors (5x5 around candidate cell)
+            int32 CandGX = FMath::Clamp((int32)((CandX - (CenterX - Radius)) / CellSize), 0, GridDim - 1);
+            int32 CandGY = FMath::Clamp((int32)((CandY - (CenterY - Radius)) / CellSize), 0, GridDim - 1);
+
+            bool bTooClose = false;
+            for (int32 NY = FMath::Max(0, CandGY - 2); NY <= FMath::Min(GridDim - 1, CandGY + 2) && !bTooClose; ++NY)
+            {
+                for (int32 NX = FMath::Max(0, CandGX - 2); NX <= FMath::Min(GridDim - 1, CandGX + 2) && !bTooClose; ++NX)
+                {
+                    int32 NIdx = NY * GridDim + NX;
+                    if (Grid[NIdx] >= 0)
+                    {
+                        const FPoint2D& Neighbor = Points[Grid[NIdx]];
+                        double NDX = CandX - Neighbor.X;
+                        double NDY = CandY - Neighbor.Y;
+                        if (NDX * NDX + NDY * NDY < MinDistance * MinDistance)
+                        {
+                            bTooClose = true;
+                        }
+                    }
+                }
+            }
+
+            if (!bTooClose)
+            {
+                FPoint2D NewPoint = { CandX, CandY };
+                int32 NewIdx = Points.Add(NewPoint);
+                ActiveList.Add(NewIdx);
+                Grid[GridIndex(CandX, CandY)] = NewIdx;
+                bFoundCandidate = true;
+                break;
+            }
+        }
+
+        if (!bFoundCandidate)
+        {
+            // Remove exhausted point from active list
+            ActiveList.RemoveAtSwap(ActiveIdx);
+        }
+    }
+
+    // --- Phase B: Line trace each point, filter by slope ---
+    struct FInstanceData
+    {
+        FVector Location;
+        FRotator Rotation;
+        FVector Scale;
+    };
+    TArray<FInstanceData> ValidInstances;
+    ValidInstances.Reserve(Points.Num());
+
+    FCollisionQueryParams TraceParams(FName(TEXT("MCPFoliageScatterTrace")), true);
+    TraceParams.bReturnPhysicalMaterial = false;
+
+    int32 RejectedSlope = 0;
+    int32 RejectedNoHit = 0;
+
+    double MaxSlopeRad = FMath::DegreesToRadians(MaxSlope);
+    double MaxSlopeCosine = FMath::Cos(MaxSlopeRad);
+
+    for (const FPoint2D& Pt : Points)
+    {
+        FVector TraceStart(Pt.X, Pt.Y, 100000.0);
+        FVector TraceEnd(Pt.X, Pt.Y, -100000.0);
+        FHitResult HitResult;
+
+        bool bHit = World->LineTraceSingleByChannel(
+            HitResult, TraceStart, TraceEnd, ECC_WorldStatic, TraceParams
+        );
+
+        if (!bHit)
+        {
+            ++RejectedNoHit;
+            continue;
+        }
+
+        // Check slope: dot(Normal, Up) gives cosine of slope angle
+        // Normal.Z == cos(slope_angle), reject if angle > MaxSlope
+        double SlopeCosine = HitResult.ImpactNormal.Z;
+        if (SlopeCosine < MaxSlopeCosine)
+        {
+            ++RejectedSlope;
+            continue;
+        }
+
+        // Build instance transform
+        FInstanceData Inst;
+        Inst.Location = HitResult.Location + FVector(0, 0, ZOffset);
+
+        // Rotation
+        if (bAlignToSurface)
+        {
+            // Align Z-axis to surface normal
+            FVector Up = HitResult.ImpactNormal;
+            FVector Forward = FVector::CrossProduct(FVector::RightVector, Up);
+            if (Forward.IsNearlyZero())
+            {
+                Forward = FVector::CrossProduct(FVector::ForwardVector, Up);
+            }
+            Forward.Normalize();
+            FVector Right = FVector::CrossProduct(Up, Forward);
+            Inst.Rotation = FRotationMatrix::MakeFromXZ(Forward, Up).Rotator();
+        }
+        else
+        {
+            Inst.Rotation = FRotator::ZeroRotator;
+        }
+
+        if (bRandomYaw)
+        {
+            Inst.Rotation.Yaw = FMath::FRandRange(0.0, 360.0);
+        }
+
+        // Scale
+        double UniformScale = FMath::FRandRange(ScaleMin, ScaleMax);
+        Inst.Scale = FVector(UniformScale);
+
+        ValidInstances.Add(Inst);
+    }
+
+    if (ValidInstances.Num() == 0)
+    {
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetNumberField(TEXT("instance_count"), 0);
+        Result->SetNumberField(TEXT("candidates_generated"), Points.Num());
+        Result->SetNumberField(TEXT("rejected_slope"), RejectedSlope);
+        Result->SetNumberField(TEXT("rejected_no_hit"), RejectedNoHit);
+        Result->SetStringField(TEXT("message"), TEXT("No valid placement positions found after filtering"));
+        return Result;
+    }
+
+    // --- Phase C: Create AActor + HISM component, batch AddInstances ---
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Name = *ActorName;
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
+    AActor* ContainerActor = World->SpawnActor<AActor>(
+        AActor::StaticClass(), FVector(CenterX, CenterY, 0), FRotator::ZeroRotator, SpawnParams
+    );
+
+    if (!ContainerActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn container actor"));
+    }
+
+    // Set root component
+    USceneComponent* RootComp = NewObject<USceneComponent>(ContainerActor, TEXT("Root"));
+    ContainerActor->SetRootComponent(RootComp);
+    RootComp->RegisterComponent();
+
+    // Create HISM component
+    UHierarchicalInstancedStaticMeshComponent* HISM = NewObject<UHierarchicalInstancedStaticMeshComponent>(
+        ContainerActor, *FString::Printf(TEXT("HISM_%s"), *Mesh->GetName())
+    );
+    HISM->SetStaticMesh(Mesh);
+    HISM->SetMobility(EComponentMobility::Static);
+    HISM->AttachToComponent(RootComp, FAttachmentTransformRules::KeepRelativeTransform);
+
+    // Apply material override if specified
+    if (!MaterialPath.IsEmpty())
+    {
+        UMaterialInterface* MatOverride = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+        if (MatOverride)
+        {
+            for (int32 MatIdx = 0; MatIdx < Mesh->GetStaticMaterials().Num(); ++MatIdx)
+            {
+                HISM->SetMaterial(MatIdx, MatOverride);
+            }
+        }
+    }
+
+    // Set cull distance
+    if (CullDistance > 0.0)
+    {
+        HISM->SetCullDistances((int32)0, (int32)CullDistance);
+    }
+
+    HISM->RegisterComponent();
+
+    // Build transform array and batch-add instances
+    TArray<FTransform> Transforms;
+    Transforms.Reserve(ValidInstances.Num());
+
+    for (const FInstanceData& Inst : ValidInstances)
+    {
+        FTransform T(Inst.Rotation.Quaternion(), Inst.Location, Inst.Scale);
+        Transforms.Add(T);
+    }
+
+    // AddInstances with world-space transforms
+    HISM->AddInstances(Transforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
+
+    // Organize in editor
+    ContainerActor->SetFolderPath(TEXT("Foliage"));
+    ContainerActor->MarkPackageDirty();
+
+    // --- Build response ---
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("actor_name"), ContainerActor->GetName());
+    Result->SetStringField(TEXT("mesh"), MeshPath);
+    Result->SetNumberField(TEXT("instance_count"), ValidInstances.Num());
+    Result->SetNumberField(TEXT("candidates_generated"), Points.Num());
+    Result->SetNumberField(TEXT("rejected_slope"), RejectedSlope);
+    Result->SetNumberField(TEXT("rejected_no_hit"), RejectedNoHit);
+    Result->SetNumberField(TEXT("center_x"), CenterX);
+    Result->SetNumberField(TEXT("center_y"), CenterY);
+    Result->SetNumberField(TEXT("radius"), Radius);
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Scattered %d instances of %s via HISM (Poisson disk, %d candidates, %d slope-rejected, %d no-hit)"),
+            ValidInstances.Num(), *Mesh->GetName(), Points.Num(), RejectedSlope, RejectedNoHit));
+
     return Result;
 }

@@ -106,7 +106,8 @@ class UnrealConnection:
         "import_animation",
         "create_pbr_material",
         "create_landscape_material",
-        "scatter_meshes_on_landscape"
+        "scatter_meshes_on_landscape",
+        "scatter_foliage"
     }
 
     # Commands that need a post-execution cooldown to let the engine
@@ -121,6 +122,7 @@ class UnrealConnection:
         "create_pbr_material": 1.0,  # Material compilation + shader compile
         "create_landscape_material": 2.0,  # Full material graph + shader compile
         "scatter_meshes_on_landscape": 2.0,  # Multiple spawns + line traces
+        "scatter_foliage": 2.0,              # HISM scatter + Poisson disk + line traces
     }
     
     def __init__(self):
@@ -1147,25 +1149,29 @@ def create_landscape_material(
     mud_n: str = "",
     grass_d: str = "",
     grass_n: str = "",
-    macro_texture: str = "",
-    ground_uv_scale: float = 0.002,
-    macro_scale_1: float = 0.3,
-    macro_scale_2: float = 2.5,
-    macro_amount: float = 0.4,
+    detail_uv_scale: float = 0.004,
+    macro_uv_scale: float = 0.00025,
+    bomb_offset_x: float = 23.17,
+    bomb_offset_y: float = 47.11,
+    noise_scale: float = 0.001,
+    macro_blend_amount: float = 0.3,
     slope_sharpness: float = 3.0,
     grass_amount: float = 0.5,
     roughness: float = 0.85,
 ) -> Dict[str, Any]:
     """
-    Create a complete landscape material atomically in one call.
+    Create a complete landscape material with texture bombing anti-tiling.
 
-    Builds the entire material graph in C++ with macro variation anti-tiling,
-    slope-based rock/mud blend, noise-based grass overlay, normal maps,
-    roughness, metallic. All nodes created and connected in a single tick.
+    Builds the entire material graph in C++ with:
+    - Texture bombing: each diffuse sampled twice at offset UVs, blended with
+      computational noise mask to destroy the regular tiling grid
+    - Multi-scale UV blending: diffuse also sampled at macro scale for
+      distance variation
+    - Slope-based rock/mud blend, noise-based grass overlay
+    - Normal maps, roughness, metallic
 
-    Uses WorldPosition-based UVs (not LandscapeLayerCoords) for reliable persistence.
-    Uses industry-standard Macro Variation (texture sampled at 2 scales, multiplied)
-    to break visible tiling patterns organically.
+    All nodes created and connected in a single tick. Uses WorldPosition-based
+    UVs (not LandscapeLayerCoords) for reliable persistence.
 
     Parameters:
     - name: Material name (e.g., "M_Landscape_Final")
@@ -1173,17 +1179,18 @@ def create_landscape_material(
     - rock_d/rock_n: Rock diffuse + normal (slopes)
     - mud_d/mud_n: Mud diffuse + normal (flat areas)
     - grass_d/grass_n: Grass diffuse + normal (overlay)
-    - macro_texture: Texture for macro variation (defaults to mud_d)
-    - ground_uv_scale: WorldPos multiplier (default 0.002 = ~5m tiles)
-    - macro_scale_1: First macro UV multiplier (default 0.3 = large patches)
-    - macro_scale_2: Second macro UV multiplier (default 2.5 = medium detail)
-    - macro_amount: Macro variation intensity 0-1 (default 0.4, MI-editable)
+    - detail_uv_scale: WorldPos UV multiplier for detail (default 0.004)
+    - macro_uv_scale: WorldPos UV multiplier for macro variation (default 0.00025)
+    - bomb_offset_x: UV offset X for texture bombing (default 23.17)
+    - bomb_offset_y: UV offset Y for texture bombing (default 47.11)
+    - noise_scale: Computational noise scale for bomb blend (default 0.001)
+    - macro_blend_amount: How much macro scale mixes in 0-1 (default 0.3, MI-editable)
     - slope_sharpness: Power exponent for slope (default 3.0, MI-editable)
     - grass_amount: Grass blend amount (default 0.5, MI-editable)
     - roughness: Roughness value (default 0.85, MI-editable)
 
     Returns:
-        Dictionary with material path and expression count.
+        Dictionary with material path, expression count, and sampler count.
 
     Example:
         create_landscape_material("M_Landscape",
@@ -1212,12 +1219,12 @@ def create_landscape_material(
             params["grass_d"] = grass_d
         if grass_n:
             params["grass_n"] = grass_n
-        if macro_texture:
-            params["macro_texture"] = macro_texture
-        params["ground_uv_scale"] = ground_uv_scale
-        params["macro_scale_1"] = macro_scale_1
-        params["macro_scale_2"] = macro_scale_2
-        params["macro_amount"] = macro_amount
+        params["detail_uv_scale"] = detail_uv_scale
+        params["macro_uv_scale"] = macro_uv_scale
+        params["bomb_offset_x"] = bomb_offset_x
+        params["bomb_offset_y"] = bomb_offset_y
+        params["noise_scale"] = noise_scale
+        params["macro_blend_amount"] = macro_blend_amount
         params["slope_sharpness"] = slope_sharpness
         params["grass_amount"] = grass_amount
         params["roughness"] = roughness
@@ -2680,6 +2687,33 @@ def spawn_actor(
     if static_mesh:
         params["static_mesh"] = static_mesh
     response = unreal.send_command("spawn_actor", params)
+    return response.get("result", response)
+
+@mcp.tool()
+def spawn_blueprint_actor_in_level(
+    blueprint_path: str,
+    actor_name: str,
+    location: List[float] = [0.0, 0.0, 0.0],
+    rotation: List[float] = [0.0, 0.0, 0.0],
+) -> Dict[str, Any]:
+    """
+    Spawn an existing Blueprint as an actor in the level.
+
+    Use this to place a pre-made Blueprint (e.g., a Character Blueprint) into the world.
+
+    Parameters:
+    - blueprint_path: Content path to the Blueprint (e.g., "/Game/Characters/Robot/BP_RobotCharacter")
+    - actor_name: Desired name for the spawned actor
+    - location: [X, Y, Z] position in Unreal units
+    - rotation: [Pitch, Yaw, Roll] in degrees
+    """
+    unreal = get_unreal_connection()
+    response = unreal.send_command("spawn_blueprint_actor", {
+        "blueprint_name": blueprint_path,
+        "actor_name": actor_name,
+        "location": location,
+        "rotation": rotation,
+    })
     return response.get("result", response)
 
 @mcp.tool()
@@ -5005,6 +5039,94 @@ def add_layer_to_landscape(
         return response or {"success": False, "message": "No response from Unreal"}
     except Exception as e:
         logger.error(f"add_layer_to_landscape error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def scatter_foliage(
+    mesh_path: str,
+    center: List[float],
+    radius: float,
+    count: int = 100,
+    min_distance: float = 50.0,
+    max_slope: float = 30.0,
+    align_to_surface: bool = False,
+    random_yaw: bool = True,
+    scale_range: List[float] = None,
+    z_offset: float = 0.0,
+    actor_name: str = "HISM_Foliage",
+    cull_distance: float = 0.0,
+    material_path: str = ""
+) -> Dict[str, Any]:
+    """
+    Scatter vegetation/foliage using HISM (HierarchicalInstancedStaticMesh) with
+    Poisson disk distribution and automatic slope filtering.
+
+    Uses grid-accelerated dart-throwing for natural, non-overlapping placement.
+    Line traces determine terrain height and slope at each point.
+    All instances are batched into a single HISM component for optimal performance.
+
+    Parameters:
+    - mesh_path: UStaticMesh asset path (e.g., "/Game/Meshes/Vegetation/Grass/SM_Grass_01")
+    - center: World XY center [X, Y]
+    - radius: Scatter radius in Unreal units
+    - count: Target instance count (default: 100, max: 50000)
+    - min_distance: Minimum distance between instances (default: 50)
+    - max_slope: Maximum terrain slope in degrees for placement (default: 30)
+    - align_to_surface: Align instance Z-axis to terrain normal (default: false)
+    - random_yaw: Apply random yaw rotation to each instance (default: true)
+    - scale_range: [min, max] uniform scale range (default: [1, 1])
+    - z_offset: Vertical offset from ground in UU (negative = sink into ground)
+    - actor_name: Name for the container actor (default: "HISM_Foliage")
+    - cull_distance: Instance culling distance in UU (0 = no culling)
+    - material_path: Optional material override path
+
+    Returns:
+        Dictionary with instance_count, candidates_generated, rejected_slope,
+        rejected_no_hit, actor_name, and status message.
+
+    Example usage:
+        scatter_foliage(
+            mesh_path="/Game/Meshes/Vegetation/Grass/SM_Grass_Large_A",
+            center=[-12600, 12600],
+            radius=10000,
+            count=2000,
+            min_distance=100,
+            max_slope=15,
+            scale_range=[0.6, 1.4],
+            z_offset=-3,
+            actor_name="HISM_Grass_Large_A"
+        )
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    params = {
+        "mesh_path": mesh_path,
+        "center": center,
+        "radius": radius,
+        "count": count,
+        "min_distance": min_distance,
+        "max_slope": max_slope,
+        "align_to_surface": align_to_surface,
+        "random_yaw": random_yaw,
+        "z_offset": z_offset,
+        "actor_name": actor_name,
+        "cull_distance": cull_distance,
+    }
+
+    if scale_range is not None:
+        params["scale_range"] = scale_range
+
+    if material_path:
+        params["material_path"] = material_path
+
+    try:
+        response = unreal.send_command("scatter_foliage", params)
+        return response.get("result", response)
+    except Exception as e:
+        logger.error(f"scatter_foliage error: {e}")
         return {"success": False, "message": str(e)}
 
 

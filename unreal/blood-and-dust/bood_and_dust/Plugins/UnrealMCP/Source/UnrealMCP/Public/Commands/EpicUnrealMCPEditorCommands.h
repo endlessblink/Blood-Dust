@@ -74,4 +74,7 @@ private:
 
     // Mesh asset properties
     TSharedPtr<FJsonObject> HandleSetNaniteEnabled(const TSharedPtr<FJsonObject>& Params);
+
+    // HISM-based foliage scatter (Poisson disk + slope filter)
+    TSharedPtr<FJsonObject> HandleScatterFoliage(const TSharedPtr<FJsonObject>& Params);
 };
