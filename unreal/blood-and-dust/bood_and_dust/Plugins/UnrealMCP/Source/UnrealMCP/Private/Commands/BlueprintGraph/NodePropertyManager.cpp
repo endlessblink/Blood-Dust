@@ -399,6 +399,84 @@ TSharedPtr<FJsonObject> FNodePropertyManager::DispatchEditAction(
 		return Response;
 	}
 
+	// === SET PIN DEFAULT VALUE ===
+	if (Action.Equals(TEXT("set_pin_default"), ESearchCase::IgnoreCase))
+	{
+		FString PinName;
+		if (!Params->TryGetStringField(TEXT("pin_name"), PinName))
+		{
+			return CreateErrorResponse(TEXT("Missing 'pin_name' parameter for set_pin_default"));
+		}
+
+		FString DefaultValue;
+		if (!Params->TryGetStringField(TEXT("default_value"), DefaultValue))
+		{
+			// Try as number
+			double NumVal;
+			if (Params->TryGetNumberField(TEXT("default_value"), NumVal))
+			{
+				DefaultValue = FString::SanitizeFloat(NumVal);
+			}
+			else
+			{
+				return CreateErrorResponse(TEXT("Missing 'default_value' parameter for set_pin_default"));
+			}
+		}
+
+		// Find the pin
+		UEdGraphPin* Pin = nullptr;
+		for (UEdGraphPin* P : Node->Pins)
+		{
+			if (P->PinName.ToString().Equals(PinName, ESearchCase::IgnoreCase))
+			{
+				Pin = P;
+				break;
+			}
+		}
+		if (!Pin)
+		{
+			return CreateErrorResponse(FString::Printf(TEXT("Pin '%s' not found on node"), *PinName));
+		}
+
+		// For object pins (like UAnimSequence*), load the asset and set DefaultObject
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object ||
+			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
+			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class)
+		{
+			UObject* Asset = LoadObject<UObject>(nullptr, *DefaultValue);
+			if (!Asset)
+			{
+				Asset = UEditorAssetLibrary::LoadAsset(DefaultValue);
+			}
+			if (Asset)
+			{
+				Pin->DefaultObject = Asset;
+				UE_LOG(LogTemp, Display, TEXT("SetPinDefault: Set object '%s' on pin '%s'"), *DefaultValue, *PinName);
+			}
+			else
+			{
+				return CreateErrorResponse(FString::Printf(TEXT("Could not load asset: %s"), *DefaultValue));
+			}
+		}
+		else
+		{
+			// Primitive types (float, int, bool, string, etc.)
+			Pin->DefaultValue = DefaultValue;
+			UE_LOG(LogTemp, Display, TEXT("SetPinDefault: Set value '%s' on pin '%s'"), *DefaultValue, *PinName);
+		}
+
+		// Notify
+		Graph->NotifyGraphChanged();
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Cast<UBlueprint>(Graph->GetOuter()));
+
+		TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+		Response->SetBoolField(TEXT("success"), true);
+		Response->SetStringField(TEXT("action"), TEXT("set_pin_default"));
+		Response->SetStringField(TEXT("pin_name"), PinName);
+		Response->SetStringField(TEXT("default_value"), DefaultValue);
+		return Response;
+	}
+
 	// Unknown action
 	return CreateErrorResponse(FString::Printf(TEXT("Unknown action: %s"), *Action));
 }

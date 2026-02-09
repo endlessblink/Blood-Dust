@@ -2526,63 +2526,67 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(SlopeGrassMask, 500, 1700);
 
     // =================================================================
-    // SECTION 7: Blend Chains + Outputs
-    // SlopeBC = Lerp(Rock, Mud, SlopePow) -> GrassBC = Lerp(SlopeBC, Grass, SlopeGrassMask)
-    // SlopeN  = Lerp(RockN, MudN, SlopePow) -> GrassN = Lerp(SlopeN, GrassN, SlopeGrassMask)
+    // SECTION 7: Height-Based Blend Chains + Transition Noise
+    // Uses texture luminance as pseudo-height for natural overlap,
+    // plus high-frequency noise at blend boundaries.
     // =================================================================
+    // HeightBlendStrength parameter (exposed in MI, used by blend section)
+    auto* HeightBlendParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    HeightBlendParam->ParameterName = FName(TEXT("HeightBlendStrength"));
+    HeightBlendParam->DefaultValue = HeightBlendStrength;
+    AddExpr(HeightBlendParam, 900, 2100);
+
     UMaterialExpression* FinalBC = nullptr;
-    UMaterialExpression* ClampedAlpha = SlopePow; // fallback if only one layer
+    UMaterialExpression* BlendAlpha = SlopePow;  // default to simple slope
 
     if (RockLayer.Diffuse && MudLayer.Diffuse)
     {
-        // UPGRADE 1: Height-based blending -- texture luminance as pseudo-height
-        auto* HeightWeightVec = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        HeightWeightVec->Constant = FLinearColor(0.3f, 0.6f, 0.1f, 0.0f); // luminance weights
-        AddExpr(HeightWeightVec, -100, -500);
+        // --- UPGRADE 1: Height-based blending ---
+        // Compute luminance of each layer as pseudo-height
+        auto* LumWeights = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        LumWeights->Constant = FLinearColor(0.3f, 0.6f, 0.1f, 0.0f);
+        AddExpr(LumWeights, -100, -800);
 
-        // Rock height = Dot(RockD.RGB, luminance)
         auto* RockHeight = NewObject<UMaterialExpressionDotProduct>(Mat);
         RockHeight->A.Connect(0, RockLayer.Diffuse);
-        RockHeight->B.Connect(0, HeightWeightVec);
-        AddExpr(RockHeight, 100, -600);
+        RockHeight->B.Connect(0, LumWeights);
+        AddExpr(RockHeight, 100, -900);
 
-        // Mud height = Dot(MudD.RGB, luminance)
         auto* MudHeight = NewObject<UMaterialExpressionDotProduct>(Mat);
         MudHeight->A.Connect(0, MudLayer.Diffuse);
-        MudHeight->B.Connect(0, HeightWeightVec);
-        AddExpr(MudHeight, 100, -400);
+        MudHeight->B.Connect(0, LumWeights);
+        AddExpr(MudHeight, 100, -700);
 
         // HeightDiff = (RockHeight - MudHeight) * HeightBlendStrength
         auto* HeightDiff = NewObject<UMaterialExpressionSubtract>(Mat);
         HeightDiff->A.Connect(0, RockHeight);
         HeightDiff->B.Connect(0, MudHeight);
-        AddExpr(HeightDiff, 300, -500);
+        AddExpr(HeightDiff, 300, -800);
 
-        auto* HeightBlendParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
-        HeightBlendParam->ParameterName = FName(TEXT("HeightBlendStrength"));
-        HeightBlendParam->DefaultValue = HeightBlendStrength;
-        AddExpr(HeightBlendParam, 300, -350);
+        auto* HeightMod = NewObject<UMaterialExpressionMultiply>(Mat);
+        HeightMod->A.Connect(0, HeightDiff);
+        HeightMod->B.Connect(0, HeightBlendParam);
+        AddExpr(HeightMod, 500, -800);
 
-        auto* HeightModulated = NewObject<UMaterialExpressionMultiply>(Mat);
-        HeightModulated->A.Connect(0, HeightDiff);
-        HeightModulated->B.Connect(0, HeightBlendParam);
-        AddExpr(HeightModulated, 500, -450);
+        // AdjustedAlpha = Clamp(SlopePow + HeightDiff*Strength, 0, 1)
+        auto* AlphaAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        AlphaAdd->A.Connect(0, SlopePow);
+        AlphaAdd->B.Connect(0, HeightMod);
+        AddExpr(AlphaAdd, 700, -800);
 
-        // AdjustedAlpha = SlopePow + HeightModulated
-        auto* AdjustedAlpha = NewObject<UMaterialExpressionAdd>(Mat);
-        AdjustedAlpha->A.Connect(0, SlopePow);
-        AdjustedAlpha->B.Connect(0, HeightModulated);
-        AddExpr(AdjustedAlpha, 700, -450);
+        auto* AlphaClamp = NewObject<UMaterialExpressionClamp>(Mat);
+        AlphaClamp->Input.Connect(0, AlphaAdd);
+        AddExpr(AlphaClamp, 900, -800);
 
-        // UPGRADE 2: Transition boundary noise
-        auto* TransNoiseOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        TransNoiseOffset->Constant = FLinearColor(5000.0f, 9000.0f, 0.0f, 0.0f);
-        AddExpr(TransNoiseOffset, 500, -250);
+        // --- UPGRADE 2: Noise at blend boundaries ---
+        auto* TransNoisePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        TransNoisePosOffset->Constant = FLinearColor(5000.0f, 9000.0f, 0.0f, 0.0f);
+        AddExpr(TransNoisePosOffset, 300, -600);
 
         auto* TransNoisePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
         TransNoisePosAdd->A.Connect(0, WorldPos);
-        TransNoisePosAdd->B.Connect(0, TransNoiseOffset);
-        AddExpr(TransNoisePosAdd, 700, -250);
+        TransNoisePosAdd->B.Connect(0, TransNoisePosOffset);
+        AddExpr(TransNoisePosAdd, 500, -600);
 
         auto* TransNoise = NewObject<UMaterialExpressionNoise>(Mat);
         TransNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
@@ -2595,26 +2599,24 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         TransNoise->bTiling = false;
         TransNoise->LevelScale = 2.0f;
         TransNoise->Position.Connect(0, TransNoisePosAdd);
-        AddExpr(TransNoise, 900, -250);
+        AddExpr(TransNoise, 700, -600);
 
-        // NoisyAlpha = AdjustedAlpha + TransNoise
-        auto* NoisyAlpha = NewObject<UMaterialExpressionAdd>(Mat);
-        NoisyAlpha->A.Connect(0, AdjustedAlpha);
-        NoisyAlpha->B.Connect(0, TransNoise);
-        AddExpr(NoisyAlpha, 900, -450);
+        // FinalAlpha = Clamp(AdjustedAlpha + TransNoise, 0, 1)
+        auto* FinalAlphaAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        FinalAlphaAdd->A.Connect(0, AlphaClamp);
+        FinalAlphaAdd->B.Connect(0, TransNoise);
+        AddExpr(FinalAlphaAdd, 900, -600);
 
-        // Clamp to 0-1
-        auto* ClampedAlphaNode = NewObject<UMaterialExpressionClamp>(Mat);
-        ClampedAlphaNode->Input.Connect(0, NoisyAlpha);
-        ClampedAlphaNode->MinDefault = 0.0f;
-        ClampedAlphaNode->MaxDefault = 1.0f;
-        AddExpr(ClampedAlphaNode, 1100, -450);
-        ClampedAlpha = ClampedAlphaNode;
+        auto* FinalAlphaClamp = NewObject<UMaterialExpressionClamp>(Mat);
+        FinalAlphaClamp->Input.Connect(0, FinalAlphaAdd);
+        AddExpr(FinalAlphaClamp, 1100, -700);
+
+        BlendAlpha = FinalAlphaClamp;
 
         auto* SlopeBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         SlopeBC->A.Connect(0, RockLayer.Diffuse);
         SlopeBC->B.Connect(0, MudLayer.Diffuse);
-        SlopeBC->Alpha.Connect(0, ClampedAlpha);
+        SlopeBC->Alpha.Connect(0, BlendAlpha);
         AddExpr(SlopeBC, 300, -200);
         FinalBC = SlopeBC;
     }
@@ -2631,7 +2633,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         FinalBC = GrassBC;
     }
 
-    // Normal blend chain
+    // Normal blend chain -- uses same height-adjusted alpha for rock/mud normals
     UMaterialExpression* FinalN = nullptr;
 
     if (RockLayer.Normal && MudLayer.Normal)
@@ -2639,7 +2641,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         auto* SlopeN = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         SlopeN->A.Connect(0, RockLayer.Normal);
         SlopeN->B.Connect(0, MudLayer.Normal);
-        SlopeN->Alpha.Connect(0, ClampedAlpha);
+        SlopeN->Alpha.Connect(0, BlendAlpha);
         AddExpr(SlopeN, 300, 600);
         FinalN = SlopeN;
     }
@@ -2663,48 +2665,57 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(RoughParam, 900, 200);
     UMaterialExpression* FinalRough = RoughParam;
 
-    // =================================================================
-    // World-Z Height Accumulation (shared by mud + puddle overlays)
-    // Low areas get more puddles/mud. Uses world Z position.
-    // =================================================================
-    auto* WorldZMask = NewObject<UMaterialExpressionComponentMask>(Mat);
-    WorldZMask->R = false; WorldZMask->G = false; WorldZMask->B = true; WorldZMask->A = false;
-    WorldZMask->Input.Connect(0, WorldPos);
-    AddExpr(WorldZMask, 700, -900);
+    auto* PuddleHeightBiasParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    PuddleHeightBiasParam->ParameterName = FName(TEXT("PuddleHeightBias"));
+    PuddleHeightBiasParam->DefaultValue = PuddleHeightBias;
+    AddExpr(PuddleHeightBiasParam, 900, 500);
 
-    // Normalize Z: divide by landscape height range (assume ~20000 units = 200m)
-    auto* HeightRangeConst = NewObject<UMaterialExpressionConstant>(Mat);
-    HeightRangeConst->R = 20000.0f;
-    AddExpr(HeightRangeConst, 700, -800);
+    // =================================================================
+    // SHARED: World-Z Height Bias for Puddles + Mud
+    // Low-lying areas get more puddles and mud. Uses AbsoluteWorldPosition.Z
+    // normalized to 0-1, inverted so low = high value.
+    // =================================================================
+    // Extract Z from WorldPos
+    auto* MaskWorldZ = NewObject<UMaterialExpressionComponentMask>(Mat);
+    MaskWorldZ->R = false; MaskWorldZ->G = false; MaskWorldZ->B = true; MaskWorldZ->A = false;
+    MaskWorldZ->Input.Connect(0, WorldPos);
+    AddExpr(MaskWorldZ, 700, 800);
 
-    auto* NormalizedZ = NewObject<UMaterialExpressionDivide>(Mat);
-    NormalizedZ->A.Connect(0, WorldZMask);
-    NormalizedZ->B.Connect(0, HeightRangeConst);
-    AddExpr(NormalizedZ, 900, -850);
+    // Normalize Z to 0-1 range (landscape ~-25600 to ~25600, use /50000 + 0.5)
+    auto* ZDivConst = NewObject<UMaterialExpressionConstant>(Mat);
+    ZDivConst->R = 50000.0f;
+    AddExpr(ZDivConst, 700, 950);
+
+    auto* ZDiv = NewObject<UMaterialExpressionDivide>(Mat);
+    ZDiv->A.Connect(0, MaskWorldZ);
+    ZDiv->B.Connect(0, ZDivConst);
+    AddExpr(ZDiv, 900, 850);
+
+    auto* ZHalfConst = NewObject<UMaterialExpressionConstant>(Mat);
+    ZHalfConst->R = 0.5f;
+    AddExpr(ZHalfConst, 900, 1000);
+
+    auto* ZNorm = NewObject<UMaterialExpressionAdd>(Mat);
+    ZNorm->A.Connect(0, ZDiv);
+    ZNorm->B.Connect(0, ZHalfConst);
+    AddExpr(ZNorm, 1100, 900);
 
     // Invert: low areas = high value
-    auto* LowAreaRaw = NewObject<UMaterialExpressionOneMinus>(Mat);
-    LowAreaRaw->Input.Connect(0, NormalizedZ);
-    AddExpr(LowAreaRaw, 1100, -850);
+    auto* ZInvert = NewObject<UMaterialExpressionOneMinus>(Mat);
+    ZInvert->Input.Connect(0, ZNorm);
+    AddExpr(ZInvert, 1300, 900);
 
-    // Clamp to 0-1 (in case Z goes negative or above range)
-    auto* LowAreaClamped = NewObject<UMaterialExpressionClamp>(Mat);
-    LowAreaClamped->Input.Connect(0, LowAreaRaw);
-    LowAreaClamped->MinDefault = 0.0f;
-    LowAreaClamped->MaxDefault = 1.0f;
-    AddExpr(LowAreaClamped, 1300, -850);
+    // Clamp to 0-1
+    auto* ZClamp = NewObject<UMaterialExpressionClamp>(Mat);
+    ZClamp->Input.Connect(0, ZInvert);
+    AddExpr(ZClamp, 1500, 900);
 
-    // PuddleHeightBias parameter: how strongly to prefer low areas
-    auto* HeightBiasParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
-    HeightBiasParam->ParameterName = FName(TEXT("PuddleHeightBias"));
-    HeightBiasParam->DefaultValue = PuddleHeightBias;
-    AddExpr(HeightBiasParam, 1100, -750);
-
-    // HeightBias = Power(LowAreaClamped, PuddleHeightBias)
-    auto* HeightBias = NewObject<UMaterialExpressionPower>(Mat);
-    HeightBias->Base.Connect(0, LowAreaClamped);
-    HeightBias->Exponent.Connect(0, HeightBiasParam);
-    AddExpr(HeightBias, 1300, -750);
+    // Power for concentration in valleys: Power(LowAreaMask, PuddleHeightBias)
+    auto* HeightBiasPow = NewObject<UMaterialExpressionPower>(Mat);
+    HeightBiasPow->Base.Connect(0, ZClamp);
+    HeightBiasPow->Exponent.Connect(0, PuddleHeightBiasParam);
+    AddExpr(HeightBiasPow, 1700, 900);
+    UMaterialExpression* LowAreaMask = HeightBiasPow;
 
     // =================================================================
     // COMMENT BOX 8: Mud/Dirt Overlay (Dark Brown)
@@ -2714,44 +2725,45 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
 
     if (TexMudDetail && FinalBC)
     {
-        AddComment(TEXT("Mud/Dirt Overlay (Multi-Octave)"), FLinearColor(0.5f, 0.35f, 0.1f), 700, -1700, 1000, 700);
+        AddComment(TEXT("Mud/Dirt Overlay (Multi-Octave)"), FLinearColor(0.5f, 0.35f, 0.1f), 1800, -1700, 1200, 700);
 
-        // Multi-octave mud: zone noise * shape noise for concentrated patches
-        auto* MudZoneOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        MudZoneOffset->Constant = FLinearColor(7000.0f, 3000.0f, 0.0f, 0.0f);
-        AddExpr(MudZoneOffset, 750, -1600);
+        // --- UPGRADE 6: Multi-octave mud noise ---
+        // Zone noise: large clusters where mud CAN form
+        auto* MudZonePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        MudZonePosOffset->Constant = FLinearColor(7000.0f, 3000.0f, 0.0f, 0.0f);
+        AddExpr(MudZonePosOffset, 1850, -1600);
 
         auto* MudZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
         MudZonePosAdd->A.Connect(0, WorldPos);
-        MudZonePosAdd->B.Connect(0, MudZoneOffset);
-        AddExpr(MudZonePosAdd, 950, -1600);
+        MudZonePosAdd->B.Connect(0, MudZonePosOffset);
+        AddExpr(MudZonePosAdd, 2050, -1600);
 
         auto* MudZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
         MudZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
-        MudZoneNoise->Scale = 0.0001f;   // Large clusters
+        MudZoneNoise->Scale = 0.0001f;   // Large zone clusters
         MudZoneNoise->Quality = 1;
         MudZoneNoise->Levels = 3;
         MudZoneNoise->OutputMin = 0.0f;
         MudZoneNoise->OutputMax = 1.0f;
-        MudZoneNoise->bTurbulence = false;
+        MudZoneNoise->bTurbulence = true;
         MudZoneNoise->bTiling = false;
         MudZoneNoise->LevelScale = 2.0f;
         MudZoneNoise->Position.Connect(0, MudZonePosAdd);
-        AddExpr(MudZoneNoise, 1150, -1600);
+        AddExpr(MudZoneNoise, 2250, -1600);
 
-        // Shape noise at different offset
-        auto* MudShapeOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        MudShapeOffset->Constant = FLinearColor(20000.0f, 5000.0f, 0.0f, 0.0f);
-        AddExpr(MudShapeOffset, 750, -1450);
+        // Shape noise: individual mud shapes within zones
+        auto* MudShapePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        MudShapePosOffset->Constant = FLinearColor(20000.0f, 5000.0f, 0.0f, 0.0f);
+        AddExpr(MudShapePosOffset, 1850, -1400);
 
         auto* MudShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
         MudShapePosAdd->A.Connect(0, WorldPos);
-        MudShapePosAdd->B.Connect(0, MudShapeOffset);
-        AddExpr(MudShapePosAdd, 950, -1450);
+        MudShapePosAdd->B.Connect(0, MudShapePosOffset);
+        AddExpr(MudShapePosAdd, 2050, -1400);
 
         auto* MudShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
         MudShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
-        MudShapeNoise->Scale = 0.0006f;   // Individual shapes
+        MudShapeNoise->Scale = 0.0006f;  // Smaller individual shapes
         MudShapeNoise->Quality = 1;
         MudShapeNoise->Levels = 2;
         MudShapeNoise->OutputMin = 0.0f;
@@ -2760,55 +2772,55 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         MudShapeNoise->bTiling = false;
         MudShapeNoise->LevelScale = 2.0f;
         MudShapeNoise->Position.Connect(0, MudShapePosAdd);
-        AddExpr(MudShapeNoise, 1150, -1450);
+        AddExpr(MudShapeNoise, 2250, -1400);
 
-        // Combine: zone * shape = concentrated patches
+        // Multiply zone * shape for concentration
         auto* MudCombined = NewObject<UMaterialExpressionMultiply>(Mat);
         MudCombined->A.Connect(0, MudZoneNoise);
         MudCombined->B.Connect(0, MudShapeNoise);
-        AddExpr(MudCombined, 1350, -1550);
+        AddExpr(MudCombined, 2450, -1500);
 
-        // Sharpen for distinct edges
+        // Sharpen edges
         auto* MudPowConst = NewObject<UMaterialExpressionConstant>(Mat);
         MudPowConst->R = 1.5f;
-        AddExpr(MudPowConst, 1350, -1400);
+        AddExpr(MudPowConst, 2450, -1350);
 
-        auto* MudNoisePow = NewObject<UMaterialExpressionPower>(Mat);
-        MudNoisePow->Base.Connect(0, MudCombined);
-        MudNoisePow->Exponent.Connect(0, MudPowConst);
-        AddExpr(MudNoisePow, 1550, -1500);
+        auto* MudMaskPow = NewObject<UMaterialExpressionPower>(Mat);
+        MudMaskPow->Base.Connect(0, MudCombined);
+        MudMaskPow->Exponent.Connect(0, MudPowConst);
+        AddExpr(MudMaskPow, 2650, -1450);
 
         // MudAmount MI parameter
         auto* MudAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
         MudAmountParam->ParameterName = FName(TEXT("MudAmount"));
         MudAmountParam->DefaultValue = MudAmount;
-        AddExpr(MudAmountParam, 1350, -1300);
+        AddExpr(MudAmountParam, 2450, -1200);
 
-        // MudAlpha = MudMask * MudAmount * SlopePow * HeightBias
+        // MudAlpha = MudMask * MudAmount * SlopePow * LowAreaMask
         auto* MudAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
-        MudAmountMul->A.Connect(0, MudNoisePow);
+        MudAmountMul->A.Connect(0, MudMaskPow);
         MudAmountMul->B.Connect(0, MudAmountParam);
-        AddExpr(MudAmountMul, 1550, -1350);
+        AddExpr(MudAmountMul, 2650, -1300);
 
         auto* MudSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
         MudSlopeMul->A.Connect(0, MudAmountMul);
         MudSlopeMul->B.Connect(0, SlopePow);
-        AddExpr(MudSlopeMul, 1550, -1250);
+        AddExpr(MudSlopeMul, 2850, -1350);
 
         auto* MudAlpha = NewObject<UMaterialExpressionMultiply>(Mat);
         MudAlpha->A.Connect(0, MudSlopeMul);
-        MudAlpha->B.Connect(0, HeightBias);
-        AddExpr(MudAlpha, 1550, -1150);
+        MudAlpha->B.Connect(0, LowAreaMask);
+        AddExpr(MudAlpha, 3050, -1350);
 
-        // Sample mud detail texture at DistortedUV (1 sampler, no rotation dissolve)
-        auto* MudDetailSample = CreateTexSample(TexMudDetail, SAMPLERTYPE_Color, DistortedUV, 750, -1300);
+        // Sample mud detail texture
+        auto* MudDetailSample = CreateTexSample(TexMudDetail, SAMPLERTYPE_Color, DistortedUV, 1850, -1200);
 
         // Blend mud into base color
         auto* MudBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         MudBC->A.Connect(0, FinalBC);
         MudBC->B.Connect(0, MudDetailSample);
         MudBC->Alpha.Connect(0, MudAlpha);
-        AddExpr(MudBC, 1750, -1150);
+        AddExpr(MudBC, 3050, -1200);
         FinalBC = MudBC;
     }
 
@@ -2819,21 +2831,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // =================================================================
     if (FinalBC)
     {
-        AddComment(TEXT("Puddle Overlay (Multi-Octave + Wet Edge)"), FLinearColor(0.2f, 0.4f, 0.8f), 700, -800, 1600, 1400);
+        AddComment(TEXT("Puddle Overlay (Multi-Octave + Height + Wet Edge)"), FLinearColor(0.2f, 0.4f, 0.8f), 1800, -800, 1400, 1200);
 
-        // Multi-octave puddles: zone noise * shape noise
-        auto* PuddleZoneOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        PuddleZoneOffset->Constant = FLinearColor(11000.0f, 8000.0f, 0.0f, 0.0f);
-        AddExpr(PuddleZoneOffset, 750, -700);
+        // --- UPGRADE 3: Multi-octave puddle mask ---
+        // Zone noise: large puddle clusters
+        auto* PuddleZonePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        PuddleZonePosOffset->Constant = FLinearColor(11000.0f, 8000.0f, 0.0f, 0.0f);
+        AddExpr(PuddleZonePosOffset, 1850, -700);
 
         auto* PuddleZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
         PuddleZonePosAdd->A.Connect(0, WorldPos);
-        PuddleZonePosAdd->B.Connect(0, PuddleZoneOffset);
-        AddExpr(PuddleZonePosAdd, 950, -700);
+        PuddleZonePosAdd->B.Connect(0, PuddleZonePosOffset);
+        AddExpr(PuddleZonePosAdd, 2050, -700);
 
         auto* PuddleZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
         PuddleZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
-        PuddleZoneNoise->Scale = 0.00008f;  // Large puddle zones
+        PuddleZoneNoise->Scale = 0.00008f;  // Very large zones
         PuddleZoneNoise->Quality = 1;
         PuddleZoneNoise->Levels = 3;
         PuddleZoneNoise->OutputMin = 0.0f;
@@ -2842,21 +2855,21 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         PuddleZoneNoise->bTiling = false;
         PuddleZoneNoise->LevelScale = 2.0f;
         PuddleZoneNoise->Position.Connect(0, PuddleZonePosAdd);
-        AddExpr(PuddleZoneNoise, 1150, -700);
+        AddExpr(PuddleZoneNoise, 2250, -700);
 
-        // Shape noise
-        auto* PuddleShapeOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-        PuddleShapeOffset->Constant = FLinearColor(15000.0f, 12000.0f, 0.0f, 0.0f);
-        AddExpr(PuddleShapeOffset, 750, -550);
+        // Shape noise: individual puddle shapes
+        auto* PuddleShapePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        PuddleShapePosOffset->Constant = FLinearColor(15000.0f, 12000.0f, 0.0f, 0.0f);
+        AddExpr(PuddleShapePosOffset, 1850, -500);
 
         auto* PuddleShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
         PuddleShapePosAdd->A.Connect(0, WorldPos);
-        PuddleShapePosAdd->B.Connect(0, PuddleShapeOffset);
-        AddExpr(PuddleShapePosAdd, 950, -550);
+        PuddleShapePosAdd->B.Connect(0, PuddleShapePosOffset);
+        AddExpr(PuddleShapePosAdd, 2050, -500);
 
         auto* PuddleShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
         PuddleShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
-        PuddleShapeNoise->Scale = 0.0005f;  // Individual puddle shapes
+        PuddleShapeNoise->Scale = 0.0005f;  // Medium shapes
         PuddleShapeNoise->Quality = 1;
         PuddleShapeNoise->Levels = 2;
         PuddleShapeNoise->OutputMin = 0.0f;
@@ -2865,123 +2878,122 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         PuddleShapeNoise->bTiling = false;
         PuddleShapeNoise->LevelScale = 2.0f;
         PuddleShapeNoise->Position.Connect(0, PuddleShapePosAdd);
-        AddExpr(PuddleShapeNoise, 1150, -550);
+        AddExpr(PuddleShapeNoise, 2250, -500);
 
-        // Combine: zone * shape
+        // Multiply zone * shape for concentrated patches
         auto* PuddleCombined = NewObject<UMaterialExpressionMultiply>(Mat);
         PuddleCombined->A.Connect(0, PuddleZoneNoise);
         PuddleCombined->B.Connect(0, PuddleShapeNoise);
-        AddExpr(PuddleCombined, 1350, -650);
+        AddExpr(PuddleCombined, 2450, -600);
 
-        // Sharpen edges
+        // Sharpen edges: Power(2.0)
         auto* PuddlePowConst = NewObject<UMaterialExpressionConstant>(Mat);
         PuddlePowConst->R = 2.0f;
-        AddExpr(PuddlePowConst, 1350, -500);
+        AddExpr(PuddlePowConst, 2450, -450);
 
-        auto* PuddleNoisePow = NewObject<UMaterialExpressionPower>(Mat);
-        PuddleNoisePow->Base.Connect(0, PuddleCombined);
-        PuddleNoisePow->Exponent.Connect(0, PuddlePowConst);
-        AddExpr(PuddleNoisePow, 1550, -600);
+        auto* PuddleMaskPow = NewObject<UMaterialExpressionPower>(Mat);
+        PuddleMaskPow->Base.Connect(0, PuddleCombined);
+        PuddleMaskPow->Exponent.Connect(0, PuddlePowConst);
+        AddExpr(PuddleMaskPow, 2650, -550);
 
-        // PuddleAmount param
+        // PuddleAmount MI parameter
         auto* PuddleAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
         PuddleAmountParam->ParameterName = FName(TEXT("PuddleAmount"));
         PuddleAmountParam->DefaultValue = PuddleAmount;
-        AddExpr(PuddleAmountParam, 1350, -400);
+        AddExpr(PuddleAmountParam, 2450, -300);
 
-        // PuddleAlpha = puddle^2 * PuddleAmount * SlopePow * HeightBias
+        // --- UPGRADE 4: World-Z height bias ---
+        // PuddleAlpha = PuddleMask * PuddleAmount * SlopePow * LowAreaMask
         auto* PuddleAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
-        PuddleAmountMul->A.Connect(0, PuddleNoisePow);
+        PuddleAmountMul->A.Connect(0, PuddleMaskPow);
         PuddleAmountMul->B.Connect(0, PuddleAmountParam);
-        AddExpr(PuddleAmountMul, 1550, -500);
+        AddExpr(PuddleAmountMul, 2650, -400);
 
         auto* PuddleSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
         PuddleSlopeMul->A.Connect(0, PuddleAmountMul);
         PuddleSlopeMul->B.Connect(0, SlopePow);
-        AddExpr(PuddleSlopeMul, 1550, -400);
+        AddExpr(PuddleSlopeMul, 2850, -450);
 
         auto* PuddleAlpha = NewObject<UMaterialExpressionMultiply>(Mat);
         PuddleAlpha->A.Connect(0, PuddleSlopeMul);
-        PuddleAlpha->B.Connect(0, HeightBias);
-        AddExpr(PuddleAlpha, 1550, -300);
-
-        // UPGRADE 5: Wet edge darkening
-        // Expanded wet zone around puddles
-        auto* WetExpandConst = NewObject<UMaterialExpressionConstant>(Mat);
-        WetExpandConst->R = 3.0f;
-        AddExpr(WetExpandConst, 1550, -200);
-
-        auto* WetExpanded = NewObject<UMaterialExpressionMultiply>(Mat);
-        WetExpanded->A.Connect(0, PuddleAlpha);
-        WetExpanded->B.Connect(0, WetExpandConst);
-        AddExpr(WetExpanded, 1750, -200);
-
-        auto* WetEdgeAlpha = NewObject<UMaterialExpressionClamp>(Mat);
-        WetEdgeAlpha->Input.Connect(0, WetExpanded);
-        WetEdgeAlpha->MinDefault = 0.0f;
-        WetEdgeAlpha->MaxDefault = 1.0f;
-        AddExpr(WetEdgeAlpha, 1950, -200);
-
-        // Darken base color in wet areas (40% darker when wet)
-        auto* WetDryConst = NewObject<UMaterialExpressionConstant>(Mat);
-        WetDryConst->R = 1.0f;
-        AddExpr(WetDryConst, 1750, -100);
-
-        auto* WetDarkConst = NewObject<UMaterialExpressionConstant>(Mat);
-        WetDarkConst->R = 0.6f;
-        AddExpr(WetDarkConst, 1750, 0);
-
-        auto* WetDarken = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-        WetDarken->A.Connect(0, WetDryConst);
-        WetDarken->B.Connect(0, WetDarkConst);
-        WetDarken->Alpha.Connect(0, WetEdgeAlpha);
-        AddExpr(WetDarken, 1950, -50);
-
-        // Darken the base color
-        auto* DarkenedBC = NewObject<UMaterialExpressionMultiply>(Mat);
-        DarkenedBC->A.Connect(0, FinalBC);
-        DarkenedBC->B.Connect(0, WetDarken);
-        AddExpr(DarkenedBC, 2150, -50);
+        PuddleAlpha->B.Connect(0, LowAreaMask);
+        AddExpr(PuddleAlpha, 3050, -450);
 
         // Dark puddle color (very dark brown, like wet earth)
         auto* PuddleColor = NewObject<UMaterialExpressionConstant3Vector>(Mat);
         PuddleColor->Constant = FLinearColor(0.02f, 0.015f, 0.01f, 1.0f);
-        AddExpr(PuddleColor, 1950, 100);
+        AddExpr(PuddleColor, 2850, -250);
 
-        // Blend puddle color into darkened base
+        // Blend puddle color into base color
         auto* PuddleBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-        PuddleBC->A.Connect(0, DarkenedBC);
+        PuddleBC->A.Connect(0, FinalBC);
         PuddleBC->B.Connect(0, PuddleColor);
         PuddleBC->Alpha.Connect(0, PuddleAlpha);
-        AddExpr(PuddleBC, 2150, 100);
-        FinalBC = PuddleBC;
+        AddExpr(PuddleBC, 3050, -250);
 
-        // Wet roughness transition: dry -> wet edge(0.4) -> puddle center(0.05)
+        // --- UPGRADE 5: Wet edge darkening ---
+        // WetEdgeAlpha = Clamp(PuddleAlpha * 3.0, 0, 1)
+        auto* WetExpandConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetExpandConst->R = 3.0f;
+        AddExpr(WetExpandConst, 2850, -100);
+
+        auto* WetEdgeMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        WetEdgeMul->A.Connect(0, PuddleAlpha);
+        WetEdgeMul->B.Connect(0, WetExpandConst);
+        AddExpr(WetEdgeMul, 3050, -100);
+
+        auto* WetEdgeAlpha = NewObject<UMaterialExpressionClamp>(Mat);
+        WetEdgeAlpha->Input.Connect(0, WetEdgeMul);
+        AddExpr(WetEdgeAlpha, 3250, -100);
+
+        // Darken base color in wet areas: WetDarken = Lerp(1.0, 0.6, WetEdgeAlpha)
+        auto* DryBright = NewObject<UMaterialExpressionConstant>(Mat);
+        DryBright->R = 1.0f;
+        AddExpr(DryBright, 3050, 50);
+
+        auto* WetBright = NewObject<UMaterialExpressionConstant>(Mat);
+        WetBright->R = 0.6f;
+        AddExpr(WetBright, 3050, 150);
+
+        auto* WetDarkenLerp = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        WetDarkenLerp->A.Connect(0, DryBright);
+        WetDarkenLerp->B.Connect(0, WetBright);
+        WetDarkenLerp->Alpha.Connect(0, WetEdgeAlpha);
+        AddExpr(WetDarkenLerp, 3250, 50);
+
+        // Apply darkening: FinalBC = PuddleBC * WetDarken
+        auto* DarkenedBC = NewObject<UMaterialExpressionMultiply>(Mat);
+        DarkenedBC->A.Connect(0, PuddleBC);
+        DarkenedBC->B.Connect(0, WetDarkenLerp);
+        AddExpr(DarkenedBC, 3450, -100);
+        FinalBC = DarkenedBC;
+
+        // Wet roughness: dry(Roughness) -> wet edge(0.4) -> puddle center(0.05)
         auto* WetEdgeRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
         WetEdgeRoughConst->R = 0.4f;
-        AddExpr(WetEdgeRoughConst, 1950, 200);
+        AddExpr(WetEdgeRoughConst, 3050, 250);
 
         auto* WetEdgeRough = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         WetEdgeRough->A.Connect(0, RoughParam);
         WetEdgeRough->B.Connect(0, WetEdgeRoughConst);
         WetEdgeRough->Alpha.Connect(0, WetEdgeAlpha);
-        AddExpr(WetEdgeRough, 2150, 200);
+        AddExpr(WetEdgeRough, 3250, 250);
 
-        auto* WetCenterRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
-        WetCenterRoughConst->R = 0.05f;
-        AddExpr(WetCenterRoughConst, 1950, 300);
+        auto* PuddleCenterRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
+        PuddleCenterRoughConst->R = 0.05f;
+        AddExpr(PuddleCenterRoughConst, 3050, 350);
 
         auto* PuddleRough = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         PuddleRough->A.Connect(0, WetEdgeRough);
-        PuddleRough->B.Connect(0, WetCenterRoughConst);
+        PuddleRough->B.Connect(0, PuddleCenterRoughConst);
         PuddleRough->Alpha.Connect(0, PuddleAlpha);
-        AddExpr(PuddleRough, 2150, 300);
+        AddExpr(PuddleRough, 3250, 350);
         FinalRough = PuddleRough;
 
-        // Flat normal for puddles
+        // Flat normal for puddles (smooth water surface)
         auto* FlatNormal = NewObject<UMaterialExpressionConstant3Vector>(Mat);
         FlatNormal->Constant = FLinearColor(0.0f, 0.0f, 1.0f, 0.0f);
-        AddExpr(FlatNormal, 1950, 400);
+        AddExpr(FlatNormal, 3050, 450);
 
         if (FinalN)
         {
@@ -2989,7 +3001,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
             PuddleN->A.Connect(0, FinalN);
             PuddleN->B.Connect(0, FlatNormal);
             PuddleN->Alpha.Connect(0, PuddleAlpha);
-            AddExpr(PuddleN, 2150, 400);
+            AddExpr(PuddleN, 3250, 450);
             FinalN = PuddleN;
         }
     }
@@ -3027,8 +3039,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("name"), MaterialName);
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
-    Result->SetNumberField(TEXT("comment_count"), 11);
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material v8 with height-based blending, multi-octave puddle/mud masks, wet edge darkening, world-Z height bias, distance-based tiling fade. 10 exposed params (DetailUVScale, WarpAmount, MacroStrength, SlopeSharpness, GrassAmount, Roughness, MudAmount, PuddleAmount, HeightBlendStrength, PuddleHeightBias)"));
+    Result->SetNumberField(TEXT("comment_count"), 9);
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material v8: height-based layer blend, transition noise, multi-octave puddle+mud, World-Z height bias, wet edge darkening, distance tiling fade, UV distortion + fixed-angle rotation dissolve, 13 samplers, 10 exposed params"));
 
     return Result;
 }

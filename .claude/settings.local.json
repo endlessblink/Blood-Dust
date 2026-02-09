@@ -221,7 +221,14 @@
       "mcp__unrealMCP__add_input_mapping",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture remote add origin https://github.com/endlessblink/Blood-Dust.git:*)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/ MASTER_PLAN.md unreal/)",
-      "Bash(inotifywait:*)"
+      "Bash(inotifywait:*)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: robot animations, input actions, landscape MIs, scatter skills\n\nNew: 8 robot animations \\(walk, run, idle, kick, hits, jump\\),\n5 input actions \\(sprint, attacks, kick\\), M_Robot_Test_Red,\nMI_Landscape_Ground v3-v7, MCPHelperLibrary, grass/rock scatter skills.\nUpdated: ABP_Robot, BP_RobotCharacter, M_Landscape_Distorted,\nplugin commands \\(Blueprint, BlueprintGraph, Editor, CommonUtils, Bridge\\).\nMASTER_PLAN: added TASK-012, TASK-013.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture push -u origin master)",
+      "Bash(if [ -f /tmp/claude-1000/-media-endlessblink-data-my-projects-ai-development-game-dev-ai-game-production-lecture/tasks/b0dde04.output ])",
+      "Bash(then tail -50 /tmp/claude-1000/-media-endlessblink-data-my-projects-ai-development-game-dev-ai-game-production-lecture/tasks/b0dde04.output)",
+      "Bash(else echo \"Output file not found yet\")",
+      "Bash(fi:*)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: landscape v8 material, robot updates, plugin fixes\n\nNew: M_Landscape_v8, MI_Landscape_Ground_v8. Updated robot assets\n\\(BP, material, skeleton, texture\\), MI_Landscape_Ground_v7, level actors,\nNodePropertyManager, EditorCommands, Python server.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

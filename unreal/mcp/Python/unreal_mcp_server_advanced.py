@@ -1160,19 +1160,24 @@ def create_landscape_material(
     roughness: float = 0.85,
     mud_amount: float = 0.3,
     puddle_amount: float = 0.2,
+    height_blend_strength: float = 0.5,
+    puddle_height_bias: float = 1.0,
 ) -> Dict[str, Any]:
     """
-    Create a complete landscape material with UV noise distortion anti-tiling.
+    Create a complete landscape material v8 with UV noise distortion anti-tiling.
 
     Builds the entire material graph in C++ with:
     - UV noise distortion + fixed-angle rotation dissolve: warps UVs with noise,
       then samples at original + 37.5deg rotated orientation, dissolve-blends them
-    - Macro brightness variation: very low-frequency noise modulates brightness
+    - Height-based layer blending with transition noise for natural boundaries
+    - Multi-octave noise for concentrated puddle/mud patches
+    - World-Z height bias for valley accumulation of puddles and mud
+    - Wet edge darkening around puddle boundaries
+    - Distance-based tiling fade (reduces warp at far distances)
     - Slope-based rock/mud blend, noise-based grass overlay
-    - Optional mud/dirt overlay patches (requires mud_detail_d texture)
-    - Optional puddle overlay with wet roughness and flat normals
-    - 9 color-coded comment boxes organizing the graph
-    - ~85 expression nodes, 13 texture samplers (of 16 max)
+    - Macro brightness variation: very low-frequency noise modulates brightness
+    - 11 color-coded comment boxes organizing the graph
+    - ~130 expression nodes, 13 texture samplers (of 16 max)
 
     All nodes created and connected in a single tick. Uses WorldPosition-based
     UVs (not LandscapeLayerCoords) for reliable persistence.
@@ -1194,6 +1199,8 @@ def create_landscape_material(
     - roughness: Surface roughness value (default 0.85, MI-editable)
     - mud_amount: Mud/dirt overlay intensity (default 0.3, MI-editable)
     - puddle_amount: Puddle overlay intensity (default 0.2, MI-editable)
+    - height_blend_strength: How much texture height affects layer transitions (default 0.5, MI-editable)
+    - puddle_height_bias: How strongly puddles/mud prefer low-lying areas (default 1.0, MI-editable)
 
     Returns:
         Dictionary with material path, expression count, and sampler count.
@@ -1239,6 +1246,8 @@ def create_landscape_material(
         params["roughness"] = roughness
         params["mud_amount"] = mud_amount
         params["puddle_amount"] = puddle_amount
+        params["height_blend_strength"] = height_blend_strength
+        params["puddle_height_bias"] = puddle_height_bias
 
         response = unreal.send_command("create_landscape_material", params)
         return response or {"success": False, "message": "No response from Unreal"}
