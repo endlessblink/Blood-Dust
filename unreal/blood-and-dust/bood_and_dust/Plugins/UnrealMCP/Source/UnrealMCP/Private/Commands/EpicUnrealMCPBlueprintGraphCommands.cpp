@@ -11,7 +11,12 @@
 // Enhanced Input
 #include "K2Node_EnhancedInputAction.h"
 #include "InputAction.h"
+#include "InputMappingContext.h"
+#include "InputModifiers.h"
+#include "InputTriggers.h"
 #include "EditorAssetLibrary.h"
+#include "UObject/SavePackage.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
 FEpicUnrealMCPBlueprintGraphCommands::FEpicUnrealMCPBlueprintGraphCommands()
@@ -75,6 +80,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleCommand(cons
     else if (CommandType == TEXT("add_enhanced_input_action_event"))
     {
         return HandleAddEnhancedInputActionEvent(Params);
+    }
+    else if (CommandType == TEXT("create_input_action"))
+    {
+        return HandleCreateInputAction(Params);
+    }
+    else if (CommandType == TEXT("add_input_mapping"))
+    {
+        return HandleAddInputMapping(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint graph command: %s"), *CommandType));
@@ -562,5 +575,237 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddEnhancedI
     }
     Response->SetArrayField(TEXT("output_pins"), PinArray);
 
+    return Response;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleCreateInputAction(const TSharedPtr<FJsonObject>& Params)
+{
+    // Required params
+    FString ActionName;
+    if (!Params->TryGetStringField(TEXT("action_name"), ActionName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: action_name"));
+    }
+
+    FString ActionPath;
+    if (!Params->TryGetStringField(TEXT("action_path"), ActionPath))
+    {
+        ActionPath = TEXT("/Game/Input/Actions/");
+    }
+
+    FString ValueTypeStr;
+    if (!Params->TryGetStringField(TEXT("value_type"), ValueTypeStr))
+    {
+        ValueTypeStr = TEXT("Bool");
+    }
+
+    // Determine value type
+    EInputActionValueType ValueType = EInputActionValueType::Boolean;
+    if (ValueTypeStr.Equals(TEXT("Axis1D"), ESearchCase::IgnoreCase) || ValueTypeStr.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
+    {
+        ValueType = EInputActionValueType::Axis1D;
+    }
+    else if (ValueTypeStr.Equals(TEXT("Axis2D"), ESearchCase::IgnoreCase) || ValueTypeStr.Equals(TEXT("Vector2D"), ESearchCase::IgnoreCase))
+    {
+        ValueType = EInputActionValueType::Axis2D;
+    }
+    else if (ValueTypeStr.Equals(TEXT("Axis3D"), ESearchCase::IgnoreCase) || ValueTypeStr.Equals(TEXT("Vector3D"), ESearchCase::IgnoreCase))
+    {
+        ValueType = EInputActionValueType::Axis3D;
+    }
+
+    // Build full path
+    FString FullPath = ActionPath;
+    if (!FullPath.EndsWith(TEXT("/")))
+    {
+        FullPath += TEXT("/");
+    }
+    FullPath += ActionName;
+
+    // Check if already exists
+    UInputAction* ExistingAction = LoadObject<UInputAction>(nullptr, *FullPath);
+    if (!ExistingAction)
+    {
+        ExistingAction = Cast<UInputAction>(UEditorAssetLibrary::LoadAsset(FullPath));
+    }
+    if (ExistingAction)
+    {
+        // Return existing asset info
+        TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+        Response->SetBoolField(TEXT("success"), true);
+        Response->SetStringField(TEXT("action_name"), ActionName);
+        Response->SetStringField(TEXT("action_path"), FullPath);
+        Response->SetStringField(TEXT("value_type"), ValueTypeStr);
+        Response->SetBoolField(TEXT("already_existed"), true);
+        return Response;
+    }
+
+    // Create the package
+    FString PackagePath = FullPath;
+    UPackage* Package = CreatePackage(*PackagePath);
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackagePath));
+    }
+
+    // Create the InputAction asset
+    UInputAction* NewAction = NewObject<UInputAction>(Package, UInputAction::StaticClass(), *ActionName, RF_Public | RF_Standalone);
+    if (!NewAction)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create InputAction object"));
+    }
+
+    NewAction->ValueType = ValueType;
+
+    // Mark dirty and notify asset registry
+    FAssetRegistryModule::AssetCreated(NewAction);
+    Package->MarkPackageDirty();
+
+    // Save the package
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    UPackage::SavePackage(Package, NewAction, *PackageFilename, SaveArgs);
+
+    UE_LOG(LogTemp, Display, TEXT("CreateInputAction: Created '%s' at '%s' (ValueType: %s)"),
+        *ActionName, *FullPath, *ValueTypeStr);
+
+    TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+    Response->SetBoolField(TEXT("success"), true);
+    Response->SetStringField(TEXT("action_name"), ActionName);
+    Response->SetStringField(TEXT("action_path"), FullPath);
+    Response->SetStringField(TEXT("value_type"), ValueTypeStr);
+    Response->SetBoolField(TEXT("already_existed"), false);
+    return Response;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddInputMapping(const TSharedPtr<FJsonObject>& Params)
+{
+    // Required params
+    FString ContextPath;
+    if (!Params->TryGetStringField(TEXT("context_path"), ContextPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: context_path"));
+    }
+
+    FString ActionPath;
+    if (!Params->TryGetStringField(TEXT("action_path"), ActionPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: action_path"));
+    }
+
+    FString KeyName;
+    if (!Params->TryGetStringField(TEXT("key"), KeyName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: key"));
+    }
+
+    // Load the Input Mapping Context
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *ContextPath);
+    if (!IMC)
+    {
+        IMC = Cast<UInputMappingContext>(UEditorAssetLibrary::LoadAsset(ContextPath));
+    }
+    if (!IMC)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("InputMappingContext not found: %s"), *ContextPath));
+    }
+
+    // Load the Input Action
+    UInputAction* InputAction = LoadObject<UInputAction>(nullptr, *ActionPath);
+    if (!InputAction)
+    {
+        InputAction = Cast<UInputAction>(UEditorAssetLibrary::LoadAsset(ActionPath));
+    }
+    if (!InputAction)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("InputAction not found: %s"), *ActionPath));
+    }
+
+    // Parse the key
+    FKey Key(*KeyName);
+    if (!Key.IsValid())
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid key name: %s. Use Unreal key names like: SpaceBar, LeftShift, Insert, Delete, End, LeftMouseButton, RightMouseButton, A, B, W, S, etc."), *KeyName));
+    }
+
+    // Check for optional modifiers
+    bool bNegate = false;
+    Params->TryGetBoolField(TEXT("negate"), bNegate);
+
+    bool bSwizzle = false;
+    Params->TryGetBoolField(TEXT("swizzle"), bSwizzle);
+
+    // Add the mapping - MapKey returns by value in UE5.5
+    IMC->MapKey(InputAction, Key);
+
+    // Find the mapping we just added (last one for this action+key combo)
+    TArray<FEnhancedActionKeyMapping>& Mappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(IMC->GetMappings());
+    FEnhancedActionKeyMapping* Mapping = nullptr;
+    for (int32 i = Mappings.Num() - 1; i >= 0; --i)
+    {
+        if (Mappings[i].Action == InputAction && Mappings[i].Key == Key)
+        {
+            Mapping = &Mappings[i];
+            break;
+        }
+    }
+
+    if (Mapping)
+    {
+        // Add modifiers if requested
+        if (bNegate)
+        {
+            UInputModifierNegate* NegateModifier = NewObject<UInputModifierNegate>(IMC);
+            Mapping->Modifiers.Add(NegateModifier);
+        }
+
+        if (bSwizzle)
+        {
+            UInputModifierSwizzleAxis* SwizzleModifier = NewObject<UInputModifierSwizzleAxis>(IMC);
+            SwizzleModifier->Order = EInputAxisSwizzle::YXZ;
+            Mapping->Modifiers.Add(SwizzleModifier);
+        }
+
+        // Optional trigger type
+        FString TriggerType;
+        if (Params->TryGetStringField(TEXT("trigger"), TriggerType))
+        {
+            if (TriggerType.Equals(TEXT("Pressed"), ESearchCase::IgnoreCase))
+            {
+                UInputTriggerPressed* Trigger = NewObject<UInputTriggerPressed>(IMC);
+                Mapping->Triggers.Add(Trigger);
+            }
+            else if (TriggerType.Equals(TEXT("Released"), ESearchCase::IgnoreCase))
+            {
+                UInputTriggerReleased* Trigger = NewObject<UInputTriggerReleased>(IMC);
+                Mapping->Triggers.Add(Trigger);
+            }
+            else if (TriggerType.Equals(TEXT("Hold"), ESearchCase::IgnoreCase))
+            {
+                UInputTriggerHold* Trigger = NewObject<UInputTriggerHold>(IMC);
+                Mapping->Triggers.Add(Trigger);
+            }
+        }
+    }
+
+    // Save the IMC package
+    IMC->GetPackage()->MarkPackageDirty();
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(
+        IMC->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    UPackage::SavePackage(IMC->GetPackage(), IMC, *PackageFilename, SaveArgs);
+
+    UE_LOG(LogTemp, Display, TEXT("AddInputMapping: Mapped '%s' -> '%s' in '%s'"),
+        *KeyName, *ActionPath, *ContextPath);
+
+    TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+    Response->SetBoolField(TEXT("success"), true);
+    Response->SetStringField(TEXT("context_path"), ContextPath);
+    Response->SetStringField(TEXT("action_path"), ActionPath);
+    Response->SetStringField(TEXT("key"), KeyName);
+    if (bNegate) Response->SetBoolField(TEXT("negate"), true);
+    if (bSwizzle) Response->SetBoolField(TEXT("swizzle"), true);
     return Response;
 }

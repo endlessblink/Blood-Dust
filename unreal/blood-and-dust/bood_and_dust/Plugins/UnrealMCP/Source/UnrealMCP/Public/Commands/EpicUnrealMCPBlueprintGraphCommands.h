@@ -58,4 +58,10 @@ private:
 
     // Add Enhanced Input Action event node to Blueprint
     TSharedPtr<FJsonObject> HandleAddEnhancedInputActionEvent(const TSharedPtr<FJsonObject>& Params);
+
+    // Create an Input Action asset
+    TSharedPtr<FJsonObject> HandleCreateInputAction(const TSharedPtr<FJsonObject>& Params);
+
+    // Add a key mapping to an Input Mapping Context
+    TSharedPtr<FJsonObject> HandleAddInputMapping(const TSharedPtr<FJsonObject>& Params);
 };

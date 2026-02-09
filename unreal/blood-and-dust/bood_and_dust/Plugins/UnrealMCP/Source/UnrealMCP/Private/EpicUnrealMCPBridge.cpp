@@ -301,7 +301,9 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("add_function_output") ||
                      CommandType == TEXT("delete_function") ||
                      CommandType == TEXT("rename_function") ||
-                     CommandType == TEXT("add_enhanced_input_action_event"))
+                     CommandType == TEXT("add_enhanced_input_action_event") ||
+                     CommandType == TEXT("create_input_action") ||
+                     CommandType == TEXT("add_input_mapping"))
             {
                 ResultJson = BlueprintGraphCommands->HandleCommand(CommandType, Params);
             }

@@ -208,7 +208,20 @@
       "mcp__unrealMCP__create_material",
       "mcp__unrealMCP__setup_locomotion_state_machine",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: trees \\(5 meshes, textures, materials\\), plugin + server updates\n\nNew: SM_Dead_Tree_Trunk, SM_Quiver_Tree, SM_Searsia_Burchellii,\nSM_Searsia_Lucida_D/F, tree textures and materials.\nUpdated: BlueprintCommands, MaterialGraphCommands, Build.cs, Python server.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: vegetation scatter skill, landscape material update, level actors\n\nNew: vegetation-scatter command. Updated M_Landscape_Distorted,\nBlueprintCommands. Level actors reorganized with new scatter placement.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: vegetation scatter skill, landscape material update, level actors\n\nNew: vegetation-scatter command. Updated M_Landscape_Distorted,\nBlueprintCommands. Level actors reorganized with new scatter placement.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture diff --stat)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture status --short -u)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture log --oneline -5)",
+      "mcp__unrealMCP__set_character_properties",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\n[FEATURE-012] HISM vegetation scatter with persistence across restarts\n\n- Fix Poisson disk grid pattern: replace grid seeds with random placement\n- Add landscape-only trace filter \\(ALandscapeProxy check\\) to prevent floating\n- HISM persistence: RF_Transactional, AddInstanceComponent, BuildTreeIfOutdated,\n  PostEditChangeProperty\\(PerInstanceSMData\\), OFPA external package marking\n- Fix AnimBP transition crash: AllocateDefaultPins before CreateConnections\n- Fix tree material slots: use material_slot param for per-slot assignment\n- Create /vegetation-scatter skill with all 12 passes hardcoded\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "mcp__unrealMCP__delete_node",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture push)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture ls-files -z)",
+      "mcp__unrealMCP__create_input_action",
+      "mcp__unrealMCP__add_input_mapping",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture remote add origin https://github.com/endlessblink/Blood-Dust.git:*)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/ MASTER_PLAN.md unreal/)",
+      "Bash(inotifywait:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

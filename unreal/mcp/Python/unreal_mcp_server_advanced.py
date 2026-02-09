@@ -1149,26 +1149,30 @@ def create_landscape_material(
     mud_n: str = "",
     grass_d: str = "",
     grass_n: str = "",
+    mud_detail_d: str = "",
     detail_uv_scale: float = 0.004,
-    warp_scale: float = 0.00005,
-    warp_amount: float = 0.05,
+    warp_scale: float = 0.002,
+    warp_amount: float = 0.12,
     macro_scale: float = 0.00003,
     macro_strength: float = 0.4,
     slope_sharpness: float = 3.0,
     grass_amount: float = 0.5,
     roughness: float = 0.85,
+    mud_amount: float = 0.3,
+    puddle_amount: float = 0.2,
 ) -> Dict[str, Any]:
     """
     Create a complete landscape material with UV noise distortion anti-tiling.
 
     Builds the entire material graph in C++ with:
-    - UV noise distortion: continuous noise warps UV coordinates before sampling,
-      breaking the tile grid at every pixel (not texture bombing)
+    - UV noise distortion + fixed-angle rotation dissolve: warps UVs with noise,
+      then samples at original + 37.5deg rotated orientation, dissolve-blends them
     - Macro brightness variation: very low-frequency noise modulates brightness
-      for natural large-scale color variation
     - Slope-based rock/mud blend, noise-based grass overlay
-    - 7 color-coded comment boxes organizing the graph
-    - ~35 expression nodes, 6 texture samplers (of 16 max)
+    - Optional mud/dirt overlay patches (requires mud_detail_d texture)
+    - Optional puddle overlay with wet roughness and flat normals
+    - 9 color-coded comment boxes organizing the graph
+    - ~85 expression nodes, 13 texture samplers (of 16 max)
 
     All nodes created and connected in a single tick. Uses WorldPosition-based
     UVs (not LandscapeLayerCoords) for reliable persistence.
@@ -1179,14 +1183,17 @@ def create_landscape_material(
     - rock_d/rock_n: Rock diffuse + normal (slopes)
     - mud_d/mud_n: Mud diffuse + normal (flat areas)
     - grass_d/grass_n: Grass diffuse + normal (overlay)
+    - mud_detail_d: Mud/dirt detail diffuse texture for overlay patches (optional)
     - detail_uv_scale: WorldPos UV multiplier for detail textures (default 0.004)
-    - warp_scale: Noise scale for UV distortion (default 0.00005, very low frequency)
-    - warp_amount: UV distortion strength (default 0.05, in UV space units)
+    - warp_scale: Noise scale for UV distortion (default 0.002)
+    - warp_amount: UV distortion strength (default 0.12)
     - macro_scale: Noise scale for brightness variation (default 0.00003)
     - macro_strength: Brightness modulation amount 0-1 (default 0.4, MI-editable)
     - slope_sharpness: Power exponent for slope detection (default 3.0, MI-editable)
     - grass_amount: Grass overlay blend amount (default 0.5, MI-editable)
     - roughness: Surface roughness value (default 0.85, MI-editable)
+    - mud_amount: Mud/dirt overlay intensity (default 0.3, MI-editable)
+    - puddle_amount: Puddle overlay intensity (default 0.2, MI-editable)
 
     Returns:
         Dictionary with material path, expression count, and sampler count.
@@ -1198,7 +1205,9 @@ def create_landscape_material(
             mud_d="/Game/Textures/Ground/T_Brown_Mud_D",
             mud_n="/Game/Textures/Ground/T_Brown_Mud_N",
             grass_d="/Game/Textures/Ground/T_Grass_Dry_D",
-            grass_n="/Game/Textures/Ground/T_Grass_Dry_N")
+            grass_n="/Game/Textures/Ground/T_Grass_Dry_N",
+            mud_detail_d="/Game/Textures/Ground/T_Sand_D",
+            mud_amount=0.3, puddle_amount=0.2)
     """
     unreal = get_unreal_connection()
     if not unreal:
@@ -1218,6 +1227,8 @@ def create_landscape_material(
             params["grass_d"] = grass_d
         if grass_n:
             params["grass_n"] = grass_n
+        if mud_detail_d:
+            params["mud_detail_d"] = mud_detail_d
         params["detail_uv_scale"] = detail_uv_scale
         params["warp_scale"] = warp_scale
         params["warp_amount"] = warp_amount
@@ -1226,6 +1237,8 @@ def create_landscape_material(
         params["slope_sharpness"] = slope_sharpness
         params["grass_amount"] = grass_amount
         params["roughness"] = roughness
+        params["mud_amount"] = mud_amount
+        params["puddle_amount"] = puddle_amount
 
         response = unreal.send_command("create_landscape_material", params)
         return response or {"success": False, "message": "No response from Unreal"}
@@ -1706,6 +1719,51 @@ def setup_locomotion_state_machine(
         return {"success": False, "message": str(e)}
 
 @mcp.tool()
+def set_character_properties(
+    blueprint_path: str,
+    anim_blueprint_path: str = "",
+    skeletal_mesh_path: str = "",
+    mesh_offset_z: float = None,
+) -> Dict[str, Any]:
+    """
+    Update properties on an existing Character Blueprint's CDO (Class Default Object).
+
+    Sets AnimBlueprint, SkeletalMesh, and/or mesh offset on the character's
+    inherited SkeletalMeshComponent. Use this to assign an AnimBP to a character
+    that was created without one.
+
+    Parameters:
+    - blueprint_path: Content path to Character Blueprint (e.g., "/Game/Characters/Robot/BP_RobotCharacter")
+    - anim_blueprint_path: Content path to AnimBlueprint to assign (e.g., "/Game/Characters/Robot/ABP_Robot")
+    - skeletal_mesh_path: Content path to SkeletalMesh to assign
+    - mesh_offset_z: Z offset for the mesh component (useful for centering in capsule)
+
+    Returns:
+        Dictionary with list of changes applied.
+
+    Example:
+        set_character_properties(
+            blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
+            anim_blueprint_path="/Game/Characters/Robot/ABP_Robot"
+        )
+    """
+    unreal = get_unreal_connection()
+    try:
+        params = {"blueprint_path": blueprint_path}
+        if anim_blueprint_path:
+            params["anim_blueprint_path"] = anim_blueprint_path
+        if skeletal_mesh_path:
+            params["skeletal_mesh_path"] = skeletal_mesh_path
+        if mesh_offset_z is not None:
+            params["mesh_offset_z"] = mesh_offset_z
+
+        response = unreal.send_command("set_character_properties", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"set_character_properties error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
 def add_enhanced_input_action_event(
     blueprint_name: str,
     input_action_path: str,
@@ -1735,6 +1793,106 @@ def add_enhanced_input_action_event(
         "pos_y": pos_y,
     })
     return response.get("result", response)
+
+
+@mcp.tool()
+async def create_input_action(
+    action_name: str,
+    value_type: str = "Bool",
+    action_path: str = "/Game/Input/Actions/"
+) -> str:
+    """
+    Create an Enhanced Input Action asset.
+
+    Creates a UInputAction asset that can be bound to keys in an Input Mapping Context
+    and listened for in Blueprints via EnhancedInputAction event nodes.
+
+    Parameters:
+    - action_name: Name for the input action (e.g., "IA_Sprint", "IA_Attack")
+    - value_type: Type of input value:
+        "Bool" - Digital on/off (buttons, keys)
+        "Axis1D" / "Float" - Single axis (mouse wheel, triggers)
+        "Axis2D" / "Vector2D" - Two axes (thumbstick, WASD)
+        "Axis3D" / "Vector3D" - Three axes (motion controller)
+    - action_path: Content browser folder (default: "/Game/Input/Actions/")
+
+    Returns:
+        Dictionary with action_name, action_path, value_type, and whether it already existed.
+
+    Example:
+        create_input_action("IA_Sprint", "Bool")
+        create_input_action("IA_Attack", "Bool", "/Game/Input/Actions/Combat/")
+    """
+    unreal = get_unreal_connection()
+    try:
+        result = unreal.send_command("create_input_action", {
+            "action_name": action_name,
+            "value_type": value_type,
+            "action_path": action_path
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def add_input_mapping(
+    context_path: str,
+    action_path: str,
+    key: str,
+    negate: bool = False,
+    swizzle: bool = False,
+    trigger: str = ""
+) -> str:
+    """
+    Add a key binding to an Input Mapping Context.
+
+    Maps a keyboard/mouse/gamepad key to an Input Action within an existing
+    Input Mapping Context. Supports modifiers (negate, swizzle) and trigger types.
+
+    Parameters:
+    - context_path: Content path to the Input Mapping Context (e.g., "/Game/Input/IMC_Default")
+    - action_path: Content path to the Input Action (e.g., "/Game/Input/Actions/IA_Sprint")
+    - key: Unreal key name. Common keys:
+        Letters: A, B, C, ... Z
+        Numbers: Zero, One, Two, ... Nine
+        Arrow keys: Up, Down, Left, Right
+        Special: SpaceBar, LeftShift, RightShift, LeftControl, RightControl
+        Function: F1-F12
+        Numpad: NumPadZero-NumPadNine
+        Mouse: LeftMouseButton, RightMouseButton, MiddleMouseButton, MouseScrollUp, MouseScrollDown
+        Navigation: Insert, Delete, Home, End, PageUp, PageDown
+        Gamepad: Gamepad_LeftX, Gamepad_FaceButton_Bottom, etc.
+    - negate: Add Negate modifier (inverts value, useful for opposite directions)
+    - swizzle: Add Swizzle YXZ modifier (swaps X and Y axes)
+    - trigger: Optional trigger type:
+        "" (empty) - Default: fires on Down (every frame while held)
+        "Pressed" - Fires once when pressed
+        "Released" - Fires once when released
+        "Hold" - Fires after held for a duration
+
+    Returns:
+        Dictionary with context_path, action_path, key, and applied modifiers.
+
+    Example:
+        add_input_mapping("/Game/Input/IMC_Default", "/Game/Input/Actions/IA_Sprint", "LeftShift")
+        add_input_mapping("/Game/Input/IMC_Default", "/Game/Input/Actions/IA_Attack", "Insert", trigger="Pressed")
+    """
+    unreal = get_unreal_connection()
+    try:
+        params = {
+            "context_path": context_path,
+            "action_path": action_path,
+            "key": key,
+            "negate": negate,
+            "swizzle": swizzle
+        }
+        if trigger:
+            params["trigger"] = trigger
+        result = unreal.send_command("add_input_mapping", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -3056,9 +3214,9 @@ def apply_material_to_blueprint(
     blueprint_name: str,
     component_name: str,
     material_path: str,
-    material_slot: int = 0
+    material_slot: int = -1
 ) -> Dict[str, Any]:
-    """Apply a specific material to a component in a Blueprint."""
+    """Apply a material to a component in a Blueprint. Use material_slot=-1 (default) to apply to ALL slots."""
     unreal = get_unreal_connection()
     if not unreal:
         return {"success": False, "message": "Failed to connect to Unreal Engine"}

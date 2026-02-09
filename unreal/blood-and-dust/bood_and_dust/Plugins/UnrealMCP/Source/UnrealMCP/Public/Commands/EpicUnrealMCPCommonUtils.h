@@ -35,7 +35,8 @@ public:
     // Actor utilities
     static TSharedPtr<FJsonValue> ActorToJson(AActor* Actor);
     static TSharedPtr<FJsonObject> ActorToJsonObject(AActor* Actor, bool bDetailed = false);
-    
+    static AActor* FindActorByName(UWorld* World, const FString& ActorName);
+
     // Blueprint utilities
     static UBlueprint* FindBlueprint(const FString& BlueprintName);
     static UBlueprint* FindBlueprintByName(const FString& BlueprintName);

@@ -33,13 +33,19 @@
 | **INQUIRY-008** | **Can Blender scene quality transfer to Godot?** | **P1** | OPEN | - |
 | ~~**TASK-007**~~ | ~~**Create Blender material skill (UV, reflections, blending, export)**~~ | **P2** | DONE | - |
 | **TASK-009** | **Fix robot walk cycle - realistic ground contact & locomotion** | **P1** | IN PROGRESS | - |
-| **FEATURE-011** | **Reliable landscape material & viewport parameter controls** | **P1** | IN PROGRESS | - |
-| TASK-011A | Rebuild M_Landscape_Ground from scratch with reliable UV | P1 | OPEN | - |
-| TASK-011B | Use Multiply+Constant for UV scale (persistence fix) | P1 | OPEN | TASK-011A |
-| TASK-011C | Research: expose MI params in viewport Details panel | P1 | OPEN | - |
-| TASK-011D | Implement viewport parameter controller | P1 | OPEN | TASK-011C |
-| TASK-011E | Apply MI to all landscape sections, verify persistence | P1 | OPEN | TASK-011A |
-| TASK-011F | Update landscape skills with reliability fixes | P2 | OPEN | TASK-011A |
+| ~~**FEATURE-011**~~ | ~~**Reliable landscape material & viewport parameter controls**~~ | **P1** | **DONE** (2026-02-09) | - |
+| ~~TASK-011A~~ | ~~Rebuild M_Landscape_Ground from scratch with reliable UV~~ | P1 | ~~DONE~~ | - |
+| ~~TASK-011B~~ | ~~Use Multiply+Constant for UV scale (persistence fix)~~ | P1 | ~~DONE~~ | TASK-011A |
+| ~~TASK-011C~~ | ~~Research: expose MI params in viewport Details panel~~ | P1 | ~~DONE~~ | - |
+| ~~TASK-011D~~ | ~~Expose 6 ScalarParameters in MI (DetailUVScale, WarpAmount, MacroStrength, SlopeSharpness, GrassAmount, Roughness)~~ | P1 | ~~DONE~~ | TASK-011C |
+| ~~TASK-011E~~ | ~~Apply MI to all landscape sections, verify persistence~~ | P1 | ~~DONE~~ | TASK-011A |
+| ~~TASK-011F~~ | ~~Update landscape skills with reliability fixes~~ | P2 | ~~DONE~~ | TASK-011A |
+| **FEATURE-013** | **Landscape detail: user-controllable rocks, grass, puddles, mud** | **P1** | OPEN | FEATURE-011 |
+| ~~TASK-013A~~ | ~~Expose rock density/scale as controllable parameter (`/rock-scatter` command)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| ~~TASK-013B~~ | ~~Expose grass density/scale as controllable parameter (`/grass-scatter` command)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| TASK-013C | Add puddle system to landscape material (noise mask, dark color, low roughness, flat normal) | P1 | OPEN | FEATURE-011 |
+| TASK-013D | Add muddy area system to landscape material (noise mask, brown color blend) | P1 | OPEN | FEATURE-011 |
+| TASK-013E | Expose PuddleAmount, MudAmount as MI ScalarParameters | P1 | OPEN | TASK-013C, TASK-013D |
 | **FEATURE-010** | **Playable character pipeline: import, rig, animate, play** | **P0** | IN PROGRESS | - |
 | ~~TASK-010A~~ | ~~C++ `import_skeletal_mesh` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | - |
 | ~~TASK-010B~~ | ~~C++ `import_animation` MCP tool~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010A |
@@ -63,6 +69,7 @@
 | ~~TASK-012E~~ | ~~Fix tree material slot assignments (per-slot)~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012D |
 | ~~TASK-012F~~ | ~~Create `/vegetation-scatter` skill with all paths~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012A..E |
 | ~~TASK-012G~~ | ~~Fix AnimBP transition crash (AllocateDefaultPins order)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
+| **BUG-012** | **MCP apply_material_to_actor unreliable** | **P0** | OPEN | - |
 
 ## Active Work
 
@@ -70,59 +77,50 @@
 
 ### FEATURE-011: Reliable Landscape Material & Viewport Parameter Controls
 
-**Status**: IN PROGRESS
+**Status**: DONE (2026-02-09)
 **Priority**: P1
-**Goal**: Create a natural-looking landscape ground material that persists through editor restarts, with all features (slope blending, dirt patches, puddles, rubble, pebbles) working reliably. Expose material instance parameters directly in the Unreal viewport Details panel.
+**Result**: Complete landscape material with anti-tiling (UV noise distortion + fixed 37.5° rotation + dissolve blend). 71 nodes, 12 samplers, 6 exposed MI ScalarParameters. Applied as MI_Landscape_Ground_v6 on all 5 landscape sections.
 
-#### Known Issues (Root Causes)
-- LandscapeLayerCoords `MappingScale` property reverts to default (0) after editor restart — UV scale lost
-- MI parameter overrides (DirtAmount, PuddleAmount) may not propagate to landscape streaming proxies
-- Material has 66 expressions with orphaned nodes from multiple failed attempts
+#### Solution Summary
+- **Anti-tiling**: Three-layer approach — UV distortion (warp_scale=0.002, warp_amount=0.12) + fixed-angle rotation (37.5°, +0.5 UV offset) + dissolve blend (noise scale=0.0003)
+- **Persistence**: WorldPosition-based UVs (not LandscapeLayerCoords), all values in Constants/ScalarParameters
+- **C++ tool**: `create_landscape_material` in EpicUnrealMCPEditorCommands.cpp builds entire graph in one tick
+- **Iteration history**: texture bombing → UV distortion only → noise rotation (swirls) → fixed rotation (success)
+- **See**: `memory/anti-tiling-research.md` for full technical details
 
-#### Subtasks
+#### MI Parameters (tuneable on MI_Landscape_Ground_v6)
 
-| ID | Title | Priority | Status | Dependencies |
-|----|-------|----------|--------|--------------|
-| TASK-011A | Delete old M_Landscape_Ground, rebuild from scratch with reliable UV scaling | P1 | OPEN | - |
-| TASK-011B | Use Multiply+Constant for UV scale instead of MappingScale (workaround for persistence bug) | P1 | OPEN | TASK-011A |
-| TASK-011C | Research: how to expose MI parameters in Unreal viewport Details panel | P1 | OPEN | - |
-| TASK-011D | Implement viewport parameter controller (C++ actor or Blueprint based on research) | P1 | OPEN | TASK-011C |
-| TASK-011E | Apply MI to all landscape sections, verify persistence through restart | P1 | OPEN | TASK-011A |
-| TASK-011F | Update `/unreal-landscape-material` and `/unreal-landscape-enhance` skills with reliability fixes | P2 | OPEN | TASK-011A, TASK-011B |
+| Parameter | Default | Range | Effect |
+|-----------|---------|-------|--------|
+| DetailUVScale | 0.004 | 0.001-0.01 | Texture tile size (smaller = bigger tiles) |
+| WarpAmount | 0.12 | 0.0-0.3 | UV distortion strength |
+| MacroStrength | 0.4 | 0.0-1.0 | Large-scale brightness variation |
+| SlopeSharpness | 3.0 | 1.0-10.0 | Rock/mud transition sharpness |
+| GrassAmount | 0.5 | 0.0-1.0 | Grass overlay intensity |
+| Roughness | 0.85 | 0.0-1.0 | Surface roughness |
 
-#### TASK-011A+B: Reliable Material Rebuild Strategy
+#### Exact MCP Command to Reproduce
 
-**Key change**: Instead of `LandscapeLayerCoords(MappingScale=5)` (which doesn't persist), use:
+```python
+create_landscape_material("M_Landscape_Distorted",
+    rock_d="/Game/Textures/Ground/T_Rocky_Terrain_D",
+    rock_n="/Game/Textures/Ground/T_Rocky_Terrain_N",
+    mud_d="/Game/Textures/Ground/T_Brown_Mud_D",
+    mud_n="/Game/Textures/Ground/T_Brown_Mud_N",
+    grass_d="/Game/Textures/Ground/T_Grass_Dry_D",
+    grass_n="/Game/Textures/Ground/T_Grass_Dry_N",
+    detail_uv_scale=0.004, warp_scale=0.002, warp_amount=0.12,
+    macro_scale=3e-05, macro_strength=0.4,
+    slope_sharpness=3, grass_amount=0.5, roughness=0.85)
+
+create_material_instance("MI_Landscape_Ground_v6",
+    parent_material="/Game/Materials/M_Landscape_Distorted",
+    scalar_parameters={"DetailUVScale": 0.004, "WarpAmount": 0.12,
+        "MacroStrength": 0.4, "SlopeSharpness": 3,
+        "GrassAmount": 0.5, "Roughness": 0.85})
+
+set_landscape_material("/Game/Materials/MI_Landscape_Ground_v6")
 ```
-LandscapeLayerCoords(MappingScale=0, default) → Multiply(by Constant) → TextureSample UV
-```
-- Constant nodes (0.2 for ground, 0.07 for rubble, 0.33 for pebble) always persist correctly
-- LandscapeLayerCoords at default scale (0) also persists since it's the default
-- This adds ~2 extra nodes per UV group but eliminates the persistence bug
-
-**Material Architecture (from scratch):**
-1. Slope detection: VertexNormalWS → ComponentMask(Z) → Abs → Power(SlopeSharpness) → slope_alpha
-2. Base textures: Rock_D, Mud_D, Grass_D with per-texture UV from LandscapeLayerCoords+Multiply
-3. Slope blend: Lerp(Rock, Mud, slope_alpha) → Lerp(result, Grass, GrassAmount)
-4. Rubble overlay: separate UV scale, blended via RubbleAmount
-5. Pebble overlay: separate UV scale, blended via PebbleAmount
-6. Dirt patches: noise mask → DirtAmount → Lerp with sand/soil texture
-7. Puddles: noise mask B → PuddleAmount → dark color, low roughness, flat normal
-8. Normal chain: same blend order → NormalStrength → Normal output
-9. All parameters as ScalarParameter for MI control
-
-#### TASK-011C: Research — Viewport MI Parameter Exposure
-
-Research these approaches:
-1. Custom C++ Actor with UPROPERTY floats + PostEditChangeProperty → SetScalarParameterValueEditorOnly on MI
-2. Material Parameter Collection (MPC) — global params editable anywhere
-3. Blueprint with public variables + Construction Script
-4. Editor Utility Widget (EUW) panel docked in editor
-5. Custom Detail Customization for landscape actors
-
-#### TASK-011D: Implement Parameter Controller
-
-Based on TASK-011C research, implement the chosen approach. Currently building C++ `ALandscapeParameterController` actor (files partially created).
 
 ---
 

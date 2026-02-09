@@ -63,6 +63,16 @@
 #include "Materials/MaterialExpressionNoise.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionComment.h"
+#include "Materials/MaterialExpressionSine.h"
+#include "Materials/MaterialExpressionCosine.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
+#include "Materials/MaterialExpressionDistance.h"
+#include "Materials/MaterialExpressionClamp.h"
+#include "Materials/MaterialExpressionDivide.h"
+#include "Materials/MaterialExpressionDotProduct.h"
+#include "Materials/MaterialExpressionOneMinus.h"
 #include "MaterialEditingLibrary.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -1949,13 +1959,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     if (!MaterialPath.EndsWith(TEXT("/"))) MaterialPath += TEXT("/");
 
     // Texture paths
-    FString RockD, RockN, MudD, MudN, GrassD, GrassNPath;
+    FString RockD, RockN, MudD, MudN, GrassD, GrassNPath, MudDetailD;
     Params->TryGetStringField(TEXT("rock_d"), RockD);
     Params->TryGetStringField(TEXT("rock_n"), RockN);
     Params->TryGetStringField(TEXT("mud_d"), MudD);
     Params->TryGetStringField(TEXT("mud_n"), MudN);
     Params->TryGetStringField(TEXT("grass_d"), GrassD);
     Params->TryGetStringField(TEXT("grass_n"), GrassNPath);
+    Params->TryGetStringField(TEXT("mud_detail_d"), MudDetailD);
 
     // Scalar parameters — UV Noise Distortion + Macro Variation approach
     double DetailUVScale = 0.004;
@@ -1966,6 +1977,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     double SlopeSharpness = 3.0;
     double GrassAmount = 0.5;
     double RoughnessVal = 0.85;
+    double MudAmount = 0.3;
+    double PuddleAmount = 0.2;
     Params->TryGetNumberField(TEXT("detail_uv_scale"), DetailUVScale);
     Params->TryGetNumberField(TEXT("warp_scale"), WarpScale);
     Params->TryGetNumberField(TEXT("warp_amount"), WarpAmount);
@@ -1974,6 +1987,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Params->TryGetNumberField(TEXT("slope_sharpness"), SlopeSharpness);
     Params->TryGetNumberField(TEXT("grass_amount"), GrassAmount);
     Params->TryGetNumberField(TEXT("roughness"), RoughnessVal);
+    Params->TryGetNumberField(TEXT("mud_amount"), MudAmount);
+    Params->TryGetNumberField(TEXT("puddle_amount"), PuddleAmount);
+
+    double HeightBlendStrength = 0.5;
+    double PuddleHeightBias = 1.0;
+    Params->TryGetNumberField(TEXT("height_blend_strength"), HeightBlendStrength);
+    Params->TryGetNumberField(TEXT("puddle_height_bias"), PuddleHeightBias);
 
     // Create material package
     FString FullPath = MaterialPath + MaterialName;
@@ -2053,14 +2073,48 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     MaskRG->Input.Connect(0, WorldPos);
     AddExpr(MaskRG, -2200, -200);
 
-    auto* DetailScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
-    DetailScaleConst->R = DetailUVScale;
+    auto* DetailScaleConst = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    DetailScaleConst->ParameterName = FName(TEXT("DetailUVScale"));
+    DetailScaleConst->DefaultValue = DetailUVScale;
     AddExpr(DetailScaleConst, -2200, -50);
 
     auto* BaseUV = NewObject<UMaterialExpressionMultiply>(Mat);
     BaseUV->A.Connect(0, MaskRG);
     BaseUV->B.Connect(0, DetailScaleConst);
     AddExpr(BaseUV, -2000, -200);
+
+    // =================================================================
+    // SECTION 1B: Distance-Based Tiling Fade (6 nodes)
+    // Fade UV warp and rotation dissolve at far distances to hide tiling
+    // =================================================================
+    AddComment(TEXT("Distance-Based Tiling Fade"), FLinearColor(0.4f, 0.8f, 0.4f), -2600, 100, 700, 500);
+
+    // Camera position
+    auto* CamPos = NewObject<UMaterialExpressionCameraPositionWS>(Mat);
+    AddExpr(CamPos, -2500, 200);
+
+    // Distance = Length(CamPos - WorldPos)
+    auto* CamDist = NewObject<UMaterialExpressionDistance>(Mat);
+    CamDist->A.Connect(0, CamPos);
+    CamDist->B.Connect(0, WorldPos);
+    AddExpr(CamDist, -2100, 200);
+
+    // Normalize: distance / 50000 (full fade at 500 meters)
+    auto* DistDivConst = NewObject<UMaterialExpressionConstant>(Mat);
+    DistDivConst->R = 50000.0f;
+    AddExpr(DistDivConst, -2100, 350);
+
+    auto* DistNorm = NewObject<UMaterialExpressionDivide>(Mat);
+    DistNorm->A.Connect(0, CamDist);
+    DistNorm->B.Connect(0, DistDivConst);
+    AddExpr(DistNorm, -1900, 200);
+
+    // Clamp to 0-1
+    auto* DistFade = NewObject<UMaterialExpressionClamp>(Mat);
+    DistFade->Input.Connect(0, DistNorm);
+    DistFade->MinDefault = 0.0f;
+    DistFade->MaxDefault = 1.0f;
+    AddExpr(DistFade, -1700, 200);
 
     // =================================================================
     // COMMENT BOX 2: UV Noise Distortion (Orange)
@@ -2112,21 +2166,39 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     WarpNoiseY->Position.Connect(0, WarpPosOffset);
     AddExpr(WarpNoiseY, -1600, 700);
 
-    // WarpAmount constant
-    auto* WarpAmountConst = NewObject<UMaterialExpressionConstant>(Mat);
-    WarpAmountConst->R = WarpAmount;
+    // WarpAmount parameter (exposed in MI)
+    auto* WarpAmountConst = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    WarpAmountConst->ParameterName = FName(TEXT("WarpAmount"));
+    WarpAmountConst->DefaultValue = WarpAmount;
     AddExpr(WarpAmountConst, -1600, 500);
 
-    // WarpX = Multiply(WarpNoiseX, WarpAmountConst)
+    // Distance-modulated warp: Lerp(WarpAmount, WarpAmount*0.3, DistFade)
+    // At close range (DistFade=0): full warp. At far range (DistFade=1): 30% warp
+    auto* WarpDistMin = NewObject<UMaterialExpressionConstant>(Mat);
+    WarpDistMin->R = 0.3f;
+    AddExpr(WarpDistMin, -1600, 450);
+
+    auto* WarpReduced = NewObject<UMaterialExpressionMultiply>(Mat);
+    WarpReduced->A.Connect(0, WarpAmountConst);
+    WarpReduced->B.Connect(0, WarpDistMin);
+    AddExpr(WarpReduced, -1400, 450);
+
+    auto* EffectiveWarp = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+    EffectiveWarp->A.Connect(0, WarpAmountConst);
+    EffectiveWarp->B.Connect(0, WarpReduced);
+    EffectiveWarp->Alpha.Connect(0, DistFade);
+    AddExpr(EffectiveWarp, -1200, 450);
+
+    // WarpX = Multiply(WarpNoiseX, EffectiveWarp)
     auto* WarpX = NewObject<UMaterialExpressionMultiply>(Mat);
     WarpX->A.Connect(0, WarpNoiseX);
-    WarpX->B.Connect(0, WarpAmountConst);
+    WarpX->B.Connect(0, EffectiveWarp);
     AddExpr(WarpX, -1400, 400);
 
-    // WarpY = Multiply(WarpNoiseY, WarpAmountConst)
+    // WarpY = Multiply(WarpNoiseY, EffectiveWarp)
     auto* WarpY = NewObject<UMaterialExpressionMultiply>(Mat);
     WarpY->A.Connect(0, WarpNoiseY);
-    WarpY->B.Connect(0, WarpAmountConst);
+    WarpY->B.Connect(0, EffectiveWarp);
     AddExpr(WarpY, -1400, 700);
 
     // AppendWarp = AppendVector(WarpX, WarpY) -> float2
@@ -2142,9 +2214,121 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(DistortedUV, -1000, 400);
 
     // =================================================================
+    // COMMENT BOX 2B: Fixed-Angle Rotation + Dissolve (Pink)
+    // Sample texture at original UVs AND at a FIXED 37.5° rotated + offset
+    // UVs, then dissolve between them with noise. Fixed angle avoids the
+    // swirl artifacts that per-pixel noise rotation creates.
+    // =================================================================
+    AddComment(TEXT("Fixed Rotation + Dissolve"), FLinearColor(0.9f, 0.3f, 0.6f), -800, 1600, 1200, 800);
+
+    // Fixed rotation: 37.5 degrees (irrational w.r.t. 90° → never aligns with tile grid)
+    // sin(37.5°) ≈ 0.6088,  cos(37.5°) ≈ 0.7934
+    auto* ConstSin = NewObject<UMaterialExpressionConstant>(Mat);
+    ConstSin->R = 0.6088f;
+    AddExpr(ConstSin, -500, 1700);
+
+    auto* ConstCos = NewObject<UMaterialExpressionConstant>(Mat);
+    ConstCos->R = 0.7934f;
+    AddExpr(ConstCos, -500, 1850);
+
+    // Split DistortedUV into U and V
+    auto* RotMaskU = NewObject<UMaterialExpressionComponentMask>(Mat);
+    RotMaskU->R = true; RotMaskU->G = false; RotMaskU->B = false; RotMaskU->A = false;
+    RotMaskU->Input.Connect(0, DistortedUV);
+    AddExpr(RotMaskU, -300, 1700);
+
+    auto* RotMaskV = NewObject<UMaterialExpressionComponentMask>(Mat);
+    RotMaskV->R = false; RotMaskV->G = true; RotMaskV->B = false; RotMaskV->A = false;
+    RotMaskV->Input.Connect(0, DistortedUV);
+    AddExpr(RotMaskV, -300, 1850);
+
+    // RotU = U*cos - V*sin
+    auto* UCos = NewObject<UMaterialExpressionMultiply>(Mat);
+    UCos->A.Connect(0, RotMaskU);  UCos->B.Connect(0, ConstCos);
+    AddExpr(UCos, -100, 1700);
+
+    auto* VSin = NewObject<UMaterialExpressionMultiply>(Mat);
+    VSin->A.Connect(0, RotMaskV);  VSin->B.Connect(0, ConstSin);
+    AddExpr(VSin, -100, 1800);
+
+    auto* RotU = NewObject<UMaterialExpressionSubtract>(Mat);
+    RotU->A.Connect(0, UCos);  RotU->B.Connect(0, VSin);
+    AddExpr(RotU, 100, 1750);
+
+    // RotV = U*sin + V*cos
+    auto* USin = NewObject<UMaterialExpressionMultiply>(Mat);
+    USin->A.Connect(0, RotMaskU);  USin->B.Connect(0, ConstSin);
+    AddExpr(USin, -100, 1950);
+
+    auto* VCos = NewObject<UMaterialExpressionMultiply>(Mat);
+    VCos->A.Connect(0, RotMaskV);  VCos->B.Connect(0, ConstCos);
+    AddExpr(VCos, -100, 2050);
+
+    auto* RotV = NewObject<UMaterialExpressionAdd>(Mat);
+    RotV->A.Connect(0, USin);  RotV->B.Connect(0, VCos);
+    AddExpr(RotV, 100, 2000);
+
+    // Add fixed UV offset to decorrelate rotated grid from original
+    auto* RotUVRaw = NewObject<UMaterialExpressionAppendVector>(Mat);
+    RotUVRaw->A.Connect(0, RotU);  RotUVRaw->B.Connect(0, RotV);
+    AddExpr(RotUVRaw, 300, 1850);
+
+    auto* UVOffsetConst = NewObject<UMaterialExpressionConstant2Vector>(Mat);
+    UVOffsetConst->R = 0.5f;  UVOffsetConst->G = 0.5f;  // Half-tile offset
+    AddExpr(UVOffsetConst, 300, 2000);
+
+    auto* RotatedUV = NewObject<UMaterialExpressionAdd>(Mat);
+    RotatedUV->A.Connect(0, RotUVRaw);  RotatedUV->B.Connect(0, UVOffsetConst);
+    AddExpr(RotatedUV, 500, 1900);
+
+    // Dissolve blend noise — low frequency for large smooth patches
+    auto* BlendPosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+    BlendPosOffset->Constant = FLinearColor(3000.0f, 5000.0f, 0.0f, 0.0f);
+    AddExpr(BlendPosOffset, -700, 2200);
+
+    auto* BlendPosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+    BlendPosAdd->A.Connect(0, WorldPos);  BlendPosAdd->B.Connect(0, BlendPosOffset);
+    AddExpr(BlendPosAdd, -500, 2200);
+
+    auto* BlendNoise = NewObject<UMaterialExpressionNoise>(Mat);
+    BlendNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+    BlendNoise->Scale = 0.0003f;  // Very low freq → large blend patches (~3300 units)
+    BlendNoise->Quality = 1;
+    BlendNoise->Levels = 3;
+    BlendNoise->OutputMin = 0.0f;
+    BlendNoise->OutputMax = 1.0f;
+    BlendNoise->bTurbulence = false;
+    BlendNoise->bTiling = false;
+    BlendNoise->LevelScale = 2.0f;
+    BlendNoise->Position.Connect(0, BlendPosAdd);
+    AddExpr(BlendNoise, -300, 2200);
+
+    // At far distance, reduce rotation dissolve effect (bias toward original orientation)
+    auto* BlendDistHalf = NewObject<UMaterialExpressionConstant>(Mat);
+    BlendDistHalf->R = 0.5f;
+    AddExpr(BlendDistHalf, -100, 2350);
+
+    auto* DistBlendScale = NewObject<UMaterialExpressionMultiply>(Mat);
+    DistBlendScale->A.Connect(0, DistFade);
+    DistBlendScale->B.Connect(0, BlendDistHalf);
+    AddExpr(DistBlendScale, 100, 2350);
+
+    auto* DistBlendInv = NewObject<UMaterialExpressionOneMinus>(Mat);
+    DistBlendInv->Input.Connect(0, DistBlendScale);
+    AddExpr(DistBlendInv, 300, 2350);
+
+    auto* EffectiveBlendNoise = NewObject<UMaterialExpressionMultiply>(Mat);
+    EffectiveBlendNoise->A.Connect(0, BlendNoise);
+    EffectiveBlendNoise->B.Connect(0, DistBlendInv);
+    AddExpr(EffectiveBlendNoise, 500, 2300);
+
+    // FinalBlendNoise: distance-modulated dissolve noise used by all layers
+    UMaterialExpression* FinalBlendNoise = EffectiveBlendNoise;
+
+    // =================================================================
     // COMMENT BOX 3: Macro Brightness Variation (Cyan)
     // =================================================================
-    AddComment(TEXT("Macro Brightness Variation"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 1100, 700, 400);
+    AddComment(TEXT("Macro Brightness Variation"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 2500, 700, 400);
 
     // =================================================================
     // SECTION 3: Macro Variation Noise (4 nodes)
@@ -2189,53 +2373,83 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     UTexture* TexGrassN = LoadTex(GrassNPath);
 
     // =================================================================
-    // SECTION 4: Per-Layer Textures with UV Distortion + Macro Modulation
-    // Each layer: DiffSample(DistortedUV) -> Multiply(MacroMod) -> MacroDiff
-    //             NormSample(DistortedUV) -> Normal
-    // Only 2 samplers per layer = 6 total (massive headroom!)
+    // SECTION 4: Per-Layer Textures with Rotation + Dissolve Blending
+    // Each layer: sample at DistortedUV AND RotatedUV, dissolve blend,
+    // then apply MacroMod. 4 samplers per layer = 12 total (of 16 max).
     // =================================================================
     struct FLayerResult {
         UMaterialExpression* Diffuse = nullptr;
         UMaterialExpression* Normal = nullptr;
     };
 
-    auto BuildDistortedLayer = [&](UTexture* DiffTex, UTexture* NormTex, float BaseY) -> FLayerResult {
+    auto BuildRotBlendLayer = [&](UTexture* DiffTex, UTexture* NormTex, float BaseY) -> FLayerResult {
         FLayerResult Result;
         if (!DiffTex) return Result;
 
-        auto* DiffSamp = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DistortedUV, -800, BaseY);
-        if (DiffSamp)
+        // Sample diffuse at original and rotated UVs
+        auto* DiffOrig = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DistortedUV, -900, BaseY);
+        auto* DiffRot  = CreateTexSample(DiffTex, SAMPLERTYPE_Color, RotatedUV,   -900, BaseY + 120);
+
+        if (DiffOrig && DiffRot)
+        {
+            // Dissolve blend between orientations
+            auto* DiffBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+            DiffBlend->A.Connect(0, DiffOrig);
+            DiffBlend->B.Connect(0, DiffRot);
+            DiffBlend->Alpha.Connect(0, FinalBlendNoise);
+            AddExpr(DiffBlend, -600, BaseY + 60);
+
+            // Apply macro brightness modulation
+            auto* MacroDiff = NewObject<UMaterialExpressionMultiply>(Mat);
+            MacroDiff->A.Connect(0, DiffBlend);
+            MacroDiff->B.Connect(0, MacroMod);
+            AddExpr(MacroDiff, -400, BaseY + 60);
+            Result.Diffuse = MacroDiff;
+        }
+        else if (DiffOrig)
         {
             auto* MacroDiff = NewObject<UMaterialExpressionMultiply>(Mat);
-            MacroDiff->A.Connect(0, DiffSamp);
-            MacroDiff->B.Connect(0, MacroMod);  // shared macro modulation
-            AddExpr(MacroDiff, -500, BaseY);
+            MacroDiff->A.Connect(0, DiffOrig);
+            MacroDiff->B.Connect(0, MacroMod);
+            AddExpr(MacroDiff, -400, BaseY);
             Result.Diffuse = MacroDiff;
         }
 
+        // Sample normals at original and rotated UVs
         if (NormTex)
         {
-            auto* NormSamp = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DistortedUV, -800, BaseY + 200);
-            if (NormSamp)
+            auto* NormOrig = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DistortedUV, -900, BaseY + 280);
+            auto* NormRot  = CreateTexSample(NormTex, SAMPLERTYPE_Normal, RotatedUV,   -900, BaseY + 400);
+
+            if (NormOrig && NormRot)
             {
-                Result.Normal = NormSamp;
+                auto* NormBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+                NormBlend->A.Connect(0, NormOrig);
+                NormBlend->B.Connect(0, NormRot);
+                NormBlend->Alpha.Connect(0, FinalBlendNoise);
+                AddExpr(NormBlend, -600, BaseY + 340);
+                Result.Normal = NormBlend;
+            }
+            else if (NormOrig)
+            {
+                Result.Normal = NormOrig;
             }
         }
 
         return Result;
     };
 
-    // COMMENT BOX 4: Rock Layer (Red)
-    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -900, -900, 600, 500);
-    FLayerResult RockLayer = BuildDistortedLayer(TexRockD, TexRockN, -800);
+    // COMMENT BOX 4: Rock Layer (Red) - 4 samplers (orig+rot D, orig+rot N)
+    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -1000, -1100, 700, 700);
+    FLayerResult RockLayer = BuildRotBlendLayer(TexRockD, TexRockN, -1000);
 
-    // COMMENT BOX 5: Mud Layer (Brown)
-    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -900, -300, 600, 500);
-    FLayerResult MudLayer = BuildDistortedLayer(TexMudD, TexMudN, -200);
+    // COMMENT BOX 5: Mud Layer (Brown) - 4 samplers
+    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -1000, -200, 700, 700);
+    FLayerResult MudLayer = BuildRotBlendLayer(TexMudD, TexMudN, -100);
 
-    // COMMENT BOX 6: Grass Layer (Green)
-    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -900, 300, 600, 500);
-    FLayerResult GrassLayer = BuildDistortedLayer(TexGrassD, TexGrassN, 400);
+    // COMMENT BOX 6: Grass Layer (Green) - 4 samplers
+    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -1000, 600, 700, 700);
+    FLayerResult GrassLayer = BuildRotBlendLayer(TexGrassD, TexGrassN, 700);
 
     // =================================================================
     // COMMENT BOX 7: Slope Detection + Outputs (Purple)
@@ -2317,13 +2531,90 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // SlopeN  = Lerp(RockN, MudN, SlopePow) -> GrassN = Lerp(SlopeN, GrassN, SlopeGrassMask)
     // =================================================================
     UMaterialExpression* FinalBC = nullptr;
+    UMaterialExpression* ClampedAlpha = SlopePow; // fallback if only one layer
 
     if (RockLayer.Diffuse && MudLayer.Diffuse)
     {
+        // UPGRADE 1: Height-based blending -- texture luminance as pseudo-height
+        auto* HeightWeightVec = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        HeightWeightVec->Constant = FLinearColor(0.3f, 0.6f, 0.1f, 0.0f); // luminance weights
+        AddExpr(HeightWeightVec, -100, -500);
+
+        // Rock height = Dot(RockD.RGB, luminance)
+        auto* RockHeight = NewObject<UMaterialExpressionDotProduct>(Mat);
+        RockHeight->A.Connect(0, RockLayer.Diffuse);
+        RockHeight->B.Connect(0, HeightWeightVec);
+        AddExpr(RockHeight, 100, -600);
+
+        // Mud height = Dot(MudD.RGB, luminance)
+        auto* MudHeight = NewObject<UMaterialExpressionDotProduct>(Mat);
+        MudHeight->A.Connect(0, MudLayer.Diffuse);
+        MudHeight->B.Connect(0, HeightWeightVec);
+        AddExpr(MudHeight, 100, -400);
+
+        // HeightDiff = (RockHeight - MudHeight) * HeightBlendStrength
+        auto* HeightDiff = NewObject<UMaterialExpressionSubtract>(Mat);
+        HeightDiff->A.Connect(0, RockHeight);
+        HeightDiff->B.Connect(0, MudHeight);
+        AddExpr(HeightDiff, 300, -500);
+
+        auto* HeightBlendParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        HeightBlendParam->ParameterName = FName(TEXT("HeightBlendStrength"));
+        HeightBlendParam->DefaultValue = HeightBlendStrength;
+        AddExpr(HeightBlendParam, 300, -350);
+
+        auto* HeightModulated = NewObject<UMaterialExpressionMultiply>(Mat);
+        HeightModulated->A.Connect(0, HeightDiff);
+        HeightModulated->B.Connect(0, HeightBlendParam);
+        AddExpr(HeightModulated, 500, -450);
+
+        // AdjustedAlpha = SlopePow + HeightModulated
+        auto* AdjustedAlpha = NewObject<UMaterialExpressionAdd>(Mat);
+        AdjustedAlpha->A.Connect(0, SlopePow);
+        AdjustedAlpha->B.Connect(0, HeightModulated);
+        AddExpr(AdjustedAlpha, 700, -450);
+
+        // UPGRADE 2: Transition boundary noise
+        auto* TransNoiseOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        TransNoiseOffset->Constant = FLinearColor(5000.0f, 9000.0f, 0.0f, 0.0f);
+        AddExpr(TransNoiseOffset, 500, -250);
+
+        auto* TransNoisePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        TransNoisePosAdd->A.Connect(0, WorldPos);
+        TransNoisePosAdd->B.Connect(0, TransNoiseOffset);
+        AddExpr(TransNoisePosAdd, 700, -250);
+
+        auto* TransNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        TransNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        TransNoise->Scale = 0.001f;
+        TransNoise->Quality = 1;
+        TransNoise->Levels = 3;
+        TransNoise->OutputMin = -0.15f;
+        TransNoise->OutputMax = 0.15f;
+        TransNoise->bTurbulence = false;
+        TransNoise->bTiling = false;
+        TransNoise->LevelScale = 2.0f;
+        TransNoise->Position.Connect(0, TransNoisePosAdd);
+        AddExpr(TransNoise, 900, -250);
+
+        // NoisyAlpha = AdjustedAlpha + TransNoise
+        auto* NoisyAlpha = NewObject<UMaterialExpressionAdd>(Mat);
+        NoisyAlpha->A.Connect(0, AdjustedAlpha);
+        NoisyAlpha->B.Connect(0, TransNoise);
+        AddExpr(NoisyAlpha, 900, -450);
+
+        // Clamp to 0-1
+        auto* ClampedAlphaNode = NewObject<UMaterialExpressionClamp>(Mat);
+        ClampedAlphaNode->Input.Connect(0, NoisyAlpha);
+        ClampedAlphaNode->MinDefault = 0.0f;
+        ClampedAlphaNode->MaxDefault = 1.0f;
+        AddExpr(ClampedAlphaNode, 1100, -450);
+        ClampedAlpha = ClampedAlphaNode;
+
         auto* SlopeBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         SlopeBC->A.Connect(0, RockLayer.Diffuse);
         SlopeBC->B.Connect(0, MudLayer.Diffuse);
-        SlopeBC->Alpha.Connect(0, SlopePow);
+        SlopeBC->Alpha.Connect(0, ClampedAlpha);
         AddExpr(SlopeBC, 300, -200);
         FinalBC = SlopeBC;
     }
@@ -2340,11 +2631,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         FinalBC = GrassBC;
     }
 
-    if (FinalBC)
-    {
-        Mat->GetEditorOnlyData()->BaseColor.Connect(0, FinalBC);
-    }
-
     // Normal blend chain
     UMaterialExpression* FinalN = nullptr;
 
@@ -2353,7 +2639,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         auto* SlopeN = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         SlopeN->A.Connect(0, RockLayer.Normal);
         SlopeN->B.Connect(0, MudLayer.Normal);
-        SlopeN->Alpha.Connect(0, SlopePow);
+        SlopeN->Alpha.Connect(0, ClampedAlpha);
         AddExpr(SlopeN, 300, 600);
         FinalN = SlopeN;
     }
@@ -2370,19 +2656,350 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         FinalN = GrassNLerp;
     }
 
-    if (FinalN)
-    {
-        Mat->GetEditorOnlyData()->Normal.Connect(0, FinalN);
-    }
-
-    // =================================================================
-    // SECTION 8: Material Outputs — Roughness & Metallic
-    // =================================================================
+    // Roughness param (created early so puddle section can reference it)
     auto* RoughParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     RoughParam->ParameterName = FName(TEXT("Roughness"));
     RoughParam->DefaultValue = RoughnessVal;
     AddExpr(RoughParam, 900, 200);
-    Mat->GetEditorOnlyData()->Roughness.Connect(0, RoughParam);
+    UMaterialExpression* FinalRough = RoughParam;
+
+    // =================================================================
+    // World-Z Height Accumulation (shared by mud + puddle overlays)
+    // Low areas get more puddles/mud. Uses world Z position.
+    // =================================================================
+    auto* WorldZMask = NewObject<UMaterialExpressionComponentMask>(Mat);
+    WorldZMask->R = false; WorldZMask->G = false; WorldZMask->B = true; WorldZMask->A = false;
+    WorldZMask->Input.Connect(0, WorldPos);
+    AddExpr(WorldZMask, 700, -900);
+
+    // Normalize Z: divide by landscape height range (assume ~20000 units = 200m)
+    auto* HeightRangeConst = NewObject<UMaterialExpressionConstant>(Mat);
+    HeightRangeConst->R = 20000.0f;
+    AddExpr(HeightRangeConst, 700, -800);
+
+    auto* NormalizedZ = NewObject<UMaterialExpressionDivide>(Mat);
+    NormalizedZ->A.Connect(0, WorldZMask);
+    NormalizedZ->B.Connect(0, HeightRangeConst);
+    AddExpr(NormalizedZ, 900, -850);
+
+    // Invert: low areas = high value
+    auto* LowAreaRaw = NewObject<UMaterialExpressionOneMinus>(Mat);
+    LowAreaRaw->Input.Connect(0, NormalizedZ);
+    AddExpr(LowAreaRaw, 1100, -850);
+
+    // Clamp to 0-1 (in case Z goes negative or above range)
+    auto* LowAreaClamped = NewObject<UMaterialExpressionClamp>(Mat);
+    LowAreaClamped->Input.Connect(0, LowAreaRaw);
+    LowAreaClamped->MinDefault = 0.0f;
+    LowAreaClamped->MaxDefault = 1.0f;
+    AddExpr(LowAreaClamped, 1300, -850);
+
+    // PuddleHeightBias parameter: how strongly to prefer low areas
+    auto* HeightBiasParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    HeightBiasParam->ParameterName = FName(TEXT("PuddleHeightBias"));
+    HeightBiasParam->DefaultValue = PuddleHeightBias;
+    AddExpr(HeightBiasParam, 1100, -750);
+
+    // HeightBias = Power(LowAreaClamped, PuddleHeightBias)
+    auto* HeightBias = NewObject<UMaterialExpressionPower>(Mat);
+    HeightBias->Base.Connect(0, LowAreaClamped);
+    HeightBias->Exponent.Connect(0, HeightBiasParam);
+    AddExpr(HeightBias, 1300, -750);
+
+    // =================================================================
+    // COMMENT BOX 8: Mud/Dirt Overlay (Dark Brown)
+    // Noise-driven sandy patches on flat areas. Uses T_Sand_D if provided.
+    // =================================================================
+    UTexture* TexMudDetail = LoadTex(MudDetailD);
+
+    if (TexMudDetail && FinalBC)
+    {
+        AddComment(TEXT("Mud/Dirt Overlay (Multi-Octave)"), FLinearColor(0.5f, 0.35f, 0.1f), 700, -1700, 1000, 700);
+
+        // Multi-octave mud: zone noise * shape noise for concentrated patches
+        auto* MudZoneOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        MudZoneOffset->Constant = FLinearColor(7000.0f, 3000.0f, 0.0f, 0.0f);
+        AddExpr(MudZoneOffset, 750, -1600);
+
+        auto* MudZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        MudZonePosAdd->A.Connect(0, WorldPos);
+        MudZonePosAdd->B.Connect(0, MudZoneOffset);
+        AddExpr(MudZonePosAdd, 950, -1600);
+
+        auto* MudZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        MudZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        MudZoneNoise->Scale = 0.0001f;   // Large clusters
+        MudZoneNoise->Quality = 1;
+        MudZoneNoise->Levels = 3;
+        MudZoneNoise->OutputMin = 0.0f;
+        MudZoneNoise->OutputMax = 1.0f;
+        MudZoneNoise->bTurbulence = false;
+        MudZoneNoise->bTiling = false;
+        MudZoneNoise->LevelScale = 2.0f;
+        MudZoneNoise->Position.Connect(0, MudZonePosAdd);
+        AddExpr(MudZoneNoise, 1150, -1600);
+
+        // Shape noise at different offset
+        auto* MudShapeOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        MudShapeOffset->Constant = FLinearColor(20000.0f, 5000.0f, 0.0f, 0.0f);
+        AddExpr(MudShapeOffset, 750, -1450);
+
+        auto* MudShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        MudShapePosAdd->A.Connect(0, WorldPos);
+        MudShapePosAdd->B.Connect(0, MudShapeOffset);
+        AddExpr(MudShapePosAdd, 950, -1450);
+
+        auto* MudShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        MudShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        MudShapeNoise->Scale = 0.0006f;   // Individual shapes
+        MudShapeNoise->Quality = 1;
+        MudShapeNoise->Levels = 2;
+        MudShapeNoise->OutputMin = 0.0f;
+        MudShapeNoise->OutputMax = 1.0f;
+        MudShapeNoise->bTurbulence = false;
+        MudShapeNoise->bTiling = false;
+        MudShapeNoise->LevelScale = 2.0f;
+        MudShapeNoise->Position.Connect(0, MudShapePosAdd);
+        AddExpr(MudShapeNoise, 1150, -1450);
+
+        // Combine: zone * shape = concentrated patches
+        auto* MudCombined = NewObject<UMaterialExpressionMultiply>(Mat);
+        MudCombined->A.Connect(0, MudZoneNoise);
+        MudCombined->B.Connect(0, MudShapeNoise);
+        AddExpr(MudCombined, 1350, -1550);
+
+        // Sharpen for distinct edges
+        auto* MudPowConst = NewObject<UMaterialExpressionConstant>(Mat);
+        MudPowConst->R = 1.5f;
+        AddExpr(MudPowConst, 1350, -1400);
+
+        auto* MudNoisePow = NewObject<UMaterialExpressionPower>(Mat);
+        MudNoisePow->Base.Connect(0, MudCombined);
+        MudNoisePow->Exponent.Connect(0, MudPowConst);
+        AddExpr(MudNoisePow, 1550, -1500);
+
+        // MudAmount MI parameter
+        auto* MudAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        MudAmountParam->ParameterName = FName(TEXT("MudAmount"));
+        MudAmountParam->DefaultValue = MudAmount;
+        AddExpr(MudAmountParam, 1350, -1300);
+
+        // MudAlpha = MudMask * MudAmount * SlopePow * HeightBias
+        auto* MudAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        MudAmountMul->A.Connect(0, MudNoisePow);
+        MudAmountMul->B.Connect(0, MudAmountParam);
+        AddExpr(MudAmountMul, 1550, -1350);
+
+        auto* MudSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        MudSlopeMul->A.Connect(0, MudAmountMul);
+        MudSlopeMul->B.Connect(0, SlopePow);
+        AddExpr(MudSlopeMul, 1550, -1250);
+
+        auto* MudAlpha = NewObject<UMaterialExpressionMultiply>(Mat);
+        MudAlpha->A.Connect(0, MudSlopeMul);
+        MudAlpha->B.Connect(0, HeightBias);
+        AddExpr(MudAlpha, 1550, -1150);
+
+        // Sample mud detail texture at DistortedUV (1 sampler, no rotation dissolve)
+        auto* MudDetailSample = CreateTexSample(TexMudDetail, SAMPLERTYPE_Color, DistortedUV, 750, -1300);
+
+        // Blend mud into base color
+        auto* MudBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        MudBC->A.Connect(0, FinalBC);
+        MudBC->B.Connect(0, MudDetailSample);
+        MudBC->Alpha.Connect(0, MudAlpha);
+        AddExpr(MudBC, 1750, -1150);
+        FinalBC = MudBC;
+    }
+
+    // =================================================================
+    // COMMENT BOX 9: Puddle Overlay (Blue)
+    // Procedural dark puddles on flat areas. No textures needed.
+    // Dark color, very low roughness (wet/shiny), flat normal.
+    // =================================================================
+    if (FinalBC)
+    {
+        AddComment(TEXT("Puddle Overlay (Multi-Octave + Wet Edge)"), FLinearColor(0.2f, 0.4f, 0.8f), 700, -800, 1600, 1400);
+
+        // Multi-octave puddles: zone noise * shape noise
+        auto* PuddleZoneOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        PuddleZoneOffset->Constant = FLinearColor(11000.0f, 8000.0f, 0.0f, 0.0f);
+        AddExpr(PuddleZoneOffset, 750, -700);
+
+        auto* PuddleZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        PuddleZonePosAdd->A.Connect(0, WorldPos);
+        PuddleZonePosAdd->B.Connect(0, PuddleZoneOffset);
+        AddExpr(PuddleZonePosAdd, 950, -700);
+
+        auto* PuddleZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        PuddleZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        PuddleZoneNoise->Scale = 0.00008f;  // Large puddle zones
+        PuddleZoneNoise->Quality = 1;
+        PuddleZoneNoise->Levels = 3;
+        PuddleZoneNoise->OutputMin = 0.0f;
+        PuddleZoneNoise->OutputMax = 1.0f;
+        PuddleZoneNoise->bTurbulence = false;
+        PuddleZoneNoise->bTiling = false;
+        PuddleZoneNoise->LevelScale = 2.0f;
+        PuddleZoneNoise->Position.Connect(0, PuddleZonePosAdd);
+        AddExpr(PuddleZoneNoise, 1150, -700);
+
+        // Shape noise
+        auto* PuddleShapeOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        PuddleShapeOffset->Constant = FLinearColor(15000.0f, 12000.0f, 0.0f, 0.0f);
+        AddExpr(PuddleShapeOffset, 750, -550);
+
+        auto* PuddleShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        PuddleShapePosAdd->A.Connect(0, WorldPos);
+        PuddleShapePosAdd->B.Connect(0, PuddleShapeOffset);
+        AddExpr(PuddleShapePosAdd, 950, -550);
+
+        auto* PuddleShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        PuddleShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        PuddleShapeNoise->Scale = 0.0005f;  // Individual puddle shapes
+        PuddleShapeNoise->Quality = 1;
+        PuddleShapeNoise->Levels = 2;
+        PuddleShapeNoise->OutputMin = 0.0f;
+        PuddleShapeNoise->OutputMax = 1.0f;
+        PuddleShapeNoise->bTurbulence = false;
+        PuddleShapeNoise->bTiling = false;
+        PuddleShapeNoise->LevelScale = 2.0f;
+        PuddleShapeNoise->Position.Connect(0, PuddleShapePosAdd);
+        AddExpr(PuddleShapeNoise, 1150, -550);
+
+        // Combine: zone * shape
+        auto* PuddleCombined = NewObject<UMaterialExpressionMultiply>(Mat);
+        PuddleCombined->A.Connect(0, PuddleZoneNoise);
+        PuddleCombined->B.Connect(0, PuddleShapeNoise);
+        AddExpr(PuddleCombined, 1350, -650);
+
+        // Sharpen edges
+        auto* PuddlePowConst = NewObject<UMaterialExpressionConstant>(Mat);
+        PuddlePowConst->R = 2.0f;
+        AddExpr(PuddlePowConst, 1350, -500);
+
+        auto* PuddleNoisePow = NewObject<UMaterialExpressionPower>(Mat);
+        PuddleNoisePow->Base.Connect(0, PuddleCombined);
+        PuddleNoisePow->Exponent.Connect(0, PuddlePowConst);
+        AddExpr(PuddleNoisePow, 1550, -600);
+
+        // PuddleAmount param
+        auto* PuddleAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        PuddleAmountParam->ParameterName = FName(TEXT("PuddleAmount"));
+        PuddleAmountParam->DefaultValue = PuddleAmount;
+        AddExpr(PuddleAmountParam, 1350, -400);
+
+        // PuddleAlpha = puddle^2 * PuddleAmount * SlopePow * HeightBias
+        auto* PuddleAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        PuddleAmountMul->A.Connect(0, PuddleNoisePow);
+        PuddleAmountMul->B.Connect(0, PuddleAmountParam);
+        AddExpr(PuddleAmountMul, 1550, -500);
+
+        auto* PuddleSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        PuddleSlopeMul->A.Connect(0, PuddleAmountMul);
+        PuddleSlopeMul->B.Connect(0, SlopePow);
+        AddExpr(PuddleSlopeMul, 1550, -400);
+
+        auto* PuddleAlpha = NewObject<UMaterialExpressionMultiply>(Mat);
+        PuddleAlpha->A.Connect(0, PuddleSlopeMul);
+        PuddleAlpha->B.Connect(0, HeightBias);
+        AddExpr(PuddleAlpha, 1550, -300);
+
+        // UPGRADE 5: Wet edge darkening
+        // Expanded wet zone around puddles
+        auto* WetExpandConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetExpandConst->R = 3.0f;
+        AddExpr(WetExpandConst, 1550, -200);
+
+        auto* WetExpanded = NewObject<UMaterialExpressionMultiply>(Mat);
+        WetExpanded->A.Connect(0, PuddleAlpha);
+        WetExpanded->B.Connect(0, WetExpandConst);
+        AddExpr(WetExpanded, 1750, -200);
+
+        auto* WetEdgeAlpha = NewObject<UMaterialExpressionClamp>(Mat);
+        WetEdgeAlpha->Input.Connect(0, WetExpanded);
+        WetEdgeAlpha->MinDefault = 0.0f;
+        WetEdgeAlpha->MaxDefault = 1.0f;
+        AddExpr(WetEdgeAlpha, 1950, -200);
+
+        // Darken base color in wet areas (40% darker when wet)
+        auto* WetDryConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetDryConst->R = 1.0f;
+        AddExpr(WetDryConst, 1750, -100);
+
+        auto* WetDarkConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetDarkConst->R = 0.6f;
+        AddExpr(WetDarkConst, 1750, 0);
+
+        auto* WetDarken = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        WetDarken->A.Connect(0, WetDryConst);
+        WetDarken->B.Connect(0, WetDarkConst);
+        WetDarken->Alpha.Connect(0, WetEdgeAlpha);
+        AddExpr(WetDarken, 1950, -50);
+
+        // Darken the base color
+        auto* DarkenedBC = NewObject<UMaterialExpressionMultiply>(Mat);
+        DarkenedBC->A.Connect(0, FinalBC);
+        DarkenedBC->B.Connect(0, WetDarken);
+        AddExpr(DarkenedBC, 2150, -50);
+
+        // Dark puddle color (very dark brown, like wet earth)
+        auto* PuddleColor = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        PuddleColor->Constant = FLinearColor(0.02f, 0.015f, 0.01f, 1.0f);
+        AddExpr(PuddleColor, 1950, 100);
+
+        // Blend puddle color into darkened base
+        auto* PuddleBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        PuddleBC->A.Connect(0, DarkenedBC);
+        PuddleBC->B.Connect(0, PuddleColor);
+        PuddleBC->Alpha.Connect(0, PuddleAlpha);
+        AddExpr(PuddleBC, 2150, 100);
+        FinalBC = PuddleBC;
+
+        // Wet roughness transition: dry -> wet edge(0.4) -> puddle center(0.05)
+        auto* WetEdgeRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetEdgeRoughConst->R = 0.4f;
+        AddExpr(WetEdgeRoughConst, 1950, 200);
+
+        auto* WetEdgeRough = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        WetEdgeRough->A.Connect(0, RoughParam);
+        WetEdgeRough->B.Connect(0, WetEdgeRoughConst);
+        WetEdgeRough->Alpha.Connect(0, WetEdgeAlpha);
+        AddExpr(WetEdgeRough, 2150, 200);
+
+        auto* WetCenterRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
+        WetCenterRoughConst->R = 0.05f;
+        AddExpr(WetCenterRoughConst, 1950, 300);
+
+        auto* PuddleRough = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        PuddleRough->A.Connect(0, WetEdgeRough);
+        PuddleRough->B.Connect(0, WetCenterRoughConst);
+        PuddleRough->Alpha.Connect(0, PuddleAlpha);
+        AddExpr(PuddleRough, 2150, 300);
+        FinalRough = PuddleRough;
+
+        // Flat normal for puddles
+        auto* FlatNormal = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        FlatNormal->Constant = FLinearColor(0.0f, 0.0f, 1.0f, 0.0f);
+        AddExpr(FlatNormal, 1950, 400);
+
+        if (FinalN)
+        {
+            auto* PuddleN = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+            PuddleN->A.Connect(0, FinalN);
+            PuddleN->B.Connect(0, FlatNormal);
+            PuddleN->Alpha.Connect(0, PuddleAlpha);
+            AddExpr(PuddleN, 2150, 400);
+            FinalN = PuddleN;
+        }
+    }
+
+    // =================================================================
+    // SECTION 8: Connect All Material Outputs
+    // =================================================================
+    if (FinalBC) { Mat->GetEditorOnlyData()->BaseColor.Connect(0, FinalBC); }
+    if (FinalN)  { Mat->GetEditorOnlyData()->Normal.Connect(0, FinalN); }
+    Mat->GetEditorOnlyData()->Roughness.Connect(0, FinalRough);
 
     auto* MetalConst = NewObject<UMaterialExpressionConstant>(Mat);
     MetalConst->R = 0.0f;
@@ -2410,8 +3027,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("name"), MaterialName);
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
-    Result->SetNumberField(TEXT("comment_count"), 7);
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material with UV noise distortion anti-tiling: continuous UV warp breaks grid at every pixel, macro brightness variation, 6 samplers (of 16), 7 organized comment boxes"));
+    Result->SetNumberField(TEXT("comment_count"), 11);
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material v8 with height-based blending, multi-octave puddle/mud masks, wet edge darkening, world-Z height bias, distance-based tiling fade. 10 exposed params (DetailUVScale, WarpAmount, MacroStrength, SlopeSharpness, GrassAmount, Roughness, MudAmount, PuddleAmount, HeightBlendStrength, PuddleHeightBias)"));
 
     return Result;
 }

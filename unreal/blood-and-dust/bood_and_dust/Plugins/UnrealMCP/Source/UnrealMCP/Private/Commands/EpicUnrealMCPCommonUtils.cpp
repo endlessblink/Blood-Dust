@@ -23,6 +23,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "BlueprintNodeSpawner.h"
 #include "BlueprintActionDatabase.h"
+#include "Kismet/GameplayStatics.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
@@ -497,6 +498,34 @@ TSharedPtr<FJsonValue> FEpicUnrealMCPCommonUtils::ActorToJson(AActor* Actor)
     ActorObject->SetArrayField(TEXT("scale"), ScaleArray);
     
     return MakeShared<FJsonValueObject>(ActorObject);
+}
+
+AActor* FEpicUnrealMCPCommonUtils::FindActorByName(UWorld* World, const FString& ActorName)
+{
+    if (!World) return nullptr;
+
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+
+    // First pass: exact match on GetName()
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            return Actor;
+        }
+    }
+
+    // Second pass: match on GetActorLabel() (display name in editor)
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetActorLabel() == ActorName)
+        {
+            return Actor;
+        }
+    }
+
+    return nullptr;
 }
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPCommonUtils::ActorToJsonObject(AActor* Actor, bool bDetailed)

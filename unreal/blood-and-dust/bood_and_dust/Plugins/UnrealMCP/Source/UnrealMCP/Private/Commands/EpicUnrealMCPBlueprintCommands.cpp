@@ -899,25 +899,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
     }
 
     // Find the actor
-    AActor* TargetActor = nullptr;
     UWorld* World = GEditor->GetEditorWorldContext().World();
     if (!World)
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
     }
-    
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
 
+    AActor* TargetActor = FEpicUnrealMCPCommonUtils::FindActorByName(World, ActorName);
     if (!TargetActor)
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -963,6 +951,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
             {
                 SkelComp->SetMaterial(MaterialSlot, Material);
             }
+            SkelComp->MarkRenderStateDirty();
             bAppliedToAny = true;
 
             TSharedPtr<FJsonObject> MeshInfo = MakeShared<FJsonObject>();
@@ -998,6 +987,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
             {
                 MeshComp->SetMaterial(MaterialSlot, Material);
             }
+            MeshComp->MarkRenderStateDirty();
             bAppliedToAny = true;
 
             TSharedPtr<FJsonObject> MeshInfo = MakeShared<FJsonObject>();
@@ -1014,6 +1004,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
 
     // Mark the actor's package dirty so OFPA serializes the material override
     TargetActor->MarkPackageDirty();
+
+    // Also dirty the OFPA external package for proper persistence
+    if (UPackage* ExternalPackage = TargetActor->GetExternalPackage())
+    {
+        ExternalPackage->SetDirtyFlag(true);
+    }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("actor_name"), ActorName);
@@ -1168,26 +1164,46 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToBl
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Find the component
-    USCS_Node* ComponentNode = nullptr;
-    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    // Find the component - try SCS first, then CDO for inherited components
+    UPrimitiveComponent* PrimComponent = nullptr;
+
+    // Pass 1: Search SCS nodes (user-added components)
+    if (Blueprint->SimpleConstructionScript)
     {
-        if (Node && Node->GetVariableName().ToString() == ComponentName)
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
         {
-            ComponentNode = Node;
-            break;
+            if (Node && Node->GetVariableName().ToString() == ComponentName)
+            {
+                PrimComponent = Cast<UPrimitiveComponent>(Node->ComponentTemplate);
+                break;
+            }
         }
     }
 
-    if (!ComponentNode)
+    // Pass 2: Search CDO components (inherited from C++ parent, e.g. ACharacter::Mesh)
+    if (!PrimComponent && Blueprint->GeneratedClass)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+        AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+        if (CDO)
+        {
+            TArray<UActorComponent*> AllComps;
+            CDO->GetComponents(AllComps);
+            for (UActorComponent* Comp : AllComps)
+            {
+                UPrimitiveComponent* PC = Cast<UPrimitiveComponent>(Comp);
+                if (PC && PC->GetName() == ComponentName)
+                {
+                    PrimComponent = PC;
+                    break;
+                }
+            }
+        }
     }
 
-    UPrimitiveComponent* PrimComponent = Cast<UPrimitiveComponent>(ComponentNode->ComponentTemplate);
     if (!PrimComponent)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Component is not a primitive component"));
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Component '%s' not found in SCS or CDO of blueprint '%s'"), *ComponentName, *BlueprintName));
     }
 
     // Load the material
@@ -1198,7 +1214,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToBl
     }
 
     // Apply the material
-    PrimComponent->SetMaterial(MaterialSlot, Material);
+    PrimComponent->Modify();
+    if (MaterialSlot < 0)
+    {
+        int32 NumMaterials = PrimComponent->GetNumMaterials();
+        for (int32 i = 0; i < NumMaterials; i++)
+        {
+            PrimComponent->SetMaterial(i, Material);
+        }
+    }
+    else
+    {
+        if (MaterialSlot >= PrimComponent->GetNumMaterials())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                TEXT("Material slot %d out of range (component has %d slots)"), MaterialSlot, PrimComponent->GetNumMaterials()));
+        }
+        PrimComponent->SetMaterial(MaterialSlot, Material);
+    }
+    PrimComponent->MarkRenderStateDirty();
 
     // Mark the blueprint as modified
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
@@ -1223,25 +1257,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetActorMaterialI
     }
 
     // Find the actor
-    AActor* TargetActor = nullptr;
     UWorld* World = GEditor->GetEditorWorldContext().World();
     if (!World)
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
     }
-    
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
 
+    AActor* TargetActor = FEpicUnrealMCPCommonUtils::FindActorByName(World, ActorName);
     if (!TargetActor)
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -1250,9 +1272,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetActorMaterialI
     // Get mesh components and their materials
     TArray<UStaticMeshComponent*> MeshComponents;
     TargetActor->GetComponents<UStaticMeshComponent>(MeshComponents);
-    
+
     TArray<TSharedPtr<FJsonValue>> MaterialSlots;
-    
+
     for (UStaticMeshComponent* MeshComp : MeshComponents)
     {
         if (MeshComp)
@@ -1262,7 +1284,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetActorMaterialI
                 TSharedPtr<FJsonObject> SlotInfo = MakeShared<FJsonObject>();
                 SlotInfo->SetNumberField(TEXT("slot"), i);
                 SlotInfo->SetStringField(TEXT("component"), MeshComp->GetName());
-                
+                SlotInfo->SetStringField(TEXT("component_type"), TEXT("StaticMesh"));
+
                 UMaterialInterface* Material = MeshComp->GetMaterial(i);
                 if (Material)
                 {
@@ -1276,7 +1299,41 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetActorMaterialI
                     SlotInfo->SetStringField(TEXT("material_path"), TEXT(""));
                     SlotInfo->SetStringField(TEXT("material_class"), TEXT(""));
                 }
-                
+
+                MaterialSlots.Add(MakeShared<FJsonValueObject>(SlotInfo));
+            }
+        }
+    }
+
+    // Also check SkeletalMeshComponents
+    TArray<USkeletalMeshComponent*> SkelMeshComponents;
+    TargetActor->GetComponents<USkeletalMeshComponent>(SkelMeshComponents);
+
+    for (USkeletalMeshComponent* SkelComp : SkelMeshComponents)
+    {
+        if (SkelComp)
+        {
+            for (int32 i = 0; i < SkelComp->GetNumMaterials(); i++)
+            {
+                TSharedPtr<FJsonObject> SlotInfo = MakeShared<FJsonObject>();
+                SlotInfo->SetNumberField(TEXT("slot"), i);
+                SlotInfo->SetStringField(TEXT("component"), SkelComp->GetName());
+                SlotInfo->SetStringField(TEXT("component_type"), TEXT("SkeletalMesh"));
+
+                UMaterialInterface* Material = SkelComp->GetMaterial(i);
+                if (Material)
+                {
+                    SlotInfo->SetStringField(TEXT("material_name"), Material->GetName());
+                    SlotInfo->SetStringField(TEXT("material_path"), Material->GetPathName());
+                    SlotInfo->SetStringField(TEXT("material_class"), Material->GetClass()->GetName());
+                }
+                else
+                {
+                    SlotInfo->SetStringField(TEXT("material_name"), TEXT("None"));
+                    SlotInfo->SetStringField(TEXT("material_path"), TEXT(""));
+                    SlotInfo->SetStringField(TEXT("material_class"), TEXT(""));
+                }
+
                 MaterialSlots.Add(MakeShared<FJsonValueObject>(SlotInfo));
             }
         }
@@ -2417,8 +2474,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		SpeedVar.VarType.PinCategory = UEdGraphSchema_K2::PC_Real;
 		SpeedVar.VarType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 		SpeedVar.DefaultValue = TEXT("0.0");
+		SpeedVar.PropertyFlags |= CPF_BlueprintVisible;
 		AnimBP->NewVariables.Add(SpeedVar);
 	}
+
+	// Part 7.5: Compile so Speed variable is baked into generated class
+	// This is required before K2Node_VariableGet/Set can allocate pins for Speed
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+	FKismetEditorUtilities::CompileBlueprint(AnimBP);
 
 	// === Part 8: Setup EventBlueprintUpdateAnimation for speed calculation ===
 	UEdGraph* EventGraph = nullptr;
@@ -2531,17 +2594,83 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		{
 			UEdGraphPin* VSizeReturn = VSizeNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
 			UEdGraphPin* SpeedInput = SetSpeedNode->FindPin(FName("Speed"));
-			if (VSizeReturn && SpeedInput) VSizeReturn->MakeLinkTo(SpeedInput);
+			if (!SpeedInput)
+			{
+				// Fallback: search all input pins for one matching Speed variable
+				for (UEdGraphPin* Pin : SetSpeedNode->Pins)
+				{
+					if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+					{
+						SpeedInput = Pin;
+						break;
+					}
+				}
+			}
+			if (VSizeReturn && SpeedInput)
+			{
+				VSizeReturn->MakeLinkTo(SpeedInput);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: Failed to connect VSize→Speed (VSizeReturn=%d, SpeedInput=%d)"),
+					VSizeReturn != nullptr, SpeedInput != nullptr);
+			}
 		}
 	}
 
 	// === Part 9: Setup Transition Rules (speed comparison) ===
+	// Find comparison function once (try multiple UE5 naming conventions)
+	UFunction* GreaterFunc = nullptr;
+	UFunction* LessFunc = nullptr;
+	{
+		TArray<FName> GreaterNames = {FName("Greater_DoubleDouble"), FName("Greater_FloatFloat")};
+		TArray<FName> LessNames = {FName("Less_DoubleDouble"), FName("Less_FloatFloat")};
+		for (const FName& Name : GreaterNames)
+		{
+			GreaterFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(Name);
+			if (GreaterFunc)
+			{
+				UE_LOG(LogTemp, Display, TEXT("setup_locomotion: Found comparison func: %s"), *Name.ToString());
+				break;
+			}
+		}
+		for (const FName& Name : LessNames)
+		{
+			LessFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(Name);
+			if (LessFunc) break;
+		}
+		if (!GreaterFunc || !LessFunc)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: Comparison functions not found! Greater=%d, Less=%d"), GreaterFunc != nullptr, LessFunc != nullptr);
+		}
+	}
+
 	auto SetupTransitionRule = [&](UAnimStateTransitionNode* TransNode, bool bGreaterThan, double Threshold)
 	{
-		if (!TransNode || !TransNode->BoundGraph) return;
+		if (!TransNode)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: TransNode is null"));
+			return;
+		}
+		if (!TransNode->BoundGraph)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: TransNode->BoundGraph is null"));
+			return;
+		}
 
 		UAnimationTransitionGraph* TransGraph = Cast<UAnimationTransitionGraph>(TransNode->BoundGraph);
-		if (!TransGraph || !TransGraph->MyResultNode) return;
+		if (!TransGraph || !TransGraph->MyResultNode)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: TransGraph or MyResultNode is null"));
+			return;
+		}
+
+		UFunction* CompFunc = bGreaterThan ? GreaterFunc : LessFunc;
+		if (!CompFunc)
+		{
+			UE_LOG(LogTemp, Error, TEXT("setup_locomotion: No comparison function available for transition rule"));
+			return;
+		}
 
 		// VariableGet for Speed
 		UK2Node_VariableGet* SpeedGet = NewObject<UK2Node_VariableGet>(TransGraph);
@@ -2551,17 +2680,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		TransGraph->AddNode(SpeedGet, true, false);
 		SpeedGet->CreateNewGuid();
 		SpeedGet->AllocateDefaultPins();
-
-		// Comparison function (Greater or Less) - UE5 uses Double, not Float
-		FName CompFuncName = bGreaterThan ? FName("Greater_DoubleDouble") : FName("Less_DoubleDouble");
-		UFunction* CompFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(CompFuncName);
-		if (!CompFunc)
-		{
-			// Fallback to Float names in case of older UE version
-			CompFuncName = bGreaterThan ? FName("Greater_FloatFloat") : FName("Less_FloatFloat");
-			CompFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(CompFuncName);
-		}
-		if (!CompFunc) return;
 
 		UK2Node_CallFunction* CompNode = NewObject<UK2Node_CallFunction>(TransGraph);
 		CompNode->SetFromFunction(CompFunc);
@@ -2581,7 +2699,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		// Wire: SpeedGet output → Comp.A
 		UEdGraphPin* SpeedOut = SpeedGet->GetValuePin();
 		UEdGraphPin* CompA = CompNode->FindPin(TEXT("A"));
-		if (SpeedOut && CompA) SpeedOut->MakeLinkTo(CompA);
+		if (SpeedOut && CompA)
+		{
+			SpeedOut->MakeLinkTo(CompA);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: Failed to connect Speed→Comp.A (SpeedOut=%d, CompA=%d)"), SpeedOut != nullptr, CompA != nullptr);
+		}
 
 		// Wire: Comp.ReturnValue → TransitionResult input
 		UEdGraphPin* CompReturn = CompNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
@@ -2599,7 +2724,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		{
 			ResultPin = TransGraph->MyResultNode->FindPin(TEXT("bCanEnterTransition"));
 		}
-		if (CompReturn && ResultPin) CompReturn->MakeLinkTo(ResultPin);
+		if (CompReturn && ResultPin)
+		{
+			CompReturn->MakeLinkTo(ResultPin);
+			UE_LOG(LogTemp, Display, TEXT("setup_locomotion: Transition rule wired (threshold=%.1f, greater=%d)"), Threshold, bGreaterThan);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: Failed to wire transition result (CompReturn=%d, ResultPin=%d)"),
+				CompReturn != nullptr, ResultPin != nullptr);
+			// Log all pins on result node for debugging
+			for (UEdGraphPin* Pin : TransGraph->MyResultNode->Pins)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("  ResultNode pin: %s, category=%s, dir=%d"),
+					*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(), (int)Pin->Direction);
+			}
+		}
 	};
 
 	SetupTransitionRule(IdleToWalk, true, WalkThreshold);   // Speed > WalkThreshold
@@ -2611,9 +2751,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
 	FKismetEditorUtilities::CompileBlueprint(AnimBP);
 
+	// Check compile status
+	bool bCompileSucceeded = (AnimBP->Status != EBlueprintStatus::BS_Error);
+	UE_LOG(LogTemp, Display, TEXT("setup_locomotion: Final compile status=%d (0=UpToDate, 1=Dirty, 2=Error, 3=BeingCreated)"), (int)AnimBP->Status);
+
 	// Build result
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetBoolField(TEXT("success"), AnimBP->Status != EBlueprintStatus::BS_Error);
+	ResultObj->SetNumberField(TEXT("compile_status"), (int)AnimBP->Status);
 	ResultObj->SetStringField(TEXT("anim_blueprint"), AnimBPPath);
 	ResultObj->SetNumberField(TEXT("state_count"), bHasRun ? 3 : 2);
 	ResultObj->SetNumberField(TEXT("transition_count"), bHasRun ? 4 : 2);

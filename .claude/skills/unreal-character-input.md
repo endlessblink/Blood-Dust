@@ -1,139 +1,257 @@
-# Skill: Wire Enhanced Input to Character Blueprint
+# Skill: Playable Character Pipeline
 
-Wire Enhanced Input Action events (movement, camera, jump) to a Character Blueprint via MCP tools. Creates a fully playable third-person character.
+Complete pipeline for creating a playable third-person character via MCP: Blueprint, input wiring, materials, animations.
 
 ## Prerequisites
-- Character Blueprint exists (created via `create_character_blueprint`)
-- Input Action assets exist at `/Game/Input/Actions/` (IA_Move, IA_Look, IA_Jump, IA_MouseLook)
-- Input Mapping Context configured on PlayerController
-- MCP server connected with updated C++ plugin (parent class search fallback)
+- Skeletal mesh imported (e.g., `/Game/Characters/Robot/SK_Robot`)
+- Skeleton exists (e.g., `/Game/Characters/Robot/SK_Robot_Skeleton`)
+- Animation sequences imported (Idle, Walk, Run minimum)
+- Textures imported (Diffuse, Normal, Roughness, Metallic)
+- Input Action assets at `/Game/Input/Actions/` (IA_Move, IA_Look, IA_Jump, IA_MouseLook)
+- MCP server connected with updated C++ plugin
 
-## Strategy: Direct Wiring (NOT Custom Functions)
+## Pipeline Overview
 
-**CRITICAL**: Do NOT use custom Blueprint functions (Move/Aim) via MCP. The `create_function` → `add_function_input` → `CallFunction` pipeline has a fundamental timing problem: SkeletonGeneratedClass signature doesn't reflect added parameters until compile, causing CallFunction nodes to be created with wrong pin signatures.
+```
+1. create_character_blueprint → BP with capsule, camera, movement
+2. Wire Enhanced Input       → WASD/Mouse/Jump controls
+3. create_pbr_material       → PBR material from textures
+4. set_mesh_asset_material   → Apply material to skeletal mesh ASSET
+5. create_anim_blueprint     → Empty AnimBP targeting skeleton
+6. setup_locomotion_state_machine → Idle/Walk/Run with speed transitions
+7. set_character_properties  → Assign AnimBP to character's mesh CDO
+8. Verify & compile
+```
 
-Instead, wire everything directly in EventGraph. More nodes but each is independently correct.
+**CRITICAL**: All MCP calls STRICTLY SEQUENTIAL. Never parallel.
 
-## Phase 0: Verify Pin Names (MANDATORY)
+---
+
+## Phase 1: Character Blueprint
+
+```
+create_character_blueprint(
+    blueprint_name="BP_RobotCharacter",
+    blueprint_path="/Game/Characters/Robot/",
+    skeletal_mesh_path="/Game/Characters/Robot/SK_Robot",
+    capsule_radius=40, capsule_half_height=90,
+    max_walk_speed=500, jump_z_velocity=420,
+    camera_boom_length=250, camera_boom_socket_offset_z=150
+)
+```
+
+**Note**: Do NOT pass `anim_blueprint_path` here — the AnimBP doesn't exist yet. Use `set_character_properties` later.
+
+## Phase 2: Wire Enhanced Input
+
+### Strategy: Direct Wiring (NOT Custom Functions)
+
+**CRITICAL**: Do NOT use custom Blueprint functions via MCP. The `create_function` → `add_function_input` → `CallFunction` pipeline has a fundamental timing problem: SkeletonGeneratedClass signature doesn't reflect added parameters until compile.
+
+Wire everything directly in EventGraph. More nodes but each is independently correct.
+
+### Step 0: Verify Pin Names (MANDATORY)
 
 ```
 read_blueprint_content(blueprint_path="/Game/Characters/Robot/BP_RobotCharacter")
 ```
 
-Inspect the existing K2Node_EnhancedInputAction nodes to confirm:
+Inspect K2Node_EnhancedInputAction nodes to confirm:
 - Axis2D actions have `ActionValue_X` and `ActionValue_Y` sub-pins
 - Boolean actions have `ActionValue` as bool
 - Capture exact node IDs (use GetName format like `K2Node_EnhancedInputAction_0`)
 
-## Phase 1: Jump (Simplest - Validates Approach)
+### Jump (Simplest - validates approach)
 
-### Step 1: Create Enhanced Input Action Nodes
 ```
-add_enhanced_input_action_event(
-    blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
-    input_action_path="/Game/Input/Actions/IA_Jump",
-    pos_x=-600, pos_y=800
-)
-```
-Note: Skip if already created. Capture node_id.
-
-### Step 2: Create Jump CallFunction
-```
-add_node(
-    blueprint_name="/Game/Characters/Robot/BP_RobotCharacter",
-    node_type="CallFunction",
-    target_function="Jump",
-    pos_x=200, pos_y=800
-)
-```
-- Found via parent class search: ACharacter::Jump
-- Capture returned node_id (e.g., `K2Node_CallFunction_0`)
-
-### Step 3: Connect IA_Jump.Started → Jump.execute
-```
-connect_nodes(
-    blueprint_name="/Game/Characters/Robot/BP_RobotCharacter",
-    source_node_id="<IA_Jump_node_id>",
-    source_pin_name="Started",
-    target_node_id="<Jump_node_id>",
-    target_pin_name="execute"
-)
+IA_Jump.Started → Jump.execute
+IA_Jump.Completed → StopJumping.execute
 ```
 
-### Step 4: Create StopJumping CallFunction
+1. `add_enhanced_input_action_event` for IA_Jump
+2. `add_node` CallFunction "Jump"
+3. `connect_nodes` IA_Jump.Started → Jump.execute
+4. `add_node` CallFunction "StopJumping"
+5. `connect_nodes` IA_Jump.Completed → StopJumping.execute
+6. `compile_blueprint` — verify before continuing
+
+### Camera Look (IA_Look + IA_MouseLook)
+
+For each action, same pattern:
 ```
-add_node(..., target_function="StopJumping", pos_x=200, pos_y=1000)
+EnhancedInput.Triggered → AddControllerYawInput(Val=ActionValue_X)
+                         → AddControllerPitchInput(Val=ActionValue_Y)
 ```
 
-### Step 5: Connect IA_Jump.Completed → StopJumping.execute
-```
-connect_nodes(..., source_pin_name="Completed", target_pin_name="execute")
-```
-
-### Checkpoint: Compile and verify
-```
-compile_blueprint(blueprint_name="/Game/Characters/Robot/BP_RobotCharacter")
-```
-
-## Phase 2: Camera Look (IA_Look + IA_MouseLook)
-
-For each action (IA_Look and IA_MouseLook), create the same pattern:
-
-### Pattern: Aim Wiring
-```
-EnhancedInputAction.Triggered → AddControllerYawInput(Val=ActionValue_X)
-                                → AddControllerPitchInput(Val=ActionValue_Y)
-```
-
-### Steps (repeat for both IA_Look and IA_MouseLook):
-
-1. `add_node` CallFunction "AddControllerYawInput" at appropriate position
+1. `add_node` CallFunction "AddControllerYawInput"
 2. `connect_nodes` EnhancedInput.Triggered → Yaw.execute
 3. `connect_nodes` EnhancedInput.ActionValue_X → Yaw.Val
 4. `add_node` CallFunction "AddControllerPitchInput"
 5. `connect_nodes` Yaw.then → Pitch.execute
 6. `connect_nodes` EnhancedInput.ActionValue_Y → Pitch.Val
 
-**Functions found by**: Parent class walk (APawn::AddControllerYawInput, APawn::AddControllerPitchInput)
+### Movement (Most Complex)
 
-## Phase 3: Movement (Most Complex)
-
-### Pattern: Movement Wiring
 ```
-IA_Move.Triggered → AddMovementInput(WorldDirection=RightVec, ScaleValue=ActionValue_X)
-                   → AddMovementInput(WorldDirection=ForwardVec, ScaleValue=ActionValue_Y)
-Where:
-  RightVec = GetRightVector(GetControlRotation().Yaw)
-  ForwardVec = GetForwardVector(GetControlRotation().Yaw)
+IA_Move.Triggered → AddMovementInput(GetRightVector(GetControlRotation()), ActionValue_X)
+                  → AddMovementInput(GetForwardVector(GetControlRotation()), ActionValue_Y)
 ```
 
-### Steps:
-
-1. `add_node` CallFunction "GetControlRotation" - returns Yaw/Pitch/Roll
-2. `add_node` CallFunction "GetRightVector" (KismetMathLibrary)
-3. `connect_nodes` GetControlRotation.ReturnValue_Yaw → GetRightVector.InRot_Yaw
-4. `add_node` CallFunction "AddMovementInput" (right direction)
-5. `connect_nodes` IA_Move.Triggered → AddMovementInput_Right.execute
-6. `connect_nodes` GetRightVector.ReturnValue → AddMovementInput_Right.WorldDirection
-7. `connect_nodes` IA_Move.ActionValue_X → AddMovementInput_Right.ScaleValue
-8. `add_node` CallFunction "GetForwardVector" (KismetMathLibrary)
-9. `connect_nodes` GetControlRotation.ReturnValue_Yaw → GetForwardVector.InRot_Yaw
-10. `add_node` CallFunction "AddMovementInput" (forward direction)
+1. `add_node` CallFunction "GetControlRotation"
+2. `add_node` CallFunction "GetRightVector"
+3. `connect_nodes` GetControlRotation.ReturnValue → GetRightVector.InRot (full FRotator, NOT sub-pins)
+4. `add_node` CallFunction "GetForwardVector"
+5. `connect_nodes` GetControlRotation.ReturnValue → GetForwardVector.InRot
+6. `add_node` CallFunction "AddMovementInput" (right)
+7. `connect_nodes` IA_Move.Triggered → AddMovementInput_Right.execute
+8. `connect_nodes` GetRightVector.ReturnValue → WorldDirection
+9. `connect_nodes` IA_Move.ActionValue_X → ScaleValue
+10. `add_node` CallFunction "AddMovementInput" (forward)
 11. `connect_nodes` AddMovementInput_Right.then → AddMovementInput_Forward.execute
-12. `connect_nodes` GetForwardVector.ReturnValue → AddMovementInput_Forward.WorldDirection
-13. `connect_nodes` IA_Move.ActionValue_Y → AddMovementInput_Forward.ScaleValue
+12. `connect_nodes` GetForwardVector.ReturnValue → WorldDirection
+13. `connect_nodes` IA_Move.ActionValue_Y → ScaleValue
 
-**Note**: Single GetControlRotation node can connect ReturnValue_Yaw to BOTH GetRightVector and GetForwardVector (MakeLinkTo appends, doesn't replace).
+**Key**: Connect full FRotator ReturnValue → InRot, NOT individual Yaw/Pitch/Roll sub-pins.
 
-## Phase 4: Final Compile
+### Final Compile
 ```
 compile_blueprint(blueprint_name="/Game/Characters/Robot/BP_RobotCharacter")
 ```
 
+---
+
+## Phase 3: Material
+
+```
+create_pbr_material(
+    name="M_Robot",
+    path="/Game/Characters/Robot/",
+    diffuse_texture="/Game/Characters/Robot/Textures/T_Robot_D",
+    normal_texture="/Game/Characters/Robot/Textures/T_Robot_N",
+    roughness_texture="/Game/Characters/Robot/Textures/T_Robot_R",
+    metallic_texture="/Game/Characters/Robot/Textures/T_Robot_M"
+)
+```
+
+Then apply to the **mesh asset** (NOT the actor instance — PIE spawns new instances from BP defaults):
+```
+set_mesh_asset_material(
+    mesh_path="/Game/Characters/Robot/SK_Robot",
+    material_path="/Game/Characters/Robot/M_Robot"
+)
+```
+
+**CRITICAL**: `apply_material_to_actor` only affects the placed instance. For PIE, must use `set_mesh_asset_material` on the asset itself.
+
+---
+
+## Phase 4: Animation Blueprint
+
+### Step 1: Create AnimBP
+```
+create_anim_blueprint(
+    blueprint_name="ABP_Robot",
+    skeleton_path="/Game/Characters/Robot/SK_Robot_Skeleton",
+    blueprint_path="/Game/Characters/Robot/",
+    preview_mesh_path="/Game/Characters/Robot/SK_Robot"
+)
+```
+
+### Step 2: Setup Locomotion State Machine
+```
+setup_locomotion_state_machine(
+    anim_blueprint_path="/Game/Characters/Robot/ABP_Robot",
+    idle_animation="/Game/Characters/Robot/Animations/IdleAnim",
+    walk_animation="/Game/Characters/Robot/Animations/WalkAnim",
+    run_animation="/Game/Characters/Robot/Animations/RunAnim",
+    walk_speed_threshold=5,
+    run_speed_threshold=300,
+    crossfade_duration=0.2
+)
+```
+
+**What this creates internally**:
+- State Machine node in AnimGraph → connected to Root output
+- 3 states (Idle/Walk/Run) each with SequencePlayer → StateResult
+- 4 transitions with speed-based rules (Greater/Less_DoubleDouble comparisons)
+- Speed variable in AnimBP
+- EventBlueprintUpdateAnimation event graph:
+  - TryGetPawnOwner → GetVelocity → VSize → Set Speed
+  - Event.Then → SetSpeed.Execute (pure nodes have NO exec pins)
+
+### Step 3: Verify Compile
+```
+compile_blueprint(blueprint_name="/Game/Characters/Robot/ABP_Robot")
+```
+
+Check EventGraph with `analyze_blueprint_graph` — verify:
+- SetSpeed.Speed pin has 1 connection (VSize.ReturnValue)
+- Event.then has 1 connection (SetSpeed.execute)
+- No orphaned nodes (delete any disconnected TryGetPawnOwner)
+
+### Step 4: Assign AnimBP to Character
+```
+set_character_properties(
+    blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
+    anim_blueprint_path="/Game/Characters/Robot/ABP_Robot"
+)
+```
+
+This sets `AnimInstanceClass` on the Character's CDO SkeletalMeshComponent.
+
+---
+
 ## Key Technical Details
 
-### CallFunction Node Search (C++ UtilityNodes.cpp)
-Order: target_class → KismetSystemLibrary → KismetMathLibrary → SkeletonGeneratedClass → ParentClass hierarchy
+### C++ Tools Used (in EpicUnrealMCPBlueprintCommands)
+| Tool | Purpose |
+|------|---------|
+| `create_character_blueprint` | Character BP with camera, capsule, movement |
+| `create_anim_blueprint` | AnimBP targeting a skeleton |
+| `setup_locomotion_state_machine` | Full state machine + speed logic |
+| `set_character_properties` | Update CDO: AnimBP, mesh, offset |
+| `set_mesh_asset_material` | Set default material on USkeletalMesh |
+
+### AnimBP State Machine Architecture (C++)
+```
+AnimGraph:
+  AnimGraphNode_StateMachine → AnimGraphNode_Root
+
+State Machine Graph:
+  EntryNode → IdleState
+  IdleState ↔ WalkState (transitions with Speed > / < WalkThreshold)
+  WalkState ↔ RunState  (transitions with Speed > / < RunThreshold)
+
+Each State:
+  AnimGraphNode_SequencePlayer(AnimAsset) → AnimGraphNode_StateResult
+
+Each Transition BoundGraph:
+  K2Node_VariableGet(Speed) → ComparisonFunc.A
+  ComparisonFunc(A, B=Threshold).ReturnValue → TransitionResult.bCanEnterTransition
+
+EventGraph:
+  Event BlueprintUpdateAnimation
+    → SetSpeed.Execute
+  TryGetPawnOwner.ReturnValue → GetVelocity.Self (pure, data-only)
+  GetVelocity.ReturnValue → VSize.A (pure, data-only)
+  VSize.ReturnValue → SetSpeed.Speed (pure, data-only)
+```
+
+### Critical Implementation Notes (AnimBP)
+
+1. **Compile after adding Speed variable** — K2Node_VariableSet::AllocateDefaultPins needs the variable in the compiled class to create the Speed pin. Without the intermediate compile, VSize→SetSpeed connection silently fails.
+
+2. **Transition node ordering** — `PostPlacedNewNode()` → `AllocateDefaultPins()` → `CreateConnections(Source, Target)`. Calling CreateConnections before AllocateDefaultPins crashes (Pins array is empty).
+
+3. **Pure functions have NO exec pins** — TryGetPawnOwner, GetVelocity, VSize are all const/BlueprintPure. Wire Event.Then directly to SetSpeed.Execute. Blueprint VM evaluates pure nodes lazily.
+
+4. **UE5.5 comparison function names** — `Greater_DoubleDouble` / `Less_DoubleDouble` (NOT FloatFloat). Fallback to FloatFloat for older versions.
+
+5. **Orphaned TryGetPawnOwner** — `create_anim_blueprint` places a default TryGetPawnOwner node at (0,100). The state machine handler creates its own at (300,400). Delete the orphaned one at (0,100) after setup.
+
+6. **set_mesh_asset_material supports SkeletalMesh** — The C++ handler tries UStaticMesh first, then USkeletalMesh. For characters, material must be on the ASSET not the actor instance.
+
+7. **set_character_properties for AnimBP assignment** — `create_character_blueprint` rejects existing BPs. Use `set_character_properties` to assign AnimBP after creation.
 
 ### Pin Names Reference
 | Node | Key Input Pins | Key Output Pins |
@@ -143,24 +261,27 @@ Order: target_class → KismetSystemLibrary → KismetMathLibrary → SkeletonGe
 | AddControllerYawInput | execute, Val | then |
 | AddControllerPitchInput | execute, Val | then |
 | AddMovementInput | execute, WorldDirection, ScaleValue | then |
-| GetControlRotation | (none) | ReturnValue_Yaw, ReturnValue_Pitch, ReturnValue_Roll |
-| GetForwardVector | InRot_Yaw, InRot_Pitch, InRot_Roll | ReturnValue (FVector) |
-| GetRightVector | InRot_Yaw, InRot_Pitch, InRot_Roll | ReturnValue (FVector) |
-| K2Node_EnhancedInputAction (Axis2D) | (none) | Triggered, Started, Completed, ActionValue_X, ActionValue_Y |
+| GetControlRotation | (none) | ReturnValue (FRotator) |
+| GetForwardVector | InRot (FRotator) | ReturnValue (FVector) |
+| GetRightVector | InRot (FRotator) | ReturnValue (FVector) |
+| EnhancedInputAction (Axis2D) | (none) | Triggered, Started, Completed, ActionValue_X, ActionValue_Y |
 
 ### Common Gotchas
-- **NEVER predict node IDs** - always capture from add_node response
+- **NEVER predict node IDs** — always capture from add_node response
 - **connect_nodes auto-compiles** after every connection (BPConnector.cpp:153)
-- **Custom functions timing bug** - SkeletonGeneratedClass doesn't update params until compile
-- **Enhanced Input node GUIDs often all-zeros** - FindNodeById falls back to GetName() matching
-- **Multiple output connections work** - MakeLinkTo appends to link array
-- **target_class not needed** if C++ has parent class search fallback (UtilityNodes.cpp update 2026-02-09)
-- **CDO components (Mesh, CapsuleComponent)** not visible in SCS - can't set material via apply_material_to_blueprint
+- **Custom functions timing bug** — SkeletonGeneratedClass doesn't update params until compile
+- **Enhanced Input node GUIDs often all-zeros** — FindNodeById falls back to GetName() matching
+- **Multiple output connections work** — MakeLinkTo appends to link array
+- **CDO components (Mesh, CapsuleComponent)** not visible in SCS — use set_character_properties
+- **FRotator pin connection** — Connect full ReturnValue (FRotator) → InRot, NOT individual sub-pins
 
 ## Integration Test Checklist
-After wiring:
-1. Spawn BP in level: `spawn_blueprint_actor_in_level`
-2. Set as default pawn in GameMode or PlayerStart
-3. PIE test: WASD movement follows camera direction
-4. PIE test: Mouse look rotates camera
-5. PIE test: Space jumps, release stops jumping
+After full pipeline:
+1. PIE test: WASD movement follows camera direction
+2. PIE test: Mouse look rotates camera
+3. PIE test: Space jumps, release stops jumping
+4. PIE test: Robot has PBR material (not grey)
+5. PIE test: Idle animation plays when stationary
+6. PIE test: Walk animation transitions when moving slowly
+7. PIE test: Run animation transitions at higher speeds
+8. Verify: No "Blueprint Compilation Errors" dialog on PIE start
