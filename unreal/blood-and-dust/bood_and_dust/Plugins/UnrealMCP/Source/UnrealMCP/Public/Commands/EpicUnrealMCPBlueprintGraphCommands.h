@@ -55,4 +55,7 @@ private:
 
     // Rename function in Blueprint
     TSharedPtr<FJsonObject> HandleRenameFunction(const TSharedPtr<FJsonObject>& Params);
+
+    // Add Enhanced Input Action event node to Blueprint
+    TSharedPtr<FJsonObject> HandleAddEnhancedInputActionEvent(const TSharedPtr<FJsonObject>& Params);
 };

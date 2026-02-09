@@ -45,7 +45,8 @@ public class UnrealMCP : ModuleRules
 				"UnrealEd",           // For Blueprint editing
 				"BlueprintGraph",     // For K2Node classes (F15-F22)
 				"KismetCompiler",     // For Blueprint compilation (F15-F22)
-				"CinematicCamera"     // For CineCameraActor
+				"CinematicCamera",    // For CineCameraActor
+			"EnhancedInput"       // For UInputAction, Enhanced Input events
 			}
 		);
 		
@@ -64,7 +65,8 @@ public class UnrealMCP : ModuleRules
 				"ImageWrapper",          // For PNG screenshot encoding
 				"Landscape",             // For landscape/terrain editing
 				"LandscapeEditor",       // For landscape editing tools
-				"Foliage"                // For foliage editing
+				"Foliage",               // For foliage editing
+			"InputBlueprintNodes"    // For K2Node_EnhancedInputAction
 			}
 		);
 		

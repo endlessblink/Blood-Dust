@@ -1151,10 +1151,10 @@ def create_landscape_material(
     grass_n: str = "",
     detail_uv_scale: float = 0.004,
     macro_uv_scale: float = 0.00025,
-    bomb_offset_x: float = 23.17,
-    bomb_offset_y: float = 47.11,
-    noise_scale: float = 0.001,
-    macro_blend_amount: float = 0.3,
+    bomb_offset_x: float = 0.5137,
+    bomb_offset_y: float = 0.7291,
+    noise_scale: float = 0.01,
+    macro_blend_amount: float = 0.15,
     slope_sharpness: float = 3.0,
     grass_amount: float = 0.5,
     roughness: float = 0.85,
@@ -1163,12 +1163,13 @@ def create_landscape_material(
     Create a complete landscape material with texture bombing anti-tiling.
 
     Builds the entire material graph in C++ with:
-    - Texture bombing: each diffuse sampled twice at offset UVs, blended with
-      computational noise mask to destroy the regular tiling grid
-    - Multi-scale UV blending: diffuse also sampled at macro scale for
-      distance variation
+    - Texture bombing: diffuse AND normal sampled twice at offset UVs, blended
+      with 5-octave turbulent noise to destroy tiling grid in color AND specular
+    - Multiplicative macro modulation: macro-scale sample modulates brightness
+      without replacing detail (Multiply, not Lerp)
     - Slope-based rock/mud blend, noise-based grass overlay
-    - Normal maps, roughness, metallic
+    - 7 color-coded comment boxes organizing the graph
+    - ~53 expression nodes, 15 texture samplers (of 16 max)
 
     All nodes created and connected in a single tick. Uses WorldPosition-based
     UVs (not LandscapeLayerCoords) for reliable persistence.
@@ -1181,10 +1182,10 @@ def create_landscape_material(
     - grass_d/grass_n: Grass diffuse + normal (overlay)
     - detail_uv_scale: WorldPos UV multiplier for detail (default 0.004)
     - macro_uv_scale: WorldPos UV multiplier for macro variation (default 0.00025)
-    - bomb_offset_x: UV offset X for texture bombing (default 23.17)
-    - bomb_offset_y: UV offset Y for texture bombing (default 47.11)
-    - noise_scale: Computational noise scale for bomb blend (default 0.001)
-    - macro_blend_amount: How much macro scale mixes in 0-1 (default 0.3, MI-editable)
+    - bomb_offset_x: UV offset X for texture bombing (default 0.5137, ~half tile)
+    - bomb_offset_y: UV offset Y for texture bombing (default 0.7291, ~73% offset)
+    - noise_scale: Noise scale matching tile frequency (default 0.004)
+    - macro_blend_amount: Multiplicative brightness modulation 0-1 (default 0.15, MI-editable)
     - slope_sharpness: Power exponent for slope (default 3.0, MI-editable)
     - grass_amount: Grass blend amount (default 0.5, MI-editable)
     - roughness: Roughness value (default 0.85, MI-editable)
@@ -1645,6 +1646,37 @@ def create_anim_blueprint(
     except Exception as e:
         logger.error(f"create_anim_blueprint error: {e}")
         return {"success": False, "message": str(e)}
+
+@mcp.tool()
+def add_enhanced_input_action_event(
+    blueprint_name: str,
+    input_action_path: str,
+    pos_x: float = 0.0,
+    pos_y: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Add an Enhanced Input Action event node to a Blueprint's event graph.
+
+    Creates a K2Node_EnhancedInputAction that fires when the specified InputAction
+    is triggered. The node has exec output pins (Triggered, Started, Completed, etc.)
+    and an ActionValue output pin whose type depends on the InputAction's ValueType.
+
+    Parameters:
+    - blueprint_name: Full path to the Blueprint (e.g., "/Game/Characters/Robot/BP_RobotCharacter")
+    - input_action_path: Path to the InputAction asset (e.g., "/Game/Input/Actions/IA_Move")
+    - pos_x: X position in the graph (default 0)
+    - pos_y: Y position in the graph (default 0)
+
+    Returns node_id, output_pins list, and whether an existing node was reused.
+    """
+    unreal = get_unreal_connection()
+    response = unreal.send_command("add_enhanced_input_action_event", {
+        "blueprint_name": blueprint_name,
+        "input_action_path": input_action_path,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+    })
+    return response.get("result", response)
 
 
 @mcp.tool()

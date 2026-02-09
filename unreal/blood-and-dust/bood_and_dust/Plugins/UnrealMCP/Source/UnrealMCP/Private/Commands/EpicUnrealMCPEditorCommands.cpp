@@ -60,6 +60,7 @@
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionNoise.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
+#include "Materials/MaterialExpressionComment.h"
 #include "MaterialEditingLibrary.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -1948,13 +1949,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Params->TryGetStringField(TEXT("grass_d"), GrassD);
     Params->TryGetStringField(TEXT("grass_n"), GrassNPath);
 
-    // Scalar parameters with defaults
+    // Scalar parameters with FIXED defaults
     double DetailUVScale = 0.004;
     double MacroUVScale = 0.00025;
-    double BombOffsetX = 23.17;
-    double BombOffsetY = 47.11;
-    double NoiseScale = 0.001;
-    double MacroBlendAmount = 0.3;
+    double BombOffsetX = 0.5137;   // frac(0.5137)=0.5137 ~ half tile shift
+    double BombOffsetY = 0.7291;   // frac(0.7291)=0.7291 ~ 73% offset
+    double NoiseScale = 0.01;      // 2.5 features per tile = blend WITHIN tiles
+    double MacroBlendAmount = 0.15; // subtle modulation, not replacement
     double SlopeSharpness = 3.0;
     double GrassAmount = 0.5;
     double RoughnessVal = 0.85;
@@ -2005,6 +2006,24 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         return Expr;
     };
 
+    // Comment box lambda for organized graph layout
+    auto AddComment = [Mat](const FString& Label, FLinearColor Color, float X, float Y, int32 W, int32 H) {
+        auto* C = NewObject<UMaterialExpressionComment>(Mat);
+        C->Text = Label;
+        C->CommentColor = Color;
+        C->FontSize = 18;
+        C->MaterialExpressionEditorX = X;
+        C->MaterialExpressionEditorY = Y;
+        C->SizeX = W;
+        C->SizeY = H;
+        Mat->GetExpressionCollection().AddComment(C);
+    };
+
+    // =================================================================
+    // COMMENT BOX 1: UV Generation (Yellow)
+    // =================================================================
+    AddComment(TEXT("UV Generation"), FLinearColor(0.8f, 0.7f, 0.1f), -2500, -250, 850, 650);
+
     // =================================================================
     // SECTION 1: World UVs (6 nodes)
     // WorldPos -> MaskRG(XY) -> DetailUV = Multiply(MaskRG, 0.004)
@@ -2037,8 +2056,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(MacroUV, -1800, 300);
 
     // =================================================================
+    // COMMENT BOX 2: Texture Bombing UV Offset (Orange)
+    // =================================================================
+    AddComment(TEXT("Texture Bombing UV Offset"), FLinearColor(0.9f, 0.5f, 0.1f), -1900, 500, 600, 250);
+
+    // =================================================================
     // SECTION 2: Bombing UV Offset (2 nodes)
-    // BombOffset = Constant2Vector(23.17, 47.11)
+    // BombOffset = Constant2Vector(0.5137, 0.7291) -- half-tile shifts
     // BombedUV = Add(DetailUV, BombOffset)
     // =================================================================
     auto* BombOffset = NewObject<UMaterialExpressionConstant2Vector>(Mat);
@@ -2052,27 +2076,33 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(BombedUV, -1500, 600);
 
     // =================================================================
+    // COMMENT BOX 3: Noise Blend Mask (Cyan)
+    // =================================================================
+    AddComment(TEXT("Noise Blend Mask (5 octaves, turbulence)"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 800, 550, 250);
+
+    // =================================================================
     // SECTION 3: Noise Blend Mask (1 node)
-    // NoiseMask = Noise(WorldPos, GradientALU, Scale=0.001)
+    // FIXED: 5 octaves, turbulence=true, quality=2, scale from param
     // =================================================================
     auto* NoiseMask = NewObject<UMaterialExpressionNoise>(Mat);
     NoiseMask->NoiseFunction = NOISEFUNCTION_GradientALU;
     NoiseMask->Scale = NoiseScale;
-    NoiseMask->Quality = 1;
-    NoiseMask->Levels = 1;
+    NoiseMask->Quality = 2;        // FIXED: was 1, reduces banding
+    NoiseMask->Levels = 5;         // FIXED: was 1, multi-octave = organic
     NoiseMask->OutputMin = 0.0f;
     NoiseMask->OutputMax = 1.0f;
-    NoiseMask->bTurbulence = false;
+    NoiseMask->bTurbulence = true;  // FIXED: was false, sharper boundaries
     NoiseMask->bTiling = false;
     NoiseMask->LevelScale = 2.0f;
     NoiseMask->Position.Connect(0, WorldPos);
-    AddExpr(NoiseMask, -1500, 800);
+    AddExpr(NoiseMask, -1500, 900);
 
     // =================================================================
-    // SECTION 4: Per-Layer Texture Bombing (18 nodes + 1 shared param)
-    // Each layer: TexA(Detail) + TexB(Bombed) -> Lerp(NoiseMask) -> BombBlend
-    //             MacroSample(MacroUV) -> Lerp(BombBlend, Macro, MacroAmt)
-    //             NormalSample(DetailUV)
+    // SECTION 4: Per-Layer Texture Bombing with Normal Bombing
+    // Each layer: DiffA(Detail) + DiffB(Bombed) -> Lerp(Noise) -> BombBlend
+    //             MacroSamp(MacroUV) -> Multiply(BombBlend, Lerp(1,Macro,Amt))
+    //             NormA(Detail) + NormB(Bombed) -> Lerp(Noise) -> BombedNormal
+    // 5 samplers per layer x 3 layers = 15 samplers (of 16 max)
     // =================================================================
     auto CreateTexSample = [&](UTexture* Tex, EMaterialSamplerType SamplerType,
                                UMaterialExpression* UV, float X, float Y) -> UMaterialExpressionTextureSample* {
@@ -2085,11 +2115,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         return S;
     };
 
-    // Shared MacroBlendAmount parameter
+    // Shared nodes for all layers
     auto* MacroAmtParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     MacroAmtParam->ParameterName = FName(TEXT("MacroBlendAmount"));
     MacroAmtParam->DefaultValue = MacroBlendAmount;
-    AddExpr(MacroAmtParam, -900, 1200);
+    AddExpr(MacroAmtParam, -1000, 1700);
+
+    auto* OneConst = NewObject<UMaterialExpressionConstant>(Mat);
+    OneConst->R = 1.0f;
+    AddExpr(OneConst, -1000, 1600);
 
     // Load textures
     UTexture* TexRockD = LoadTex(RockD);
@@ -2099,8 +2133,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     UTexture* TexGrassD = LoadTex(GrassD);
     UTexture* TexGrassN = LoadTex(GrassNPath);
 
-    // Per-layer bombing lambda
-    // Returns: [0]=bombed+macro blended diffuse, [1]=normal sample
+    // Per-layer bombing lambda with NORMAL BOMBING (fix #4)
+    // and MULTIPLICATIVE macro blend (fix #3)
     struct FLayerResult {
         UMaterialExpression* Diffuse = nullptr;
         UMaterialExpression* Normal = nullptr;
@@ -2110,11 +2144,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         FLayerResult Result;
         if (!DiffTex) return Result;
 
-        // Sample A: diffuse at DetailUV
+        // --- Diffuse bombing ---
         auto* TexA = CreateTexSample(DiffTex, SAMPLERTYPE_Color, DetailUV, -1200, BaseY);
-        // Sample B: diffuse at BombedUV
         auto* TexB = CreateTexSample(DiffTex, SAMPLERTYPE_Color, BombedUV, -1200, BaseY + 150);
-        // Bomb blend: Lerp(A, B, NoiseMask)
+
         if (TexA && TexB)
         {
             auto* BombBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
@@ -2123,17 +2156,23 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
             BombBlend->Alpha.Connect(0, NoiseMask);
             AddExpr(BombBlend, -900, BaseY);
 
-            // Sample C: diffuse at MacroUV
             auto* MacroSamp = CreateTexSample(DiffTex, SAMPLERTYPE_Color, MacroUV, -1200, BaseY + 300);
             if (MacroSamp)
             {
-                // Macro blend: Lerp(BombBlend, MacroSample, MacroAmt)
-                auto* MacroBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
-                MacroBlend->A.Connect(0, BombBlend);
-                MacroBlend->B.Connect(0, MacroSamp);
-                MacroBlend->Alpha.Connect(0, MacroAmtParam);
-                AddExpr(MacroBlend, -600, BaseY);
-                Result.Diffuse = MacroBlend;
+                // FIX #3: Multiplicative macro blend preserves detail
+                // MacroMod = Lerp(1.0, MacroSamp, MacroAmtParam)
+                auto* MacroMod = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+                MacroMod->A.Connect(0, OneConst);
+                MacroMod->B.Connect(0, MacroSamp);
+                MacroMod->Alpha.Connect(0, MacroAmtParam);
+                AddExpr(MacroMod, -900, BaseY + 300);
+
+                // FinalDiff = Multiply(BombBlend, MacroMod) -- modulates brightness
+                auto* FinalDiff = NewObject<UMaterialExpressionMultiply>(Mat);
+                FinalDiff->A.Connect(0, BombBlend);
+                FinalDiff->B.Connect(0, MacroMod);
+                AddExpr(FinalDiff, -600, BaseY + 100);
+                Result.Diffuse = FinalDiff;
             }
             else
             {
@@ -2145,74 +2184,106 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
             Result.Diffuse = TexA;
         }
 
-        // Normal sample at DetailUV
+        // --- Normal bombing (FIX #4: eliminates specular grid) ---
         if (NormTex)
         {
-            Result.Normal = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DetailUV, -1200, BaseY + 450);
+            auto* NormA = CreateTexSample(NormTex, SAMPLERTYPE_Normal, DetailUV, -1200, BaseY + 450);
+            auto* NormB = CreateTexSample(NormTex, SAMPLERTYPE_Normal, BombedUV, -1200, BaseY + 600);
+            if (NormA && NormB)
+            {
+                auto* NormBlend = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+                NormBlend->A.Connect(0, NormA);
+                NormBlend->B.Connect(0, NormB);
+                NormBlend->Alpha.Connect(0, NoiseMask);
+                AddExpr(NormBlend, -900, BaseY + 450);
+                Result.Normal = NormBlend;
+            }
+            else if (NormA)
+            {
+                Result.Normal = NormA;
+            }
         }
 
         return Result;
     };
 
-    // Build layers: Rock at Y=-600, Mud at Y=0, Grass at Y=600
-    FLayerResult RockLayer = BuildBombedLayer(TexRockD, TexRockN, -600);
+    // COMMENT BOX 4: Rock Layer (Red)
+    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -1300, -900, 850, 800);
+    FLayerResult RockLayer = BuildBombedLayer(TexRockD, TexRockN, -800);
+
+    // COMMENT BOX 5: Mud Layer (Brown)
+    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -1300, -100, 850, 800);
     FLayerResult MudLayer = BuildBombedLayer(TexMudD, TexMudN, 0);
-    FLayerResult GrassLayer = BuildBombedLayer(TexGrassD, TexGrassN, 600);
+
+    // COMMENT BOX 6: Grass Layer (Green)
+    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -1300, 700, 850, 800);
+    FLayerResult GrassLayer = BuildBombedLayer(TexGrassD, TexGrassN, 800);
+
+    // =================================================================
+    // COMMENT BOX 7: Slope Detection (Purple)
+    // =================================================================
+    AddComment(TEXT("Slope Detection"), FLinearColor(0.5f, 0.2f, 0.7f), -400, -1700, 850, 400);
 
     // =================================================================
     // SECTION 5: Slope Detection (5 nodes)
     // VertexNormalWS -> MaskZ(B) -> Abs -> Power(SlopeSharpness) -> SlopeMask
     // =================================================================
     auto* VNormal = NewObject<UMaterialExpressionVertexNormalWS>(Mat);
-    AddExpr(VNormal, -300, -1200);
+    AddExpr(VNormal, -300, -1500);
 
     auto* MaskZ = NewObject<UMaterialExpressionComponentMask>(Mat);
     MaskZ->R = false; MaskZ->G = false; MaskZ->B = true; MaskZ->A = false;
     MaskZ->Input.Connect(0, VNormal);
-    AddExpr(MaskZ, 0, -1200);
+    AddExpr(MaskZ, 0, -1500);
 
     auto* AbsNode = NewObject<UMaterialExpressionAbs>(Mat);
     AbsNode->Input.Connect(0, MaskZ);
-    AddExpr(AbsNode, 0, -1050);
+    AddExpr(AbsNode, 0, -1350);
 
     auto* SlopeParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     SlopeParam->ParameterName = FName(TEXT("SlopeSharpness"));
     SlopeParam->DefaultValue = SlopeSharpness;
-    AddExpr(SlopeParam, 0, -1350);
+    AddExpr(SlopeParam, -300, -1650);
 
     auto* SlopePow = NewObject<UMaterialExpressionPower>(Mat);
     SlopePow->Base.Connect(0, AbsNode);
     SlopePow->Exponent.Connect(0, SlopeParam);
-    AddExpr(SlopePow, 300, -1200);
+    AddExpr(SlopePow, 300, -1500);
 
     // =================================================================
     // SECTION 6: Grass Noise Mask (4 nodes)
     // NoiseMask -> Power(2.0) -> GrassNoiseThresh
     // GrassParam("GrassAmount", 0.5) -> Multiply(GrassNoiseThresh, GrassParam) -> GrassMask
     // =================================================================
-    auto* GrassNoisePow = NewObject<UMaterialExpressionPower>(Mat);
-    GrassNoisePow->Base.Connect(0, NoiseMask);
-    // Use a constant for the exponent
     auto* GrassPowConst = NewObject<UMaterialExpressionConstant>(Mat);
     GrassPowConst->R = 2.0f;
-    AddExpr(GrassPowConst, -300, 900);
+    AddExpr(GrassPowConst, -300, 1900);
+
+    auto* GrassNoisePow = NewObject<UMaterialExpressionPower>(Mat);
+    GrassNoisePow->Base.Connect(0, NoiseMask);
     GrassNoisePow->Exponent.Connect(0, GrassPowConst);
-    AddExpr(GrassNoisePow, 0, 800);
+    AddExpr(GrassNoisePow, 0, 1800);
 
     auto* GrassParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
     GrassParam->ParameterName = FName(TEXT("GrassAmount"));
     GrassParam->DefaultValue = GrassAmount;
-    AddExpr(GrassParam, 0, 1000);
+    AddExpr(GrassParam, 0, 2000);
 
     auto* GrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
     GrassMask->A.Connect(0, GrassNoisePow);
     GrassMask->B.Connect(0, GrassParam);
-    AddExpr(GrassMask, 300, 800);
+    AddExpr(GrassMask, 300, 1800);
+
+    // Slope-filtered grass: grass only on flat areas, not slopes
+    auto* SlopeGrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
+    SlopeGrassMask->A.Connect(0, GrassMask);
+    SlopeGrassMask->B.Connect(0, SlopePow);
+    AddExpr(SlopeGrassMask, 500, 1800);
 
     // =================================================================
-    // SECTION 7: BaseColor + Normal Blend Chains (4 nodes)
-    // SlopeBC = Lerp(Rock, Mud, SlopeMask) -> GrassBC = Lerp(SlopeBC, Grass, GrassMask)
-    // SlopeN  = Lerp(RockN, MudN, SlopeMask) -> GrassN = Lerp(SlopeN, GrassN, GrassMask)
+    // SECTION 7: BaseColor + Normal Blend Chains
+    // SlopeBC = Lerp(Rock, Mud, SlopeMask) -> GrassBC = Lerp(SlopeBC, Grass, SlopeGrassMask)
+    // SlopeN  = Lerp(RockN, MudN, SlopeMask) -> GrassN = Lerp(SlopeN, GrassN, SlopeGrassMask)
     // =================================================================
     UMaterialExpression* FinalBC = nullptr;
 
@@ -2233,7 +2304,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         auto* GrassBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         GrassBC->A.Connect(0, FinalBC);
         GrassBC->B.Connect(0, GrassLayer.Diffuse);
-        GrassBC->Alpha.Connect(0, GrassMask);
+        GrassBC->Alpha.Connect(0, SlopeGrassMask);
         AddExpr(GrassBC, 600, -200);
         FinalBC = GrassBC;
     }
@@ -2252,7 +2323,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         SlopeN->A.Connect(0, RockLayer.Normal);
         SlopeN->B.Connect(0, MudLayer.Normal);
         SlopeN->Alpha.Connect(0, SlopePow);
-        AddExpr(SlopeN, 300, 1400);
+        AddExpr(SlopeN, 300, 600);
         FinalN = SlopeN;
     }
     else if (RockLayer.Normal) { FinalN = RockLayer.Normal; }
@@ -2263,8 +2334,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
         auto* GrassNLerp = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
         GrassNLerp->A.Connect(0, FinalN);
         GrassNLerp->B.Connect(0, GrassLayer.Normal);
-        GrassNLerp->Alpha.Connect(0, GrassMask);
-        AddExpr(GrassNLerp, 600, 1400);
+        GrassNLerp->Alpha.Connect(0, SlopeGrassMask);
+        AddExpr(GrassNLerp, 600, 600);
         FinalN = GrassNLerp;
     }
 
@@ -2308,7 +2379,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("name"), MaterialName);
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material created with texture bombing anti-tiling, multi-scale UV blending, slope blend, grass overlay, normals, roughness, metallic"));
+    Result->SetNumberField(TEXT("comment_count"), 7);
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material created with FIXED anti-tiling: proper bomb offsets (0.5/0.7), 5-octave turbulent noise, multiplicative macro blend, normal bombing, 7 organized comment boxes"));
 
     return Result;
 }

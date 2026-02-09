@@ -174,7 +174,21 @@
       "Bash(git check-ignore:*)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .gitignore CLAUDE.md MASTER_PLAN.md .claude/ unreal/blood-and-dust/ unreal/mcp/)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture diff --cached --name-status)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/settings.local.json)"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/settings.local.json)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: level state with grass, vegetation, landscape materials\n\nNew assets: 8 grass meshes, grass textures+alpha, M_Grass_Foliage,\nM_Landscape_Bombed. Level actors updated with vegetation scatter.\nMCP plugin and gitignore cleanup.\n\nRestorable checkpoint - use ''git reset --hard HEAD'' to return here.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "WebFetch(domain:www.iquilezles.org)",
+      "WebFetch(domain:www.alexengelmann.com)",
+      "WebFetch(domain:haukethiessen.artstation.com)",
+      "WebFetch(domain:iquilezles.org)",
+      "WebFetch(domain:jcgt.org)",
+      "WebFetch(domain:www.artstation.com)",
+      "WebFetch(domain:www.unrealcode.net)",
+      "WebFetch(domain:mkai.format.com)",
+      "mcp__unrealMCP__add_enhanced_input_action_event",
+      "WebFetch(domain:concretecaptain.com)",
+      "WebFetch(domain:galaxy.ai)",
+      "mcp__unrealMCP__add_node",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add unreal/ .claude/ CLAUDE.md MASTER_PLAN.md .gitignore .mcp.json)"
     ]
   },
   "enableAllProjectMcpServers": true,

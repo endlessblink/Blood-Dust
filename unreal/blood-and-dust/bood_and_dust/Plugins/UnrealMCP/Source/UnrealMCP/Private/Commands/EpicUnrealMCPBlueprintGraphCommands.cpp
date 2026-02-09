@@ -8,6 +8,11 @@
 #include "Commands/BlueprintGraph/NodePropertyManager.h"
 #include "Commands/BlueprintGraph/Function/FunctionManager.h"
 #include "Commands/BlueprintGraph/Function/FunctionIO.h"
+// Enhanced Input
+#include "K2Node_EnhancedInputAction.h"
+#include "InputAction.h"
+#include "EditorAssetLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 
 FEpicUnrealMCPBlueprintGraphCommands::FEpicUnrealMCPBlueprintGraphCommands()
 {
@@ -66,6 +71,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleCommand(cons
     else if (CommandType == TEXT("rename_function"))
     {
         return HandleRenameFunction(Params);
+    }
+    else if (CommandType == TEXT("add_enhanced_input_action_event"))
+    {
+        return HandleAddEnhancedInputActionEvent(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint graph command: %s"), *CommandType));
@@ -385,4 +394,161 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleRenameFuncti
         *OldFunctionName, *NewFunctionName, *BlueprintName);
 
     return FFunctionManager::RenameFunction(Params);
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddEnhancedInputActionEvent(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString InputActionPath;
+    if (!Params->TryGetStringField(TEXT("input_action_path"), InputActionPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'input_action_path' parameter"));
+    }
+
+    // Optional position
+    double PosX = 0.0, PosY = 0.0;
+    Params->TryGetNumberField(TEXT("pos_x"), PosX);
+    Params->TryGetNumberField(TEXT("pos_y"), PosY);
+
+    UE_LOG(LogTemp, Display, TEXT("HandleAddEnhancedInputActionEvent: Adding EnhancedInputAction '%s' to '%s'"),
+        *InputActionPath, *BlueprintName);
+
+    // Load the Blueprint
+    FString BlueprintPath = BlueprintName;
+    if (!BlueprintPath.StartsWith(TEXT("/")))
+    {
+        BlueprintPath = TEXT("/Game/Blueprints/") + BlueprintPath;
+    }
+    if (!BlueprintPath.Contains(TEXT(".")))
+    {
+        BlueprintPath += TEXT(".") + FPaths::GetBaseFilename(BlueprintPath);
+    }
+
+    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+    if (!Blueprint)
+    {
+        if (UEditorAssetLibrary::DoesAssetExist(BlueprintPath))
+        {
+            Blueprint = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+        }
+    }
+    if (!Blueprint)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    // Load the InputAction asset
+    FString IAPath = InputActionPath;
+    if (!IAPath.Contains(TEXT(".")))
+    {
+        IAPath += TEXT(".") + FPaths::GetBaseFilename(IAPath);
+    }
+
+    UInputAction* InputAction = LoadObject<UInputAction>(nullptr, *IAPath);
+    if (!InputAction)
+    {
+        if (UEditorAssetLibrary::DoesAssetExist(IAPath))
+        {
+            InputAction = Cast<UInputAction>(UEditorAssetLibrary::LoadAsset(IAPath));
+        }
+    }
+    if (!InputAction)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("InputAction not found: %s"), *InputActionPath));
+    }
+
+    // Get the event graph
+    if (Blueprint->UbergraphPages.Num() == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no event graph"));
+    }
+    UEdGraph* Graph = Blueprint->UbergraphPages[0];
+    if (!Graph)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get Blueprint event graph"));
+    }
+
+    // Check for existing node with same InputAction to avoid duplicates
+    for (UEdGraphNode* ExistingNode : Graph->Nodes)
+    {
+        UK2Node_EnhancedInputAction* ExistingIA = Cast<UK2Node_EnhancedInputAction>(ExistingNode);
+        if (ExistingIA && ExistingIA->InputAction == InputAction)
+        {
+            UE_LOG(LogTemp, Display, TEXT("HandleAddEnhancedInputActionEvent: Reusing existing node for '%s'"),
+                *InputActionPath);
+
+            // Return the existing node info
+            TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+            Response->SetBoolField(TEXT("success"), true);
+            Response->SetStringField(TEXT("node_id"), ExistingIA->NodeGuid.ToString());
+            Response->SetStringField(TEXT("input_action"), InputActionPath);
+            Response->SetNumberField(TEXT("pos_x"), ExistingIA->NodePosX);
+            Response->SetNumberField(TEXT("pos_y"), ExistingIA->NodePosY);
+            Response->SetBoolField(TEXT("reused_existing"), true);
+
+            // List output pins
+            TArray<TSharedPtr<FJsonValue>> PinArray;
+            for (UEdGraphPin* Pin : ExistingIA->Pins)
+            {
+                if (Pin->Direction == EGPD_Output)
+                {
+                    TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject);
+                    PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                    PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                    PinArray.Add(MakeShareable(new FJsonValueObject(PinObj)));
+                }
+            }
+            Response->SetArrayField(TEXT("output_pins"), PinArray);
+            return Response;
+        }
+    }
+
+    // Create the EnhancedInputAction node
+    // CRITICAL: Set InputAction BEFORE AllocateDefaultPins - it determines pin types
+    UK2Node_EnhancedInputAction* ActionNode = NewObject<UK2Node_EnhancedInputAction>(Graph);
+    ActionNode->InputAction = InputAction;
+    ActionNode->NodePosX = static_cast<int32>(PosX);
+    ActionNode->NodePosY = static_cast<int32>(PosY);
+
+    Graph->AddNode(ActionNode, true);
+    ActionNode->PostPlacedNewNode();
+    ActionNode->AllocateDefaultPins();
+
+    // Notify changes
+    Graph->NotifyGraphChanged();
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    UE_LOG(LogTemp, Display, TEXT("HandleAddEnhancedInputActionEvent: Created node for '%s' (ID: %s)"),
+        *InputActionPath, *ActionNode->NodeGuid.ToString());
+
+    // Build response
+    TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject);
+    Response->SetBoolField(TEXT("success"), true);
+    Response->SetStringField(TEXT("node_id"), ActionNode->NodeGuid.ToString());
+    Response->SetStringField(TEXT("input_action"), InputActionPath);
+    Response->SetNumberField(TEXT("pos_x"), ActionNode->NodePosX);
+    Response->SetNumberField(TEXT("pos_y"), ActionNode->NodePosY);
+    Response->SetBoolField(TEXT("reused_existing"), false);
+
+    // List output pins
+    TArray<TSharedPtr<FJsonValue>> PinArray;
+    for (UEdGraphPin* Pin : ActionNode->Pins)
+    {
+        if (Pin->Direction == EGPD_Output)
+        {
+            TSharedPtr<FJsonObject> PinObj = MakeShareable(new FJsonObject);
+            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+            PinArray.Add(MakeShareable(new FJsonValueObject(PinObj)));
+        }
+    }
+    Response->SetArrayField(TEXT("output_pins"), PinArray);
+
+    return Response;
 }
