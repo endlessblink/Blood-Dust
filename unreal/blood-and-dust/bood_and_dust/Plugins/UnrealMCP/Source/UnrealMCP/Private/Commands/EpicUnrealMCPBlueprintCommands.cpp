@@ -8,6 +8,7 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
@@ -905,30 +906,29 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load material: %s"), *MaterialPath));
     }
 
-    // Find mesh components and apply material
-    TArray<UStaticMeshComponent*> MeshComponents;
-    TargetActor->GetComponents<UStaticMeshComponent>(MeshComponents);
-
     // Mark actor for undo and OFPA package dirtying BEFORE mutation
     TargetActor->Modify();
 
     bool bAppliedToAny = false;
     FString MeshName;
-    for (UStaticMeshComponent* MeshComp : MeshComponents)
+    FString MeshType;
+
+    // Try StaticMeshComponents first
+    TArray<UStaticMeshComponent*> StaticMeshComponents;
+    TargetActor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+
+    for (UStaticMeshComponent* MeshComp : StaticMeshComponents)
     {
         if (MeshComp)
         {
-            // Mark component for undo before modifying
             MeshComp->Modify();
-
             if (UStaticMesh* Mesh = MeshComp->GetStaticMesh())
             {
                 MeshName = Mesh->GetPathName();
+                MeshType = TEXT("StaticMesh");
             }
-
             if (MaterialSlot < 0)
             {
-                // Apply to ALL material slots
                 int32 NumMaterials = MeshComp->GetNumMaterials();
                 for (int32 i = 0; i < NumMaterials; i++)
                 {
@@ -943,9 +943,42 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
         }
     }
 
+    // If no static mesh components found, try SkeletalMeshComponents
     if (!bAppliedToAny)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No mesh components found on actor"));
+        TArray<USkeletalMeshComponent*> SkelMeshComponents;
+        TargetActor->GetComponents<USkeletalMeshComponent>(SkelMeshComponents);
+
+        for (USkeletalMeshComponent* SkelComp : SkelMeshComponents)
+        {
+            if (SkelComp)
+            {
+                SkelComp->Modify();
+                if (USkeletalMesh* SkelMesh = SkelComp->GetSkeletalMeshAsset())
+                {
+                    MeshName = SkelMesh->GetPathName();
+                    MeshType = TEXT("SkeletalMesh");
+                }
+                if (MaterialSlot < 0)
+                {
+                    int32 NumMaterials = SkelComp->GetNumMaterials();
+                    for (int32 i = 0; i < NumMaterials; i++)
+                    {
+                        SkelComp->SetMaterial(i, Material);
+                    }
+                }
+                else
+                {
+                    SkelComp->SetMaterial(MaterialSlot, Material);
+                }
+                bAppliedToAny = true;
+            }
+        }
+    }
+
+    if (!bAppliedToAny)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No mesh components found on actor (checked StaticMesh and SkeletalMesh)"));
     }
 
     // Mark the actor's package dirty so OFPA serializes the material override
@@ -957,7 +990,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
     ResultObj->SetNumberField(TEXT("material_slot"), MaterialSlot);
     if (!MeshName.IsEmpty())
     {
-        ResultObj->SetStringField(TEXT("static_mesh"), MeshName);
+        ResultObj->SetStringField(TEXT("mesh"), MeshName);
+        ResultObj->SetStringField(TEXT("mesh_type"), MeshType);
     }
     ResultObj->SetBoolField(TEXT("success"), true);
 
@@ -984,13 +1018,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetMeshAssetMater
         MaterialSlot = Params->GetIntegerField(TEXT("material_slot"));
     }
 
-    // Load the static mesh asset
-    UStaticMesh* Mesh = Cast<UStaticMesh>(UEditorAssetLibrary::LoadAsset(MeshPath));
-    if (!Mesh)
-    {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load mesh: %s"), *MeshPath));
-    }
-
     // Load the material
     UMaterialInterface* Material = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(MaterialPath));
     if (!Material)
@@ -998,38 +1025,83 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetMeshAssetMater
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load material: %s"), *MaterialPath));
     }
 
-    // Get the static materials array
-    TArray<FStaticMaterial>& StaticMaterials = Mesh->GetStaticMaterials();
-
-    if (MaterialSlot < 0)
+    // Try loading as StaticMesh first, then SkeletalMesh
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(MeshPath);
+    if (!LoadedAsset)
     {
-        // Apply to all slots
-        Mesh->Modify();
-        for (int32 i = 0; i < StaticMaterials.Num(); i++)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load asset: %s"), *MeshPath));
+    }
+
+    int32 TotalSlots = 0;
+    FString MeshType;
+
+    if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(LoadedAsset))
+    {
+        MeshType = TEXT("StaticMesh");
+        TArray<FStaticMaterial>& StaticMaterials = StaticMesh->GetStaticMaterials();
+        TotalSlots = StaticMaterials.Num();
+
+        if (MaterialSlot < 0)
         {
-            StaticMaterials[i].MaterialInterface = Material;
+            StaticMesh->Modify();
+            for (int32 i = 0; i < StaticMaterials.Num(); i++)
+            {
+                StaticMaterials[i].MaterialInterface = Material;
+            }
         }
+        else
+        {
+            if (MaterialSlot >= StaticMaterials.Num())
+            {
+                return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material slot %d out of range (mesh has %d slots)"), MaterialSlot, StaticMaterials.Num()));
+            }
+            StaticMesh->Modify();
+            StaticMaterials[MaterialSlot].MaterialInterface = Material;
+        }
+
+        StaticMesh->PostEditChange();
+        StaticMesh->MarkPackageDirty();
+        UEditorAssetLibrary::SaveLoadedAsset(StaticMesh);
+    }
+    else if (USkeletalMesh* SkelMesh = Cast<USkeletalMesh>(LoadedAsset))
+    {
+        MeshType = TEXT("SkeletalMesh");
+        TArray<FSkeletalMaterial>& SkelMaterials = SkelMesh->GetMaterials();
+        TotalSlots = SkelMaterials.Num();
+
+        if (MaterialSlot < 0)
+        {
+            SkelMesh->Modify();
+            for (int32 i = 0; i < SkelMaterials.Num(); i++)
+            {
+                SkelMaterials[i].MaterialInterface = Material;
+            }
+        }
+        else
+        {
+            if (MaterialSlot >= SkelMaterials.Num())
+            {
+                return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material slot %d out of range (mesh has %d slots)"), MaterialSlot, SkelMaterials.Num()));
+            }
+            SkelMesh->Modify();
+            SkelMaterials[MaterialSlot].MaterialInterface = Material;
+        }
+
+        SkelMesh->PostEditChange();
+        SkelMesh->MarkPackageDirty();
+        UEditorAssetLibrary::SaveLoadedAsset(SkelMesh);
     }
     else
     {
-        if (MaterialSlot >= StaticMaterials.Num())
-        {
-            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material slot %d out of range (mesh has %d slots)"), MaterialSlot, StaticMaterials.Num()));
-        }
-        Mesh->Modify();
-        StaticMaterials[MaterialSlot].MaterialInterface = Material;
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset is not a StaticMesh or SkeletalMesh: %s"), *MeshPath));
     }
-
-    // Rebuild mesh and save
-    Mesh->PostEditChange();
-    Mesh->MarkPackageDirty();
-    UEditorAssetLibrary::SaveLoadedAsset(Mesh);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("mesh_path"), MeshPath);
     ResultObj->SetStringField(TEXT("material_path"), MaterialPath);
+    ResultObj->SetStringField(TEXT("mesh_type"), MeshType);
     ResultObj->SetNumberField(TEXT("material_slot"), MaterialSlot);
-    ResultObj->SetNumberField(TEXT("total_slots"), StaticMaterials.Num());
+    ResultObj->SetNumberField(TEXT("total_slots"), TotalSlots);
     ResultObj->SetBoolField(TEXT("success"), true);
 
     return ResultObj;

@@ -3514,7 +3514,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
 
     if (Width == 0 || Height == 0)
     {
-        // Attempt 1: Force all viewports to redraw (triggers Slate layout + render)
+        // Attempt 1: Force a Slate tick to process pending layout, then redraw.
+        // After editor restart, the viewport widget exists but Slate hasn't done a
+        // layout pass yet, so FViewport has no RHI render target allocated.
+        // Ticking Slate processes widget layout → SViewport gets proper geometry →
+        // viewport resize callback fires → RHI render target gets allocated.
+        if (FSlateApplication::IsInitialized())
+        {
+            FSlateApplication::Get().Tick();
+        }
         if (GEditor)
         {
             GEditor->RedrawAllViewports();
@@ -3525,10 +3533,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
 
     if (Width == 0 || Height == 0)
     {
-        // Attempt 2: Get size from the owning Slate widget and force viewport RHI resize.
-        // We CANNOT ReadPixels immediately after resize — the Vulkan render target
-        // needs a full rendering frame through Slate's pipeline before it's valid.
-        // Instead, resize + request redraw, then ask the caller to retry.
+        // Attempt 2: Force-resize the viewport RHI from Slate widget cached geometry.
+        // After Slate tick above, the widget should now have valid geometry even if
+        // the viewport RHI resize callback didn't fire.
         FSceneViewport* SceneVP = static_cast<FSceneViewport*>(Viewport);
         if (SceneVP)
         {
@@ -3540,22 +3547,32 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
                 int32 H = FMath::TruncToInt(WidgetSize.Y);
                 if (W > 0 && H > 0)
                 {
-                    // Resize the RHI viewport to match the Slate widget
                     SceneVP->UpdateViewportRHI(false, W, H, EWindowMode::Windowed, PF_Unknown);
-                    // Trigger a proper redraw through Slate's rendering pipeline
+                    // Let Slate render a proper frame into the new surface
+                    if (FSlateApplication::IsInitialized())
+                    {
+                        FSlateApplication::Get().Tick();
+                    }
                     if (GEditor)
                     {
                         GEditor->RedrawAllViewports();
                     }
-                    // Return WITHOUT ReadPixels — Vulkan surface needs a full frame
-                    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-                    Result->SetBoolField(TEXT("success"), false);
-                    Result->SetBoolField(TEXT("viewport_initialized"), true);
-                    Result->SetNumberField(TEXT("width"), W);
-                    Result->SetNumberField(TEXT("height"), H);
-                    Result->SetStringField(TEXT("message"),
-                        FString::Printf(TEXT("Viewport render target initialized to %dx%d. Call take_screenshot again to capture."), W, H));
-                    return Result;
+                    Width = Viewport->GetSizeXY().X;
+                    Height = Viewport->GetSizeXY().Y;
+
+                    if (Width > 0 && Height > 0)
+                    {
+                        // Viewport initialized but ReadPixels on a freshly-allocated
+                        // Vulkan surface is unsafe. Ask caller to retry.
+                        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                        Result->SetBoolField(TEXT("success"), false);
+                        Result->SetBoolField(TEXT("viewport_initialized"), true);
+                        Result->SetNumberField(TEXT("width"), Width);
+                        Result->SetNumberField(TEXT("height"), Height);
+                        Result->SetStringField(TEXT("message"),
+                            FString::Printf(TEXT("Viewport initialized to %dx%d. Call take_screenshot again to capture."), Width, Height));
+                        return Result;
+                    }
                 }
             }
         }
@@ -4527,10 +4544,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     }
 
     // AddInstances with world-space transforms
+    HISM->Modify();
     HISM->AddInstances(Transforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
+    HISM->MarkPackageDirty();
 
     // Organize in editor
     ContainerActor->SetFolderPath(TEXT("Foliage"));
+    ContainerActor->Modify();
     ContainerActor->MarkPackageDirty();
 
     // --- Build response ---

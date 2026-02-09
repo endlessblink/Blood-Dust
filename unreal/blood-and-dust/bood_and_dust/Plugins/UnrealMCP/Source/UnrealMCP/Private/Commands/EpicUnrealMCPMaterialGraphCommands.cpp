@@ -49,6 +49,7 @@
 #include "Materials/MaterialExpressionPixelNormalWS.h"
 #include "Materials/MaterialExpressionDotProduct.h"
 #include "Materials/MaterialExpressionSaturate.h"
+#include "Materials/MaterialExpressionNoise.h"
 #include "Materials/MaterialExpressionTwoSidedSign.h"
 #include "UObject/SavePackage.h"
 
@@ -437,6 +438,13 @@ FExpressionInput* FEpicUnrealMCPMaterialGraphCommands::GetExpressionInput(UMater
     if (UMaterialExpressionSaturate* Sat = Cast<UMaterialExpressionSaturate>(Expression))
     {
         if (LowerName == TEXT("input")) return &Sat->Input;
+    }
+
+    // Noise
+    if (UMaterialExpressionNoise* NoiseExpr = Cast<UMaterialExpressionNoise>(Expression))
+    {
+        if (LowerName == TEXT("position") || LowerName == TEXT("pos")) return &NoiseExpr->Position;
+        if (LowerName == TEXT("filterwidth") || LowerName == TEXT("filter_width")) return &NoiseExpr->FilterWidth;
     }
 
     return nullptr;
