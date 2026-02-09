@@ -207,7 +207,8 @@
       "Bash(nm:*)",
       "mcp__unrealMCP__create_material",
       "mcp__unrealMCP__setup_locomotion_state_machine",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: trees \\(5 meshes, textures, materials\\), plugin + server updates\n\nNew: SM_Dead_Tree_Trunk, SM_Quiver_Tree, SM_Searsia_Burchellii,\nSM_Searsia_Lucida_D/F, tree textures and materials.\nUpdated: BlueprintCommands, MaterialGraphCommands, Build.cs, Python server.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: trees \\(5 meshes, textures, materials\\), plugin + server updates\n\nNew: SM_Dead_Tree_Trunk, SM_Quiver_Tree, SM_Searsia_Burchellii,\nSM_Searsia_Lucida_D/F, tree textures and materials.\nUpdated: BlueprintCommands, MaterialGraphCommands, Build.cs, Python server.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: vegetation scatter skill, landscape material update, level actors\n\nNew: vegetation-scatter command. Updated M_Landscape_Distorted,\nBlueprintCommands. Level actors reorganized with new scatter placement.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

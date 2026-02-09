@@ -2500,41 +2500,34 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		SetSpeedNode->CreateNewGuid();
 		SetSpeedNode->AllocateDefaultPins();
 
-		// Wire execution chain: Event → GetPawn → GetVelocity → SetSpeed
+		// Wire execution: Event → SetSpeed (pure functions have no exec pins)
 		UEdGraphPin* EventThen = UpdateAnimEvent->FindPin(UEdGraphSchema_K2::PN_Then);
-		if (GetPawnNode)
+		UEdGraphPin* SetSpeedExec = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+		if (EventThen && SetSpeedExec) EventThen->MakeLinkTo(SetSpeedExec);
+
+		// Wire data chain (all pure nodes, evaluated lazily by Blueprint VM):
+		// TryGetPawnOwner.ReturnValue → GetVelocity.self
+		if (GetPawnNode && GetVelNode)
 		{
-			UEdGraphPin* GetPawnExec = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-			if (EventThen && GetPawnExec) EventThen->MakeLinkTo(GetPawnExec);
+			UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+			UEdGraphPin* VelSelf = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Self);
+			if (PawnReturn && VelSelf) PawnReturn->MakeLinkTo(VelSelf);
+		}
 
-			if (GetVelNode)
-			{
-				UEdGraphPin* GetPawnThen = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_Then);
-				UEdGraphPin* GetVelExec = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-				if (GetPawnThen && GetVelExec) GetPawnThen->MakeLinkTo(GetVelExec);
+		// GetVelocity.ReturnValue → VSize.A
+		if (GetVelNode && VSizeNode)
+		{
+			UEdGraphPin* VelReturn = GetVelNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+			UEdGraphPin* VSizeA = VSizeNode->FindPin(TEXT("A"));
+			if (VelReturn && VSizeA) VelReturn->MakeLinkTo(VSizeA);
+		}
 
-				UEdGraphPin* GetVelThen = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Then);
-				UEdGraphPin* SetSpeedExec = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-				if (GetVelThen && SetSpeedExec) GetVelThen->MakeLinkTo(SetSpeedExec);
-
-				// Data: GetPawn.ReturnValue → GetVelocity.self
-				UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-				UEdGraphPin* VelSelf = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Self);
-				if (PawnReturn && VelSelf) PawnReturn->MakeLinkTo(VelSelf);
-
-				// Data: GetVelocity.ReturnValue → VSize.A
-				if (VSizeNode)
-				{
-					UEdGraphPin* VelReturn = GetVelNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-					UEdGraphPin* VSizeA = VSizeNode->FindPin(TEXT("A"));
-					if (VelReturn && VSizeA) VelReturn->MakeLinkTo(VSizeA);
-
-					// Data: VSize.ReturnValue → SetSpeed.Speed
-					UEdGraphPin* VSizeReturn = VSizeNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-					UEdGraphPin* SpeedInput = SetSpeedNode->FindPin(FName("Speed"));
-					if (VSizeReturn && SpeedInput) VSizeReturn->MakeLinkTo(SpeedInput);
-				}
-			}
+		// VSize.ReturnValue → SetSpeed.Speed
+		if (VSizeNode)
+		{
+			UEdGraphPin* VSizeReturn = VSizeNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+			UEdGraphPin* SpeedInput = SetSpeedNode->FindPin(FName("Speed"));
+			if (VSizeReturn && SpeedInput) VSizeReturn->MakeLinkTo(SpeedInput);
 		}
 	}
 
@@ -2555,9 +2548,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		SpeedGet->CreateNewGuid();
 		SpeedGet->AllocateDefaultPins();
 
-		// Comparison function (Greater or Less)
-		FName CompFuncName = bGreaterThan ? FName("Greater_FloatFloat") : FName("Less_FloatFloat");
+		// Comparison function (Greater or Less) - UE5 uses Double, not Float
+		FName CompFuncName = bGreaterThan ? FName("Greater_DoubleDouble") : FName("Less_DoubleDouble");
 		UFunction* CompFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(CompFuncName);
+		if (!CompFunc)
+		{
+			// Fallback to Float names in case of older UE version
+			CompFuncName = bGreaterThan ? FName("Greater_FloatFloat") : FName("Less_FloatFloat");
+			CompFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(CompFuncName);
+		}
 		if (!CompFunc) return;
 
 		UK2Node_CallFunction* CompNode = NewObject<UK2Node_CallFunction>(TransGraph);
