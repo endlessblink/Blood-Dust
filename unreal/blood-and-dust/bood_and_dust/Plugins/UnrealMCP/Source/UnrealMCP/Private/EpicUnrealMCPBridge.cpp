@@ -282,7 +282,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("get_blueprint_variable_details") ||
                      CommandType == TEXT("get_blueprint_function_details") ||
                      CommandType == TEXT("create_character_blueprint") ||
-                     CommandType == TEXT("create_anim_blueprint"))
+                     CommandType == TEXT("create_anim_blueprint") ||
+                     CommandType == TEXT("setup_locomotion_state_machine"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }

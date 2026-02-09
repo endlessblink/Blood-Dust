@@ -44,6 +44,22 @@
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimInstance.h"
+// AnimGraph State Machine includes
+#include "AnimGraphNode_StateMachine.h"
+#include "AnimGraphNode_Root.h"
+#include "AnimGraphNode_SequencePlayer.h"
+#include "AnimGraphNode_StateResult.h"
+#include "AnimGraphNode_TransitionResult.h"
+#include "AnimationStateMachineGraph.h"
+#include "AnimationStateMachineSchema.h"
+#include "AnimStateNode.h"
+#include "AnimStateTransitionNode.h"
+#include "AnimStateEntryNode.h"
+#include "AnimationStateGraph.h"
+#include "AnimationTransitionGraph.h"
+#include "Animation/AnimSequence.h"
+#include "K2Node_CallFunction.h"
+#include "Kismet/KismetMathLibrary.h"
 
 FEpicUnrealMCPBlueprintCommands::FEpicUnrealMCPBlueprintCommands()
 {
@@ -128,6 +144,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("create_anim_blueprint"))
     {
         return HandleCreateAnimBlueprint(Params);
+    }
+    else if (CommandType == TEXT("setup_locomotion_state_machine"))
+    {
+        return HandleSetupLocomotionStateMachine(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -910,10 +930,45 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
     TargetActor->Modify();
 
     bool bAppliedToAny = false;
-    FString MeshName;
-    FString MeshType;
+    TSharedPtr<FJsonObject> AppliedMeshes = MakeShared<FJsonObject>();
+    TArray<TSharedPtr<FJsonValue>> MeshArray;
 
-    // Try StaticMeshComponents first
+    // Apply to ALL SkeletalMeshComponents (priority for characters)
+    TArray<USkeletalMeshComponent*> SkelMeshComponents;
+    TargetActor->GetComponents<USkeletalMeshComponent>(SkelMeshComponents);
+
+    for (USkeletalMeshComponent* SkelComp : SkelMeshComponents)
+    {
+        if (SkelComp)
+        {
+            SkelComp->Modify();
+            FString CompMeshName;
+            if (USkeletalMesh* SkelMesh = SkelComp->GetSkeletalMeshAsset())
+            {
+                CompMeshName = SkelMesh->GetPathName();
+            }
+            if (MaterialSlot < 0)
+            {
+                int32 NumMaterials = SkelComp->GetNumMaterials();
+                for (int32 i = 0; i < NumMaterials; i++)
+                {
+                    SkelComp->SetMaterial(i, Material);
+                }
+            }
+            else
+            {
+                SkelComp->SetMaterial(MaterialSlot, Material);
+            }
+            bAppliedToAny = true;
+
+            TSharedPtr<FJsonObject> MeshInfo = MakeShared<FJsonObject>();
+            MeshInfo->SetStringField(TEXT("mesh"), CompMeshName);
+            MeshInfo->SetStringField(TEXT("type"), TEXT("SkeletalMesh"));
+            MeshArray.Add(MakeShared<FJsonValueObject>(MeshInfo));
+        }
+    }
+
+    // Also apply to StaticMeshComponents
     TArray<UStaticMeshComponent*> StaticMeshComponents;
     TargetActor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
 
@@ -922,10 +977,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
         if (MeshComp)
         {
             MeshComp->Modify();
+            FString CompMeshName;
             if (UStaticMesh* Mesh = MeshComp->GetStaticMesh())
             {
-                MeshName = Mesh->GetPathName();
-                MeshType = TEXT("StaticMesh");
+                CompMeshName = Mesh->GetPathName();
             }
             if (MaterialSlot < 0)
             {
@@ -940,39 +995,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
                 MeshComp->SetMaterial(MaterialSlot, Material);
             }
             bAppliedToAny = true;
-        }
-    }
 
-    // If no static mesh components found, try SkeletalMeshComponents
-    if (!bAppliedToAny)
-    {
-        TArray<USkeletalMeshComponent*> SkelMeshComponents;
-        TargetActor->GetComponents<USkeletalMeshComponent>(SkelMeshComponents);
-
-        for (USkeletalMeshComponent* SkelComp : SkelMeshComponents)
-        {
-            if (SkelComp)
-            {
-                SkelComp->Modify();
-                if (USkeletalMesh* SkelMesh = SkelComp->GetSkeletalMeshAsset())
-                {
-                    MeshName = SkelMesh->GetPathName();
-                    MeshType = TEXT("SkeletalMesh");
-                }
-                if (MaterialSlot < 0)
-                {
-                    int32 NumMaterials = SkelComp->GetNumMaterials();
-                    for (int32 i = 0; i < NumMaterials; i++)
-                    {
-                        SkelComp->SetMaterial(i, Material);
-                    }
-                }
-                else
-                {
-                    SkelComp->SetMaterial(MaterialSlot, Material);
-                }
-                bAppliedToAny = true;
-            }
+            TSharedPtr<FJsonObject> MeshInfo = MakeShared<FJsonObject>();
+            MeshInfo->SetStringField(TEXT("mesh"), CompMeshName);
+            MeshInfo->SetStringField(TEXT("type"), TEXT("StaticMesh"));
+            MeshArray.Add(MakeShared<FJsonValueObject>(MeshInfo));
         }
     }
 
@@ -988,11 +1015,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleApplyMaterialToAc
     ResultObj->SetStringField(TEXT("actor_name"), ActorName);
     ResultObj->SetStringField(TEXT("material_path"), MaterialPath);
     ResultObj->SetNumberField(TEXT("material_slot"), MaterialSlot);
-    if (!MeshName.IsEmpty())
-    {
-        ResultObj->SetStringField(TEXT("mesh"), MeshName);
-        ResultObj->SetStringField(TEXT("mesh_type"), MeshType);
-    }
+    ResultObj->SetArrayField(TEXT("applied_to"), MeshArray);
     ResultObj->SetBoolField(TEXT("success"), true);
 
     return ResultObj;
@@ -2155,4 +2178,442 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCreateAnimBluepri
 
     Result->SetStringField(TEXT("message"), TEXT("AnimBlueprint created successfully"));
     return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionStateMachine(const TSharedPtr<FJsonObject>& Params)
+{
+	// === Part 0: Parse parameters ===
+	FString AnimBPPath;
+	if (!Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_blueprint_path'"));
+	}
+
+	FString IdleAnimPath, WalkAnimPath, RunAnimPath;
+	if (!Params->TryGetStringField(TEXT("idle_animation"), IdleAnimPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'idle_animation'"));
+	}
+	if (!Params->TryGetStringField(TEXT("walk_animation"), WalkAnimPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'walk_animation'"));
+	}
+	Params->TryGetStringField(TEXT("run_animation"), RunAnimPath);
+
+	double WalkThreshold = 5.0, RunThreshold = 300.0;
+	double CrossfadeDuration = 0.2;
+	Params->TryGetNumberField(TEXT("walk_speed_threshold"), WalkThreshold);
+	Params->TryGetNumberField(TEXT("run_speed_threshold"), RunThreshold);
+	Params->TryGetNumberField(TEXT("crossfade_duration"), CrossfadeDuration);
+
+	bool bHasRun = !RunAnimPath.IsEmpty();
+
+	// === Part 1: Load assets ===
+	UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+	if (!AnimBP)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+	}
+
+	UAnimSequence* IdleAnim = LoadObject<UAnimSequence>(nullptr, *IdleAnimPath);
+	UAnimSequence* WalkAnim = LoadObject<UAnimSequence>(nullptr, *WalkAnimPath);
+	UAnimSequence* RunAnim = bHasRun ? LoadObject<UAnimSequence>(nullptr, *RunAnimPath) : nullptr;
+
+	if (!IdleAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load idle animation: %s"), *IdleAnimPath));
+	}
+	if (!WalkAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load walk animation: %s"), *WalkAnimPath));
+	}
+	if (bHasRun && !RunAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load run animation: %s"), *RunAnimPath));
+	}
+
+	// === Part 2: Find AnimGraph ===
+	UEdGraph* AnimGraph = nullptr;
+	for (UEdGraph* Graph : AnimBP->FunctionGraphs)
+	{
+		if (Graph->GetFName() == FName("AnimGraph"))
+		{
+			AnimGraph = Graph;
+			break;
+		}
+	}
+	if (!AnimGraph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimGraph not found in AnimBlueprint"));
+	}
+
+	// Find Root (output) node
+	UAnimGraphNode_Root* RootNode = nullptr;
+	for (UEdGraphNode* Node : AnimGraph->Nodes)
+	{
+		if (UAnimGraphNode_Root* Root = Cast<UAnimGraphNode_Root>(Node))
+		{
+			RootNode = Root;
+			break;
+		}
+	}
+	if (!RootNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimGraph Root node not found"));
+	}
+
+	// === Part 3: Create State Machine ===
+	UAnimGraphNode_StateMachine* SMNode = NewObject<UAnimGraphNode_StateMachine>(AnimGraph);
+	SMNode->NodePosX = RootNode->NodePosX - 400;
+	SMNode->NodePosY = RootNode->NodePosY;
+	AnimGraph->AddNode(SMNode, true, false);
+	SMNode->CreateNewGuid();
+	SMNode->PostPlacedNewNode(); // Creates EditorStateMachineGraph
+	SMNode->AllocateDefaultPins();
+
+	// Connect SM output to Root input (find first output/input pins)
+	UEdGraphPin* SMOutputPin = nullptr;
+	for (UEdGraphPin* Pin : SMNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Output)
+		{
+			SMOutputPin = Pin;
+			break;
+		}
+	}
+	UEdGraphPin* RootInputPin = nullptr;
+	for (UEdGraphPin* Pin : RootNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Input)
+		{
+			RootInputPin = Pin;
+			break;
+		}
+	}
+	if (SMOutputPin && RootInputPin)
+	{
+		SMOutputPin->MakeLinkTo(RootInputPin);
+	}
+
+	// === Part 4: Create States ===
+	UAnimationStateMachineGraph* SMGraph = SMNode->EditorStateMachineGraph;
+	if (!SMGraph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("State machine graph was not created"));
+	}
+
+	// Helper: create a state with an animation sequence player
+	auto CreateState = [&](const FString& StateName, UAnimSequence* Anim, int32 PosX, int32 PosY) -> UAnimStateNode*
+	{
+		UAnimStateNode* StateNode = NewObject<UAnimStateNode>(SMGraph);
+		StateNode->NodePosX = PosX;
+		StateNode->NodePosY = PosY;
+		SMGraph->AddNode(StateNode, true, false);
+		StateNode->CreateNewGuid();
+		StateNode->PostPlacedNewNode(); // Creates BoundGraph with StateResult
+		StateNode->AllocateDefaultPins();
+
+		// Rename the state's bound graph to our desired name
+		if (StateNode->BoundGraph)
+		{
+			StateNode->BoundGraph->Rename(*StateName, nullptr);
+		}
+
+		// Add SequencePlayer inside the state's graph
+		UAnimationStateGraph* StateGraph = Cast<UAnimationStateGraph>(StateNode->BoundGraph);
+		if (StateGraph && Anim)
+		{
+			UAnimGraphNode_SequencePlayer* SeqPlayer = NewObject<UAnimGraphNode_SequencePlayer>(StateGraph);
+			SeqPlayer->SetAnimationAsset(Anim);
+			SeqPlayer->NodePosX = -200;
+			SeqPlayer->NodePosY = 0;
+			StateGraph->AddNode(SeqPlayer, true, false);
+			SeqPlayer->CreateNewGuid();
+			SeqPlayer->AllocateDefaultPins();
+
+			// Connect SequencePlayer pose output → StateResult pose input
+			if (StateGraph->MyResultNode)
+			{
+				UEdGraphPin* SeqOut = nullptr;
+				for (UEdGraphPin* Pin : SeqPlayer->Pins)
+				{
+					if (Pin->Direction == EGPD_Output)
+					{
+						SeqOut = Pin;
+						break;
+					}
+				}
+				UEdGraphPin* ResultIn = nullptr;
+				for (UEdGraphPin* Pin : StateGraph->MyResultNode->Pins)
+				{
+					if (Pin->Direction == EGPD_Input)
+					{
+						ResultIn = Pin;
+						break;
+					}
+				}
+				if (SeqOut && ResultIn)
+				{
+					SeqOut->MakeLinkTo(ResultIn);
+				}
+			}
+		}
+
+		return StateNode;
+	};
+
+	UAnimStateNode* IdleState = CreateState(TEXT("Idle"), IdleAnim, 200, 0);
+	UAnimStateNode* WalkState = CreateState(TEXT("Walk"), WalkAnim, 500, -150);
+	UAnimStateNode* RunState = bHasRun ? CreateState(TEXT("Run"), RunAnim, 800, 0) : nullptr;
+
+	// === Part 5: Connect Entry to Idle ===
+	if (SMGraph->EntryNode && IdleState)
+	{
+		UEdGraphPin* EntryOutput = nullptr;
+		for (UEdGraphPin* Pin : SMGraph->EntryNode->Pins)
+		{
+			if (Pin->Direction == EGPD_Output)
+			{
+				EntryOutput = Pin;
+				break;
+			}
+		}
+		UEdGraphPin* IdleInput = IdleState->GetInputPin();
+		if (EntryOutput && IdleInput)
+		{
+			EntryOutput->MakeLinkTo(IdleInput);
+		}
+	}
+
+	// === Part 6: Create Transitions ===
+	auto CreateTransition = [&](UAnimStateNode* Source, UAnimStateNode* Target) -> UAnimStateTransitionNode*
+	{
+		UAnimStateTransitionNode* TransNode = NewObject<UAnimStateTransitionNode>(SMGraph);
+		SMGraph->AddNode(TransNode, true, false);
+		TransNode->CreateNewGuid();
+		TransNode->PostPlacedNewNode(); // Creates BoundGraph for transition rule
+		TransNode->AllocateDefaultPins(); // Must happen BEFORE CreateConnections (needs Pins array)
+		TransNode->CreateConnections(Source, Target);
+		TransNode->CrossfadeDuration = CrossfadeDuration;
+		return TransNode;
+	};
+
+	UAnimStateTransitionNode* IdleToWalk = CreateTransition(IdleState, WalkState);
+	UAnimStateTransitionNode* WalkToIdle = CreateTransition(WalkState, IdleState);
+	UAnimStateTransitionNode* WalkToRun = bHasRun ? CreateTransition(WalkState, RunState) : nullptr;
+	UAnimStateTransitionNode* RunToWalk = bHasRun ? CreateTransition(RunState, WalkState) : nullptr;
+
+	// === Part 7: Add Speed variable to AnimBP ===
+	int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(AnimBP, FName("Speed"));
+	if (VarIndex == INDEX_NONE)
+	{
+		FBPVariableDescription SpeedVar;
+		SpeedVar.VarName = FName("Speed");
+		SpeedVar.VarGuid = FGuid::NewGuid();
+		SpeedVar.VarType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		SpeedVar.VarType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		SpeedVar.DefaultValue = TEXT("0.0");
+		AnimBP->NewVariables.Add(SpeedVar);
+	}
+
+	// === Part 8: Setup EventBlueprintUpdateAnimation for speed calculation ===
+	UEdGraph* EventGraph = nullptr;
+	if (AnimBP->UbergraphPages.Num() > 0)
+	{
+		EventGraph = AnimBP->UbergraphPages[0];
+	}
+
+	if (EventGraph)
+	{
+		// Find or create BlueprintUpdateAnimation event
+		UK2Node_Event* UpdateAnimEvent = nullptr;
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			UK2Node_Event* EvNode = Cast<UK2Node_Event>(Node);
+			if (EvNode && EvNode->EventReference.GetMemberName() == FName("BlueprintUpdateAnimation"))
+			{
+				UpdateAnimEvent = EvNode;
+				break;
+			}
+		}
+
+		if (!UpdateAnimEvent)
+		{
+			UpdateAnimEvent = NewObject<UK2Node_Event>(EventGraph);
+			UpdateAnimEvent->EventReference.SetExternalMember(
+				FName("BlueprintUpdateAnimation"), UAnimInstance::StaticClass());
+			UpdateAnimEvent->NodePosX = 0;
+			UpdateAnimEvent->NodePosY = 400;
+			EventGraph->AddNode(UpdateAnimEvent, true, false);
+			UpdateAnimEvent->CreateNewGuid();
+			UpdateAnimEvent->AllocateDefaultPins();
+		}
+
+		// TryGetPawnOwner (UAnimInstance member, called on self)
+		UFunction* TryGetPawnOwnerFunc = UAnimInstance::StaticClass()->FindFunctionByName(FName("TryGetPawnOwner"));
+		UK2Node_CallFunction* GetPawnNode = nullptr;
+		if (TryGetPawnOwnerFunc)
+		{
+			GetPawnNode = NewObject<UK2Node_CallFunction>(EventGraph);
+			GetPawnNode->SetFromFunction(TryGetPawnOwnerFunc);
+			GetPawnNode->NodePosX = 300;
+			GetPawnNode->NodePosY = 400;
+			EventGraph->AddNode(GetPawnNode, true, false);
+			GetPawnNode->CreateNewGuid();
+			GetPawnNode->AllocateDefaultPins();
+		}
+
+		// GetVelocity (AActor member, called on pawn)
+		UFunction* GetVelocityFunc = AActor::StaticClass()->FindFunctionByName(FName("GetVelocity"));
+		UK2Node_CallFunction* GetVelNode = nullptr;
+		if (GetVelocityFunc)
+		{
+			GetVelNode = NewObject<UK2Node_CallFunction>(EventGraph);
+			GetVelNode->SetFromFunction(GetVelocityFunc);
+			GetVelNode->NodePosX = 600;
+			GetVelNode->NodePosY = 400;
+			EventGraph->AddNode(GetVelNode, true, false);
+			GetVelNode->CreateNewGuid();
+			GetVelNode->AllocateDefaultPins();
+		}
+
+		// VSize (KismetMathLibrary, pure - no exec pins)
+		UFunction* VSizeFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(FName("VSize"));
+		UK2Node_CallFunction* VSizeNode = nullptr;
+		if (VSizeFunc)
+		{
+			VSizeNode = NewObject<UK2Node_CallFunction>(EventGraph);
+			VSizeNode->SetFromFunction(VSizeFunc);
+			VSizeNode->NodePosX = 900;
+			VSizeNode->NodePosY = 400;
+			EventGraph->AddNode(VSizeNode, true, false);
+			VSizeNode->CreateNewGuid();
+			VSizeNode->AllocateDefaultPins();
+		}
+
+		// Set Speed variable
+		UK2Node_VariableSet* SetSpeedNode = NewObject<UK2Node_VariableSet>(EventGraph);
+		SetSpeedNode->VariableReference.SetSelfMember(FName("Speed"));
+		SetSpeedNode->NodePosX = 1200;
+		SetSpeedNode->NodePosY = 400;
+		EventGraph->AddNode(SetSpeedNode, true, false);
+		SetSpeedNode->CreateNewGuid();
+		SetSpeedNode->AllocateDefaultPins();
+
+		// Wire execution chain: Event → GetPawn → GetVelocity → SetSpeed
+		UEdGraphPin* EventThen = UpdateAnimEvent->FindPin(UEdGraphSchema_K2::PN_Then);
+		if (GetPawnNode)
+		{
+			UEdGraphPin* GetPawnExec = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+			if (EventThen && GetPawnExec) EventThen->MakeLinkTo(GetPawnExec);
+
+			if (GetVelNode)
+			{
+				UEdGraphPin* GetPawnThen = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_Then);
+				UEdGraphPin* GetVelExec = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+				if (GetPawnThen && GetVelExec) GetPawnThen->MakeLinkTo(GetVelExec);
+
+				UEdGraphPin* GetVelThen = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Then);
+				UEdGraphPin* SetSpeedExec = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+				if (GetVelThen && SetSpeedExec) GetVelThen->MakeLinkTo(SetSpeedExec);
+
+				// Data: GetPawn.ReturnValue → GetVelocity.self
+				UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+				UEdGraphPin* VelSelf = GetVelNode->FindPin(UEdGraphSchema_K2::PN_Self);
+				if (PawnReturn && VelSelf) PawnReturn->MakeLinkTo(VelSelf);
+
+				// Data: GetVelocity.ReturnValue → VSize.A
+				if (VSizeNode)
+				{
+					UEdGraphPin* VelReturn = GetVelNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+					UEdGraphPin* VSizeA = VSizeNode->FindPin(TEXT("A"));
+					if (VelReturn && VSizeA) VelReturn->MakeLinkTo(VSizeA);
+
+					// Data: VSize.ReturnValue → SetSpeed.Speed
+					UEdGraphPin* VSizeReturn = VSizeNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+					UEdGraphPin* SpeedInput = SetSpeedNode->FindPin(FName("Speed"));
+					if (VSizeReturn && SpeedInput) VSizeReturn->MakeLinkTo(SpeedInput);
+				}
+			}
+		}
+	}
+
+	// === Part 9: Setup Transition Rules (speed comparison) ===
+	auto SetupTransitionRule = [&](UAnimStateTransitionNode* TransNode, bool bGreaterThan, double Threshold)
+	{
+		if (!TransNode || !TransNode->BoundGraph) return;
+
+		UAnimationTransitionGraph* TransGraph = Cast<UAnimationTransitionGraph>(TransNode->BoundGraph);
+		if (!TransGraph || !TransGraph->MyResultNode) return;
+
+		// VariableGet for Speed
+		UK2Node_VariableGet* SpeedGet = NewObject<UK2Node_VariableGet>(TransGraph);
+		SpeedGet->VariableReference.SetSelfMember(FName("Speed"));
+		SpeedGet->NodePosX = -300;
+		SpeedGet->NodePosY = 0;
+		TransGraph->AddNode(SpeedGet, true, false);
+		SpeedGet->CreateNewGuid();
+		SpeedGet->AllocateDefaultPins();
+
+		// Comparison function (Greater or Less)
+		FName CompFuncName = bGreaterThan ? FName("Greater_FloatFloat") : FName("Less_FloatFloat");
+		UFunction* CompFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(CompFuncName);
+		if (!CompFunc) return;
+
+		UK2Node_CallFunction* CompNode = NewObject<UK2Node_CallFunction>(TransGraph);
+		CompNode->SetFromFunction(CompFunc);
+		CompNode->NodePosX = -100;
+		CompNode->NodePosY = 0;
+		TransGraph->AddNode(CompNode, true, false);
+		CompNode->CreateNewGuid();
+		CompNode->AllocateDefaultPins();
+
+		// Set threshold as default value on B pin
+		UEdGraphPin* CompB = CompNode->FindPin(TEXT("B"));
+		if (CompB)
+		{
+			CompB->DefaultValue = FString::SanitizeFloat(Threshold);
+		}
+
+		// Wire: SpeedGet output → Comp.A
+		UEdGraphPin* SpeedOut = SpeedGet->GetValuePin();
+		UEdGraphPin* CompA = CompNode->FindPin(TEXT("A"));
+		if (SpeedOut && CompA) SpeedOut->MakeLinkTo(CompA);
+
+		// Wire: Comp.ReturnValue → TransitionResult input
+		UEdGraphPin* CompReturn = CompNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+		// Find the boolean input pin on the transition result node
+		UEdGraphPin* ResultPin = nullptr;
+		for (UEdGraphPin* Pin : TransGraph->MyResultNode->Pins)
+		{
+			if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean)
+			{
+				ResultPin = Pin;
+				break;
+			}
+		}
+		if (!ResultPin)
+		{
+			ResultPin = TransGraph->MyResultNode->FindPin(TEXT("bCanEnterTransition"));
+		}
+		if (CompReturn && ResultPin) CompReturn->MakeLinkTo(ResultPin);
+	};
+
+	SetupTransitionRule(IdleToWalk, true, WalkThreshold);   // Speed > WalkThreshold
+	SetupTransitionRule(WalkToIdle, false, WalkThreshold);  // Speed < WalkThreshold
+	if (WalkToRun) SetupTransitionRule(WalkToRun, true, RunThreshold);
+	if (RunToWalk) SetupTransitionRule(RunToWalk, false, RunThreshold);
+
+	// === Part 10: Compile ===
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+	FKismetEditorUtilities::CompileBlueprint(AnimBP);
+
+	// Build result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("anim_blueprint"), AnimBPPath);
+	ResultObj->SetNumberField(TEXT("state_count"), bHasRun ? 3 : 2);
+	ResultObj->SetNumberField(TEXT("transition_count"), bHasRun ? 4 : 2);
+	ResultObj->SetStringField(TEXT("message"), TEXT("Locomotion state machine created with speed-based transitions"));
+	return ResultObj;
 }

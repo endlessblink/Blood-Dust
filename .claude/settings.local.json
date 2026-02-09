@@ -203,7 +203,11 @@
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: landscape distorted material, character input skill, level updates\n\nNew: M_Landscape_Distorted + 2 MIs, unreal-character-input skill.\nUpdated: BP_RobotCharacter, MCP plugin \\(NodePropertyManager, UtilityNodes,\nBlueprintGraphCommands, EditorCommands\\), Python server, CLAUDE.md.\nLevel actors reorganized.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "WebFetch(domain:polyhaven.com)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .claude/ unreal/)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: landscape distorted material + plugin updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: landscape distorted material + plugin updates\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(nm:*)",
+      "mcp__unrealMCP__create_material",
+      "mcp__unrealMCP__setup_locomotion_state_machine",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: trees \\(5 meshes, textures, materials\\), plugin + server updates\n\nNew: SM_Dead_Tree_Trunk, SM_Quiver_Tree, SM_Searsia_Burchellii,\nSM_Searsia_Lucida_D/F, tree textures and materials.\nUpdated: BlueprintCommands, MaterialGraphCommands, Build.cs, Python server.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -46,7 +46,8 @@ public class UnrealMCP : ModuleRules
 				"BlueprintGraph",     // For K2Node classes (F15-F22)
 				"KismetCompiler",     // For Blueprint compilation (F15-F22)
 				"CinematicCamera",    // For CineCameraActor
-			"EnhancedInput"       // For UInputAction, Enhanced Input events
+			"EnhancedInput",      // For UInputAction, Enhanced Input events
+			"AnimGraph"           // For AnimBP state machine graph nodes
 			}
 		);
 		

@@ -96,6 +96,9 @@
 // HISM for foliage scatter
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 
+// Landscape filter for foliage scatter line traces
+#include "LandscapeProxy.h"
+
 // AppendVector for UV distortion
 #include "Materials/MaterialExpressionAppendVector.h"
 
@@ -4429,6 +4432,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
             continue;
         }
 
+        // Only place on landscape surfaces - reject hits on rocks/meshes
+        AActor* HitActor = HitResult.GetActor();
+        if (HitActor && !HitActor->IsA(ALandscapeProxy::StaticClass()))
+        {
+            ++RejectedNoHit;
+            continue;
+        }
+
         // Check slope: dot(Normal, Up) gives cosine of slope angle
         // Normal.Z == cos(slope_angle), reject if angle > MaxSlope
         double SlopeCosine = HitResult.ImpactNormal.Z;
@@ -4499,15 +4510,21 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn container actor"));
     }
 
+    // Mark actor for editor serialization (undo/redo + save)
+    ContainerActor->SetFlags(RF_Transactional);
+
     // Set root component
     USceneComponent* RootComp = NewObject<USceneComponent>(ContainerActor, TEXT("Root"));
+    RootComp->SetFlags(RF_Transactional);
     ContainerActor->SetRootComponent(RootComp);
     RootComp->RegisterComponent();
 
-    // Create HISM component
+    // Create HISM component with persistence flags
     UHierarchicalInstancedStaticMeshComponent* HISM = NewObject<UHierarchicalInstancedStaticMeshComponent>(
         ContainerActor, *FString::Printf(TEXT("HISM_%s"), *Mesh->GetName())
     );
+    HISM->SetFlags(RF_Transactional);
+    HISM->CreationMethod = EComponentCreationMethod::Instance;
     HISM->SetStaticMesh(Mesh);
     HISM->SetMobility(EComponentMobility::Static);
     HISM->AttachToComponent(RootComp, FAttachmentTransformRules::KeepRelativeTransform);
@@ -4533,6 +4550,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
 
     HISM->RegisterComponent();
 
+    // Register as instance component so it serializes with the actor
+    ContainerActor->AddInstanceComponent(HISM);
+
+    // Disable auto-rebuild during batch add (rebuild manually after)
+    HISM->bAutoRebuildTreeOnInstanceChanges = false;
+
     // Build transform array and batch-add instances
     TArray<FTransform> Transforms;
     Transforms.Reserve(ValidInstances.Num());
@@ -4543,15 +4566,37 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
         Transforms.Add(T);
     }
 
-    // AddInstances with world-space transforms
+    // Mark for modification BEFORE changing data (enables undo/redo tracking)
     HISM->Modify();
+
+    // AddInstances with world-space transforms
     HISM->AddInstances(Transforms, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
+
+    // Rebuild HISM cluster tree (must happen before save or reload will crash)
+    HISM->BuildTreeIfOutdated(true, true);
+    HISM->bAutoRebuildTreeOnInstanceChanges = true;
+
+    // Notify editor that PerInstanceSMData changed (triggers serialization)
+    FProperty* PerInstanceProp = FindFieldChecked<FProperty>(
+        UInstancedStaticMeshComponent::StaticClass(),
+        GET_MEMBER_NAME_CHECKED(UInstancedStaticMeshComponent, PerInstanceSMData)
+    );
+    FPropertyChangedEvent PropertyEvent(PerInstanceProp);
+    HISM->PostEditChangeProperty(PropertyEvent);
+
+    // Mark HISM package dirty
     HISM->MarkPackageDirty();
 
     // Organize in editor
     ContainerActor->SetFolderPath(TEXT("Foliage"));
     ContainerActor->Modify();
     ContainerActor->MarkPackageDirty();
+
+    // Handle OFPA (One File Per Actor) external package
+    if (UPackage* ExtPackage = ContainerActor->GetExternalPackage())
+    {
+        ExtPackage->SetDirtyFlag(true);
+    }
 
     // --- Build response ---
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();

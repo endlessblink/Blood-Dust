@@ -1645,6 +1645,67 @@ def create_anim_blueprint(
         return {"success": False, "message": str(e)}
 
 @mcp.tool()
+def setup_locomotion_state_machine(
+    anim_blueprint_path: str,
+    idle_animation: str,
+    walk_animation: str,
+    run_animation: str = "",
+    walk_speed_threshold: float = 5.0,
+    run_speed_threshold: float = 300.0,
+    crossfade_duration: float = 0.2
+) -> Dict[str, Any]:
+    """
+    Set up a complete locomotion state machine in an AnimBlueprint.
+
+    Creates a state machine with Idle/Walk/Run states, speed-based transitions,
+    and EventBlueprintUpdateAnimation logic that calculates speed from character
+    velocity. One-shot tool that creates a fully functional locomotion system.
+
+    Parameters:
+    - anim_blueprint_path: Content path to AnimBlueprint (e.g., "/Game/Characters/Robot/ABP_Robot")
+    - idle_animation: Content path to idle AnimSequence
+    - walk_animation: Content path to walk AnimSequence
+    - run_animation: Optional content path to run AnimSequence (omit for 2-state Idle/Walk)
+    - walk_speed_threshold: Speed threshold for Idle↔Walk transition (default: 5.0)
+    - run_speed_threshold: Speed threshold for Walk↔Run transition (default: 300.0)
+    - crossfade_duration: Blend duration between states in seconds (default: 0.2)
+
+    Returns:
+        Dictionary with state_count, transition_count, and success status.
+
+    Example:
+        setup_locomotion_state_machine(
+            anim_blueprint_path="/Game/Characters/Robot/ABP_Robot",
+            idle_animation="/Game/Characters/Robot/Animations/Idle",
+            walk_animation="/Game/Characters/Robot/Animations/Walking",
+            run_animation="/Game/Characters/Robot/Animations/Running",
+            walk_speed_threshold=5.0,
+            run_speed_threshold=300.0
+        )
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "anim_blueprint_path": anim_blueprint_path,
+            "idle_animation": idle_animation,
+            "walk_animation": walk_animation,
+            "walk_speed_threshold": walk_speed_threshold,
+            "run_speed_threshold": run_speed_threshold,
+            "crossfade_duration": crossfade_duration,
+        }
+        if run_animation:
+            params["run_animation"] = run_animation
+
+        response = unreal.send_command("setup_locomotion_state_machine", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"setup_locomotion_state_machine error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
 def add_enhanced_input_action_event(
     blueprint_name: str,
     input_action_path: str,

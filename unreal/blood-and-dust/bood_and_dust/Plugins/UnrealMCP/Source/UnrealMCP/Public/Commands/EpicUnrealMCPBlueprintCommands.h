@@ -44,4 +44,7 @@ private:
     // Animation blueprint creation
     TSharedPtr<FJsonObject> HandleCreateAnimBlueprint(const TSharedPtr<FJsonObject>& Params);
 
+    // AnimBP state machine setup
+    TSharedPtr<FJsonObject> HandleSetupLocomotionStateMachine(const TSharedPtr<FJsonObject>& Params);
+
 }; 

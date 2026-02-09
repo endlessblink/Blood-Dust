@@ -287,6 +287,10 @@ UMaterialExpression* FEpicUnrealMCPMaterialGraphCommands::CreateExpression(UMate
     {
         NewExpression = NewObject<UMaterialExpressionTwoSidedSign>(Material);
     }
+    else if (ExpressionType == TEXT("Noise"))
+    {
+        NewExpression = NewObject<UMaterialExpressionNoise>(Material);
+    }
 
     if (NewExpression)
     {
@@ -440,11 +444,25 @@ FExpressionInput* FEpicUnrealMCPMaterialGraphCommands::GetExpressionInput(UMater
         if (LowerName == TEXT("input")) return &Sat->Input;
     }
 
-    // Noise
+    // Noise (explicit Cast)
     if (UMaterialExpressionNoise* NoiseExpr = Cast<UMaterialExpressionNoise>(Expression))
     {
         if (LowerName == TEXT("position") || LowerName == TEXT("pos")) return &NoiseExpr->Position;
         if (LowerName == TEXT("filterwidth") || LowerName == TEXT("filter_width")) return &NoiseExpr->FilterWidth;
+    }
+
+    // Generic fallback: iterate all inputs by name using UE reflection.
+    // GetInput(i) returns nullptr when index is out of range.
+    // Handles any expression type not explicitly listed above.
+    for (int32 i = 0; ; i++)
+    {
+        FExpressionInput* Input = Expression->GetInput(i);
+        if (!Input) break;
+        FName InputFName = Expression->GetInputName(i);
+        if (InputFName.ToString().ToLower() == LowerName)
+        {
+            return Input;
+        }
     }
 
     return nullptr;
@@ -659,6 +677,16 @@ bool FEpicUnrealMCPMaterialGraphCommands::ApplyExpressionParams(UMaterialExpress
     if (UMaterialExpressionPower* Pow = Cast<UMaterialExpressionPower>(Expression))
     {
         if (Params->HasField(TEXT("const_exponent"))) Pow->ConstExponent = Params->GetNumberField(TEXT("const_exponent"));
+    }
+
+    // Noise
+    if (UMaterialExpressionNoise* NoiseExpr = Cast<UMaterialExpressionNoise>(Expression))
+    {
+        if (Params->HasField(TEXT("scale"))) NoiseExpr->Scale = Params->GetNumberField(TEXT("scale"));
+        if (Params->HasField(TEXT("quality"))) NoiseExpr->Quality = Params->GetIntegerField(TEXT("quality"));
+        if (Params->HasField(TEXT("levels"))) NoiseExpr->Levels = Params->GetIntegerField(TEXT("levels"));
+        if (Params->HasField(TEXT("output_min"))) NoiseExpr->OutputMin = Params->GetNumberField(TEXT("output_min"));
+        if (Params->HasField(TEXT("output_max"))) NoiseExpr->OutputMax = Params->GetNumberField(TEXT("output_max"));
     }
 
     return true;
