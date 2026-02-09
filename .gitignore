@@ -55,3 +55,7 @@ Thumbs.db
 
 # --- oh-my-claudecode state ---
 .omc/
+
+# --- Nested git repos (tracked as plain files) ---
+unreal/mcp/.git/
+unreal/mcp/.git_backup/
