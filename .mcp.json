@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "blenderMCP": {
+      "command": "uvx",
+      "args": ["blender-mcp"],
+      "env": {
+        "DISABLE_TELEMETRY": "true"
+      }
+    },
+    "unrealMCP": {
+      "command": "uv",
+      "args": ["--directory", "/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/mcp/Python", "run", "unreal_mcp_server_advanced.py"]
+    }
+  }
+}

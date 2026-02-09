@@ -1,0 +1,3887 @@
+#include "Commands/EpicUnrealMCPEditorCommands.h"
+#include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "Editor.h"
+#include "EditorViewportClient.h"
+#include "LevelEditorViewport.h"
+#include "ImageUtils.h"
+#include "HighResScreenshot.h"
+#include "Engine/GameViewportClient.h"
+#include "Misc/FileHelper.h"
+#include "GameFramework/Actor.h"
+#include "Engine/Selection.h"
+#include "Kismet/GameplayStatics.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/PointLight.h"
+#include "Engine/SpotLight.h"
+#include "Camera/CameraActor.h"
+#include "CineCameraActor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/PostProcessComponent.h"
+#include "Components/DecalComponent.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/DecalActor.h"
+#include "Atmosphere/AtmosphericFogComponent.h"
+#include "EditorSubsystem.h"
+#include "Subsystems/EditorActorSubsystem.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "EditorAssetLibrary.h"
+#include "Commands/EpicUnrealMCPBlueprintCommands.h"
+#include "UObject/UnrealType.h"
+
+// Material and Texture includes
+#include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionAbs.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
+#include "MaterialEditingLibrary.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
+#include "Factories/TextureFactory.h"
+#include "Engine/Texture2D.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "PackageTools.h"
+#include "UObject/SavePackage.h"
+
+// Screenshot / Image encoding
+#include "IImageWrapperModule.h"
+#include "IImageWrapper.h"
+
+// Asset Registry
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
+// FBX/Mesh Import
+#include "AssetImportTask.h"
+#include "Factories/FbxImportUI.h"
+#include "Factories/FbxStaticMeshImportData.h"
+#include "Engine/StaticMesh.h"
+
+// Skeletal Mesh / Animation Import
+#include "Factories/FbxSkeletalMeshImportData.h"
+#include "Engine/SkeletalMesh.h"
+#include "Animation/Skeleton.h"
+#include "Animation/AnimSequence.h"
+
+FEpicUnrealMCPEditorCommands::FEpicUnrealMCPEditorCommands()
+{
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
+{
+    // Actor manipulation commands
+    if (CommandType == TEXT("get_actors_in_level"))
+    {
+        return HandleGetActorsInLevel(Params);
+    }
+    else if (CommandType == TEXT("find_actors_by_name"))
+    {
+        return HandleFindActorsByName(Params);
+    }
+    else if (CommandType == TEXT("spawn_actor"))
+    {
+        return HandleSpawnActor(Params);
+    }
+    else if (CommandType == TEXT("delete_actor"))
+    {
+        return HandleDeleteActor(Params);
+    }
+    else if (CommandType == TEXT("set_actor_transform"))
+    {
+        return HandleSetActorTransform(Params);
+    }
+    // Blueprint actor spawning
+    else if (CommandType == TEXT("spawn_blueprint_actor"))
+    {
+        return HandleSpawnBlueprintActor(Params);
+    }
+    // Actor property manipulation
+    else if (CommandType == TEXT("set_actor_property"))
+    {
+        return HandleSetActorProperty(Params);
+    }
+    else if (CommandType == TEXT("get_actor_properties"))
+    {
+        return HandleGetActorProperties(Params);
+    }
+    // Material commands
+    else if (CommandType == TEXT("create_material"))
+    {
+        return HandleCreateMaterial(Params);
+    }
+    else if (CommandType == TEXT("create_material_instance"))
+    {
+        return HandleCreateMaterialInstance(Params);
+    }
+    else if (CommandType == TEXT("set_material_instance_parameter"))
+    {
+        return HandleSetMaterialInstanceParameter(Params);
+    }
+    // Texture commands
+    else if (CommandType == TEXT("import_texture"))
+    {
+        return HandleImportTexture(Params);
+    }
+    else if (CommandType == TEXT("set_texture_properties"))
+    {
+        return HandleSetTextureProperties(Params);
+    }
+    else if (CommandType == TEXT("create_pbr_material"))
+    {
+        return HandleCreatePBRMaterial(Params);
+    }
+    else if (CommandType == TEXT("create_landscape_material"))
+    {
+        return HandleCreateLandscapeMaterial(Params);
+    }
+    // Asset import and management commands
+    else if (CommandType == TEXT("import_mesh"))
+    {
+        return HandleImportMesh(Params);
+    }
+    else if (CommandType == TEXT("import_skeletal_mesh"))
+    {
+        return HandleImportSkeletalMesh(Params);
+    }
+    else if (CommandType == TEXT("import_animation"))
+    {
+        return HandleImportAnimation(Params);
+    }
+    else if (CommandType == TEXT("list_assets"))
+    {
+        return HandleListAssets(Params);
+    }
+    else if (CommandType == TEXT("does_asset_exist"))
+    {
+        return HandleDoesAssetExist(Params);
+    }
+    else if (CommandType == TEXT("get_asset_info"))
+    {
+        return HandleGetAssetInfo(Params);
+    }
+    // World query commands
+    else if (CommandType == TEXT("get_height_at_location"))
+    {
+        return HandleGetHeightAtLocation(Params);
+    }
+    else if (CommandType == TEXT("snap_actor_to_ground"))
+    {
+        return HandleSnapActorToGround(Params);
+    }
+    else if (CommandType == TEXT("scatter_meshes_on_landscape"))
+    {
+        return HandleScatterMeshesOnLandscape(Params);
+    }
+    else if (CommandType == TEXT("take_screenshot"))
+    {
+        return HandleTakeScreenshot(Params);
+    }
+    else if (CommandType == TEXT("get_material_info"))
+    {
+        return HandleGetMaterialInfo(Params);
+    }
+    else if (CommandType == TEXT("focus_viewport_on_actor"))
+    {
+        return HandleFocusViewportOnActor(Params);
+    }
+    else if (CommandType == TEXT("get_texture_info"))
+    {
+        return HandleGetTextureInfo(Params);
+    }
+    else if (CommandType == TEXT("delete_actors_by_pattern"))
+    {
+        return HandleDeleteActorsByPattern(Params);
+    }
+    // Asset deletion
+    else if (CommandType == TEXT("delete_asset"))
+    {
+        return HandleDeleteAsset(Params);
+    }
+    // Mesh asset properties
+    else if (CommandType == TEXT("set_nanite_enabled"))
+    {
+        return HandleSetNaniteEnabled(Params);
+    }
+
+    return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    
+    TArray<TSharedPtr<FJsonValue>> ActorArray;
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor)
+        {
+            ActorArray.Add(FEpicUnrealMCPCommonUtils::ActorToJson(Actor));
+        }
+    }
+    
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetArrayField(TEXT("actors"), ActorArray);
+    
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleFindActorsByName(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Pattern;
+    if (!Params->TryGetStringField(TEXT("pattern"), Pattern))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pattern' parameter"));
+    }
+    
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    
+    TArray<TSharedPtr<FJsonValue>> MatchingActors;
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName().Contains(Pattern))
+        {
+            MatchingActors.Add(FEpicUnrealMCPCommonUtils::ActorToJson(Actor));
+        }
+    }
+    
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetArrayField(TEXT("actors"), MatchingActors);
+    
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActor(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString ActorType;
+    if (!Params->TryGetStringField(TEXT("type"), ActorType))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'type' parameter"));
+    }
+
+    // Get actor name (required parameter)
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    // Get optional transform parameters
+    FVector Location(0.0f, 0.0f, 0.0f);
+    FRotator Rotation(0.0f, 0.0f, 0.0f);
+    FVector Scale(1.0f, 1.0f, 1.0f);
+
+    if (Params->HasField(TEXT("location")))
+    {
+        Location = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location"));
+    }
+    if (Params->HasField(TEXT("rotation")))
+    {
+        Rotation = FEpicUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation"));
+    }
+    if (Params->HasField(TEXT("scale")))
+    {
+        Scale = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale"));
+    }
+
+    // Create the actor based on type
+    AActor* NewActor = nullptr;
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+    }
+
+    // Check if an actor with this name already exists
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor with name '%s' already exists"), *ActorName));
+        }
+    }
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Name = *ActorName;
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
+    if (ActorType == TEXT("StaticMeshActor"))
+    {
+        AStaticMeshActor* NewMeshActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
+        if (NewMeshActor)
+        {
+            // Check for an optional static_mesh parameter to assign a mesh
+            FString MeshPath;
+            if (Params->TryGetStringField(TEXT("static_mesh"), MeshPath))
+            {
+                UStaticMesh* Mesh = Cast<UStaticMesh>(UEditorAssetLibrary::LoadAsset(MeshPath));
+                if (Mesh)
+                {
+                    NewMeshActor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("Could not find static mesh at path: %s"), *MeshPath);
+                }
+            }
+        }
+        NewActor = NewMeshActor;
+    }
+    else if (ActorType == TEXT("PointLight"))
+    {
+        NewActor = World->SpawnActor<APointLight>(APointLight::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("SpotLight"))
+    {
+        NewActor = World->SpawnActor<ASpotLight>(ASpotLight::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("DirectionalLight"))
+    {
+        NewActor = World->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("CameraActor"))
+    {
+        NewActor = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("CineCameraActor"))
+    {
+        NewActor = World->SpawnActor<ACineCameraActor>(ACineCameraActor::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("ExponentialHeightFog"))
+    {
+        NewActor = World->SpawnActor<AExponentialHeightFog>(AExponentialHeightFog::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("SkyLight"))
+    {
+        NewActor = World->SpawnActor<ASkyLight>(ASkyLight::StaticClass(), Location, Rotation, SpawnParams);
+    }
+    else if (ActorType == TEXT("PostProcessVolume"))
+    {
+        APostProcessVolume* PPVolume = World->SpawnActor<APostProcessVolume>(APostProcessVolume::StaticClass(), Location, Rotation, SpawnParams);
+        if (PPVolume)
+        {
+            // Check for optional bUnbound parameter
+            bool bUnbound = true;
+            if (Params->TryGetBoolField(TEXT("unbound"), bUnbound))
+            {
+                PPVolume->bUnbound = bUnbound;
+            }
+            else
+            {
+                // Default to unbound so it affects the whole level
+                PPVolume->bUnbound = true;
+            }
+        }
+        NewActor = PPVolume;
+    }
+    else if (ActorType == TEXT("DecalActor"))
+    {
+        ADecalActor* DecalActorObj = World->SpawnActor<ADecalActor>(ADecalActor::StaticClass(), Location, Rotation, SpawnParams);
+        if (DecalActorObj)
+        {
+            // Check for optional decal material
+            FString MaterialPath;
+            if (Params->TryGetStringField(TEXT("decal_material"), MaterialPath))
+            {
+                UMaterialInterface* Material = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+                if (Material)
+                {
+                    DecalActorObj->SetDecalMaterial(Material);
+                }
+            }
+            // Check for optional decal size
+            if (Params->HasField(TEXT("decal_size")))
+            {
+                FVector DecalSize = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("decal_size"));
+                DecalActorObj->GetDecal()->DecalSize = DecalSize;
+            }
+        }
+        NewActor = DecalActorObj;
+    }
+    else
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown actor type: %s"), *ActorType));
+    }
+
+    if (NewActor)
+    {
+        // Set scale (since SpawnActor only takes location and rotation)
+        FTransform Transform = NewActor->GetTransform();
+        Transform.SetScale3D(Scale);
+        NewActor->SetActorTransform(Transform);
+
+        // Return the created actor's details
+        return FEpicUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+    }
+
+    return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create actor"));
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleDeleteActor(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+
+    for (AActor* Actor : AllActors)
+    {
+        if (IsValid(Actor) && Actor->GetName() == ActorName)
+        {
+            // Store actor info before deletion for the response
+            TSharedPtr<FJsonObject> ActorInfo = FEpicUnrealMCPCommonUtils::ActorToJsonObject(Actor);
+
+            // Use EditorActorSubsystem for safe editor deletion.
+            // It handles OFPA packages, scene outliner, and editor notifications.
+            UEditorActorSubsystem* EditorActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+            if (EditorActorSubsystem)
+            {
+                EditorActorSubsystem->DestroyActor(Actor);
+            }
+            else
+            {
+                World->DestroyActor(Actor);
+            }
+
+            TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+            ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
+            return ResultObj;
+        }
+    }
+
+    return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorTransform(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get actor name
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Get transform parameters
+    FTransform NewTransform = TargetActor->GetTransform();
+
+    if (Params->HasField(TEXT("location")))
+    {
+        NewTransform.SetLocation(FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location")));
+    }
+    if (Params->HasField(TEXT("rotation")))
+    {
+        NewTransform.SetRotation(FQuat(FEpicUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation"))));
+    }
+    if (Params->HasField(TEXT("scale")))
+    {
+        NewTransform.SetScale3D(FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale")));
+    }
+
+    // Set the new transform
+    TargetActor->SetActorTransform(NewTransform);
+
+    // Return updated actor info
+    return FEpicUnrealMCPCommonUtils::ActorToJsonObject(TargetActor, true);
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnBlueprintActor(const TSharedPtr<FJsonObject>& Params)
+{
+    // This function will now correctly call the implementation in BlueprintCommands
+    FEpicUnrealMCPBlueprintCommands BlueprintCommands;
+    return BlueprintCommands.HandleCommand(TEXT("spawn_blueprint_actor"), Params);
+}
+
+// Helper function to get FLinearColor from JSON
+static FLinearColor GetLinearColorFromJson(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    FLinearColor Result(1.0f, 1.0f, 1.0f, 1.0f);
+
+    if (JsonObject->HasField(TEXT("R")))
+    {
+        Result.R = JsonObject->GetNumberField(TEXT("R"));
+    }
+    if (JsonObject->HasField(TEXT("G")))
+    {
+        Result.G = JsonObject->GetNumberField(TEXT("G"));
+    }
+    if (JsonObject->HasField(TEXT("B")))
+    {
+        Result.B = JsonObject->GetNumberField(TEXT("B"));
+    }
+    if (JsonObject->HasField(TEXT("A")))
+    {
+        Result.A = JsonObject->GetNumberField(TEXT("A"));
+    }
+
+    return Result;
+}
+
+// Helper function to get FVector4 from JSON
+static FVector4 GetVector4FromJson(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    FVector4 Result(1.0f, 1.0f, 1.0f, 1.0f);
+
+    if (JsonObject->HasField(TEXT("X")))
+    {
+        Result.X = JsonObject->GetNumberField(TEXT("X"));
+    }
+    if (JsonObject->HasField(TEXT("Y")))
+    {
+        Result.Y = JsonObject->GetNumberField(TEXT("Y"));
+    }
+    if (JsonObject->HasField(TEXT("Z")))
+    {
+        Result.Z = JsonObject->GetNumberField(TEXT("Z"));
+    }
+    if (JsonObject->HasField(TEXT("W")))
+    {
+        Result.W = JsonObject->GetNumberField(TEXT("W"));
+    }
+
+    return Result;
+}
+
+// Helper function to set a property value using Unreal's reflection system
+static bool SetPropertyValue(UObject* TargetObject, FProperty* Property, const TSharedPtr<FJsonValue>& Value, FString& OutError)
+{
+    if (!TargetObject || !Property)
+    {
+        OutError = TEXT("Invalid target object or property");
+        return false;
+    }
+
+    void* PropertyAddr = Property->ContainerPtrToValuePtr<void>(TargetObject);
+
+    // Handle bool property
+    if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+    {
+        BoolProp->SetPropertyValue(PropertyAddr, Value->AsBool());
+        return true;
+    }
+    // Handle float property
+    else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
+    {
+        FloatProp->SetPropertyValue(PropertyAddr, static_cast<float>(Value->AsNumber()));
+        return true;
+    }
+    // Handle double property
+    else if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Property))
+    {
+        DoubleProp->SetPropertyValue(PropertyAddr, Value->AsNumber());
+        return true;
+    }
+    // Handle int property
+    else if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
+    {
+        IntProp->SetPropertyValue(PropertyAddr, static_cast<int32>(Value->AsNumber()));
+        return true;
+    }
+    // Handle string property
+    else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+    {
+        StrProp->SetPropertyValue(PropertyAddr, Value->AsString());
+        return true;
+    }
+    // Handle struct properties (FLinearColor, FVector, FVector4, etc.)
+    else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
+    {
+        UScriptStruct* Struct = StructProp->Struct;
+        FString StructName = Struct->GetName();
+
+        // Handle FLinearColor
+        if (StructName == TEXT("LinearColor"))
+        {
+            const TSharedPtr<FJsonObject>* JsonObj;
+            if (Value->TryGetObject(JsonObj))
+            {
+                FLinearColor* ColorPtr = static_cast<FLinearColor*>(PropertyAddr);
+                *ColorPtr = GetLinearColorFromJson(*JsonObj);
+                return true;
+            }
+        }
+        // Handle FColor
+        else if (StructName == TEXT("Color"))
+        {
+            const TSharedPtr<FJsonObject>* JsonObj;
+            if (Value->TryGetObject(JsonObj))
+            {
+                FLinearColor LinearColor = GetLinearColorFromJson(*JsonObj);
+                FColor* ColorPtr = static_cast<FColor*>(PropertyAddr);
+                *ColorPtr = LinearColor.ToFColor(true);
+                return true;
+            }
+        }
+        // Handle FVector
+        else if (StructName == TEXT("Vector"))
+        {
+            const TArray<TSharedPtr<FJsonValue>>* JsonArray;
+            if (Value->TryGetArray(JsonArray) && JsonArray->Num() >= 3)
+            {
+                FVector* VectorPtr = static_cast<FVector*>(PropertyAddr);
+                VectorPtr->X = (*JsonArray)[0]->AsNumber();
+                VectorPtr->Y = (*JsonArray)[1]->AsNumber();
+                VectorPtr->Z = (*JsonArray)[2]->AsNumber();
+                return true;
+            }
+        }
+        // Handle FVector4
+        else if (StructName == TEXT("Vector4"))
+        {
+            const TSharedPtr<FJsonObject>* JsonObj;
+            if (Value->TryGetObject(JsonObj))
+            {
+                FVector4* Vector4Ptr = static_cast<FVector4*>(PropertyAddr);
+                *Vector4Ptr = GetVector4FromJson(*JsonObj);
+                return true;
+            }
+            const TArray<TSharedPtr<FJsonValue>>* JsonArray;
+            if (Value->TryGetArray(JsonArray) && JsonArray->Num() >= 4)
+            {
+                FVector4* Vector4Ptr = static_cast<FVector4*>(PropertyAddr);
+                Vector4Ptr->X = (*JsonArray)[0]->AsNumber();
+                Vector4Ptr->Y = (*JsonArray)[1]->AsNumber();
+                Vector4Ptr->Z = (*JsonArray)[2]->AsNumber();
+                Vector4Ptr->W = (*JsonArray)[3]->AsNumber();
+                return true;
+            }
+        }
+        // Handle FRotator
+        else if (StructName == TEXT("Rotator"))
+        {
+            const TArray<TSharedPtr<FJsonValue>>* JsonArray;
+            if (Value->TryGetArray(JsonArray) && JsonArray->Num() >= 3)
+            {
+                FRotator* RotatorPtr = static_cast<FRotator*>(PropertyAddr);
+                RotatorPtr->Pitch = (*JsonArray)[0]->AsNumber();
+                RotatorPtr->Yaw = (*JsonArray)[1]->AsNumber();
+                RotatorPtr->Roll = (*JsonArray)[2]->AsNumber();
+                return true;
+            }
+        }
+
+        OutError = FString::Printf(TEXT("Unsupported struct type: %s"), *StructName);
+        return false;
+    }
+
+    OutError = FString::Printf(TEXT("Unsupported property type: %s"), *Property->GetClass()->GetName());
+    return false;
+}
+
+// Helper function to find component on an actor
+static UActorComponent* FindComponentOnActor(AActor* Actor, const FString& ComponentName)
+{
+    if (!Actor)
+    {
+        return nullptr;
+    }
+
+    // If component name is provided, find it by name
+    if (!ComponentName.IsEmpty())
+    {
+        TArray<UActorComponent*> Components;
+        Actor->GetComponents(Components);
+
+        for (UActorComponent* Component : Components)
+        {
+            if (Component && Component->GetName() == ComponentName)
+            {
+                return Component;
+            }
+        }
+        return nullptr;
+    }
+
+    // If no component name provided, try to find a suitable default component based on actor type
+
+    // For light actors, return the light component
+    if (ALight* LightActor = Cast<ALight>(Actor))
+    {
+        return LightActor->GetLightComponent();
+    }
+
+    // For exponential height fog
+    if (AExponentialHeightFog* FogActor = Cast<AExponentialHeightFog>(Actor))
+    {
+        return FogActor->GetComponent();
+    }
+
+    // For sky light
+    if (ASkyLight* SkyLightActor = Cast<ASkyLight>(Actor))
+    {
+        return SkyLightActor->GetLightComponent();
+    }
+
+    // For post process volume, return the root component which has the settings
+    if (APostProcessVolume* PPVolume = Cast<APostProcessVolume>(Actor))
+    {
+        return PPVolume->GetRootComponent();
+    }
+
+    // Return root component as fallback
+    return Actor->GetRootComponent();
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+    }
+
+    FString PropertyName;
+    if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+    }
+
+    // Get optional component name
+    FString ComponentName;
+    Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+    // Get property value (required)
+    if (!Params->HasField(TEXT("property_value")))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+    }
+    TSharedPtr<FJsonValue> PropertyValue = Params->TryGetField(TEXT("property_value"));
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+    }
+
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Handle nested property paths (e.g., "Settings.ColorSaturation")
+    TArray<FString> PropertyPath;
+    PropertyName.ParseIntoArray(PropertyPath, TEXT("."), true);
+
+    UObject* CurrentObject = nullptr;
+
+    // Special handling for PostProcessVolume settings
+    if (APostProcessVolume* PPVolume = Cast<APostProcessVolume>(TargetActor))
+    {
+        if (PropertyPath.Num() > 0 && PropertyPath[0] == TEXT("Settings"))
+        {
+            // Access the Settings struct directly
+            if (PropertyPath.Num() >= 2)
+            {
+                FString SettingsPropertyName = PropertyPath[1];
+
+                // Get the Settings property
+                FStructProperty* SettingsProp = CastField<FStructProperty>(
+                    PPVolume->GetClass()->FindPropertyByName(TEXT("Settings")));
+
+                if (SettingsProp)
+                {
+                    void* SettingsPtr = SettingsProp->ContainerPtrToValuePtr<void>(PPVolume);
+                    UScriptStruct* SettingsStruct = SettingsProp->Struct;
+
+                    // Find the property within Settings
+                    FProperty* TargetProperty = SettingsStruct->FindPropertyByName(*SettingsPropertyName);
+
+                    if (TargetProperty)
+                    {
+                        // Create a temporary wrapper object to set the nested property
+                        void* PropertyAddr = TargetProperty->ContainerPtrToValuePtr<void>(SettingsPtr);
+
+                        // Handle the property types directly
+                        if (FStructProperty* StructProp = CastField<FStructProperty>(TargetProperty))
+                        {
+                            FString StructName = StructProp->Struct->GetName();
+
+                            if (StructName == TEXT("Vector4"))
+                            {
+                                const TSharedPtr<FJsonObject>* JsonObj;
+                                if (PropertyValue->TryGetObject(JsonObj))
+                                {
+                                    FVector4* Vector4Ptr = static_cast<FVector4*>(PropertyAddr);
+                                    *Vector4Ptr = GetVector4FromJson(*JsonObj);
+
+                                    // Mark the override flag
+                                    FString OverrideFlagName = FString::Printf(TEXT("bOverride_%s"), *SettingsPropertyName);
+                                    FBoolProperty* OverrideProp = CastField<FBoolProperty>(
+                                        SettingsStruct->FindPropertyByName(*OverrideFlagName));
+                                    if (OverrideProp)
+                                    {
+                                        void* OverrideAddr = OverrideProp->ContainerPtrToValuePtr<void>(SettingsPtr);
+                                        OverrideProp->SetPropertyValue(OverrideAddr, true);
+                                    }
+
+                                    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                                    Result->SetBoolField(TEXT("success"), true);
+                                    Result->SetStringField(TEXT("actor"), ActorName);
+                                    Result->SetStringField(TEXT("property"), PropertyName);
+                                    Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+                                    return Result;
+                                }
+                            }
+                            else if (StructName == TEXT("LinearColor"))
+                            {
+                                const TSharedPtr<FJsonObject>* JsonObj;
+                                if (PropertyValue->TryGetObject(JsonObj))
+                                {
+                                    FLinearColor* ColorPtr = static_cast<FLinearColor*>(PropertyAddr);
+                                    *ColorPtr = GetLinearColorFromJson(*JsonObj);
+
+                                    // Mark the override flag
+                                    FString OverrideFlagName = FString::Printf(TEXT("bOverride_%s"), *SettingsPropertyName);
+                                    FBoolProperty* OverrideProp = CastField<FBoolProperty>(
+                                        SettingsStruct->FindPropertyByName(*OverrideFlagName));
+                                    if (OverrideProp)
+                                    {
+                                        void* OverrideAddr = OverrideProp->ContainerPtrToValuePtr<void>(SettingsPtr);
+                                        OverrideProp->SetPropertyValue(OverrideAddr, true);
+                                    }
+
+                                    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                                    Result->SetBoolField(TEXT("success"), true);
+                                    Result->SetStringField(TEXT("actor"), ActorName);
+                                    Result->SetStringField(TEXT("property"), PropertyName);
+                                    Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+                                    return Result;
+                                }
+                            }
+                        }
+                        else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(TargetProperty))
+                        {
+                            FloatProp->SetPropertyValue(PropertyAddr, static_cast<float>(PropertyValue->AsNumber()));
+
+                            // Mark the override flag
+                            FString OverrideFlagName = FString::Printf(TEXT("bOverride_%s"), *SettingsPropertyName);
+                            FBoolProperty* OverrideProp = CastField<FBoolProperty>(
+                                SettingsStruct->FindPropertyByName(*OverrideFlagName));
+                            if (OverrideProp)
+                            {
+                                void* OverrideAddr = OverrideProp->ContainerPtrToValuePtr<void>(SettingsPtr);
+                                OverrideProp->SetPropertyValue(OverrideAddr, true);
+                            }
+
+                            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                            Result->SetBoolField(TEXT("success"), true);
+                            Result->SetStringField(TEXT("actor"), ActorName);
+                            Result->SetStringField(TEXT("property"), PropertyName);
+                            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+                            return Result;
+                        }
+                        else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(TargetProperty))
+                        {
+                            BoolProp->SetPropertyValue(PropertyAddr, PropertyValue->AsBool());
+
+                            // Mark the override flag
+                            FString OverrideFlagName = FString::Printf(TEXT("bOverride_%s"), *SettingsPropertyName);
+                            FBoolProperty* OverrideProp = CastField<FBoolProperty>(
+                                SettingsStruct->FindPropertyByName(*OverrideFlagName));
+                            if (OverrideProp)
+                            {
+                                void* OverrideAddr = OverrideProp->ContainerPtrToValuePtr<void>(SettingsPtr);
+                                OverrideProp->SetPropertyValue(OverrideAddr, true);
+                            }
+
+                            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+                            Result->SetBoolField(TEXT("success"), true);
+                            Result->SetStringField(TEXT("actor"), ActorName);
+                            Result->SetStringField(TEXT("property"), PropertyName);
+                            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+                            return Result;
+                        }
+                    }
+                    else
+                    {
+                        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                            FString::Printf(TEXT("Property '%s' not found in PostProcessSettings"), *SettingsPropertyName));
+                    }
+                }
+            }
+        }
+    }
+
+    // Find the component
+    UActorComponent* Component = FindComponentOnActor(TargetActor, ComponentName);
+
+    if (!Component)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Component '%s' not found on actor '%s'"),
+                *ComponentName, *ActorName));
+    }
+
+    // For simple (non-nested) properties on components
+    FString SimplePropertyName = PropertyPath.Num() > 0 ? PropertyPath[0] : PropertyName;
+
+    // Find the property using reflection
+    FProperty* Property = Component->GetClass()->FindPropertyByName(*SimplePropertyName);
+
+    if (!Property)
+    {
+        // Try the actor itself if component doesn't have the property
+        Property = TargetActor->GetClass()->FindPropertyByName(*SimplePropertyName);
+        if (Property)
+        {
+            CurrentObject = TargetActor;
+        }
+        else
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Property '%s' not found on component or actor"), *SimplePropertyName));
+        }
+    }
+    else
+    {
+        CurrentObject = Component;
+    }
+
+    // Set the property value
+    FString ErrorMessage;
+    if (!SetPropertyValue(CurrentObject, Property, PropertyValue, ErrorMessage))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to set property: %s"), *ErrorMessage));
+    }
+
+    // Mark the component/actor as modified
+    if (Component)
+    {
+        Component->MarkRenderStateDirty();
+        Component->MarkPackageDirty();
+    }
+    TargetActor->MarkPackageDirty();
+
+    // Return success
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("actor"), ActorName);
+    Result->SetStringField(TEXT("component"), Component ? Component->GetName() : TEXT(""));
+    Result->SetStringField(TEXT("property"), PropertyName);
+    Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+    }
+
+    // Get optional component name
+    FString ComponentName;
+    Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+    }
+
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Find the component
+    UActorComponent* Component = FindComponentOnActor(TargetActor, ComponentName);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("actor"), ActorName);
+    Result->SetStringField(TEXT("actor_class"), TargetActor->GetClass()->GetName());
+
+    // List all components
+    TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+    TArray<UActorComponent*> Components;
+    TargetActor->GetComponents(Components);
+
+    for (UActorComponent* Comp : Components)
+    {
+        if (Comp)
+        {
+            TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+            CompObj->SetStringField(TEXT("name"), Comp->GetName());
+            CompObj->SetStringField(TEXT("class"), Comp->GetClass()->GetName());
+
+            // List editable properties for this component
+            TArray<TSharedPtr<FJsonValue>> PropertiesArray;
+            for (TFieldIterator<FProperty> PropIt(Comp->GetClass()); PropIt; ++PropIt)
+            {
+                FProperty* Property = *PropIt;
+                if (Property && (Property->PropertyFlags & CPF_Edit))
+                {
+                    TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+                    PropObj->SetStringField(TEXT("name"), Property->GetName());
+                    PropObj->SetStringField(TEXT("type"), Property->GetCPPType());
+                    PropertiesArray.Add(MakeShared<FJsonValueObject>(PropObj));
+                }
+            }
+            CompObj->SetArrayField(TEXT("properties"), PropertiesArray);
+
+            ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+        }
+    }
+
+    Result->SetArrayField(TEXT("components"), ComponentsArray);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateMaterial(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString MaterialName;
+    if (!Params->TryGetStringField(TEXT("name"), MaterialName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    // Get optional path (defaults to /Game/Materials/)
+    FString MaterialPath = TEXT("/Game/Materials/");
+    Params->TryGetStringField(TEXT("path"), MaterialPath);
+
+    // Ensure path ends with /
+    if (!MaterialPath.EndsWith(TEXT("/")))
+    {
+        MaterialPath += TEXT("/");
+    }
+
+    // Get optional material properties
+    FLinearColor BaseColor(0.8f, 0.8f, 0.8f, 1.0f);
+    float Roughness = 0.5f;
+    float Metallic = 0.0f;
+
+    if (Params->HasField(TEXT("base_color")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>* BaseColorArray;
+        if (Params->TryGetArrayField(TEXT("base_color"), BaseColorArray) && BaseColorArray->Num() >= 3)
+        {
+            BaseColor.R = (*BaseColorArray)[0]->AsNumber();
+            BaseColor.G = (*BaseColorArray)[1]->AsNumber();
+            BaseColor.B = (*BaseColorArray)[2]->AsNumber();
+            if (BaseColorArray->Num() >= 4)
+            {
+                BaseColor.A = (*BaseColorArray)[3]->AsNumber();
+            }
+        }
+    }
+
+    if (Params->HasField(TEXT("roughness")))
+    {
+        Roughness = Params->GetNumberField(TEXT("roughness"));
+    }
+
+    if (Params->HasField(TEXT("metallic")))
+    {
+        Metallic = Params->GetNumberField(TEXT("metallic"));
+    }
+
+    // Create the material package
+    FString PackagePath = MaterialPath + MaterialName;
+    UPackage* Package = CreatePackage(*PackagePath);
+
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for material"));
+    }
+
+    // Create the material using factory
+    UMaterialFactoryNew* MaterialFactory = NewObject<UMaterialFactoryNew>();
+    UMaterial* NewMaterial = Cast<UMaterial>(MaterialFactory->FactoryCreateNew(
+        UMaterial::StaticClass(),
+        Package,
+        FName(*MaterialName),
+        RF_Public | RF_Standalone,
+        nullptr,
+        GWarn
+    ));
+
+    if (!NewMaterial)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material"));
+    }
+
+    // Create Base Color constant expression
+    UMaterialExpressionConstant3Vector* BaseColorExpr = NewObject<UMaterialExpressionConstant3Vector>(NewMaterial);
+    BaseColorExpr->Constant = FLinearColor(BaseColor.R, BaseColor.G, BaseColor.B);
+    NewMaterial->GetExpressionCollection().AddExpression(BaseColorExpr);
+    BaseColorExpr->MaterialExpressionEditorX = -300;
+    BaseColorExpr->MaterialExpressionEditorY = 0;
+
+    // Create Roughness constant expression
+    UMaterialExpressionConstant* RoughnessExpr = NewObject<UMaterialExpressionConstant>(NewMaterial);
+    RoughnessExpr->R = Roughness;
+    NewMaterial->GetExpressionCollection().AddExpression(RoughnessExpr);
+    RoughnessExpr->MaterialExpressionEditorX = -300;
+    RoughnessExpr->MaterialExpressionEditorY = 150;
+
+    // Create Metallic constant expression
+    UMaterialExpressionConstant* MetallicExpr = NewObject<UMaterialExpressionConstant>(NewMaterial);
+    MetallicExpr->R = Metallic;
+    NewMaterial->GetExpressionCollection().AddExpression(MetallicExpr);
+    MetallicExpr->MaterialExpressionEditorX = -300;
+    MetallicExpr->MaterialExpressionEditorY = 250;
+
+    // Connect expressions to material outputs
+    NewMaterial->GetEditorOnlyData()->BaseColor.Expression = BaseColorExpr;
+    NewMaterial->GetEditorOnlyData()->Roughness.Expression = RoughnessExpr;
+    NewMaterial->GetEditorOnlyData()->Metallic.Expression = MetallicExpr;
+
+    // Compile the material
+    NewMaterial->PreEditChange(nullptr);
+    NewMaterial->PostEditChange();
+
+    // Mark package dirty and save
+    Package->MarkPackageDirty();
+
+    // Notify asset registry
+    IAssetRegistry::Get()->AssetCreated(NewMaterial);
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), MaterialName);
+    Result->SetStringField(TEXT("path"), PackagePath);
+    Result->SetStringField(TEXT("message"), TEXT("Material created successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString InstanceName;
+    if (!Params->TryGetStringField(TEXT("name"), InstanceName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    FString ParentMaterialPath;
+    if (!Params->TryGetStringField(TEXT("parent_material"), ParentMaterialPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parent_material' parameter"));
+    }
+
+    // Load parent material
+    UMaterialInterface* ParentMaterial = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(ParentMaterialPath));
+    if (!ParentMaterial)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Parent material not found: %s"), *ParentMaterialPath));
+    }
+
+    // Get optional path (defaults to same path as parent)
+    FString InstancePath = FPaths::GetPath(ParentMaterialPath) + TEXT("/");
+    Params->TryGetStringField(TEXT("path"), InstancePath);
+
+    if (!InstancePath.EndsWith(TEXT("/")))
+    {
+        InstancePath += TEXT("/");
+    }
+
+    // Create the material instance package
+    FString PackagePath = InstancePath + InstanceName;
+    UPackage* Package = CreatePackage(*PackagePath);
+
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for material instance"));
+    }
+
+    // Create material instance using factory
+    UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
+    Factory->InitialParent = ParentMaterial;
+
+    UMaterialInstanceConstant* MaterialInstance = Cast<UMaterialInstanceConstant>(Factory->FactoryCreateNew(
+        UMaterialInstanceConstant::StaticClass(),
+        Package,
+        FName(*InstanceName),
+        RF_Public | RF_Standalone,
+        nullptr,
+        GWarn
+    ));
+
+    if (!MaterialInstance)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material instance"));
+    }
+
+    // Set scalar parameters
+    const TSharedPtr<FJsonObject>* ScalarParams;
+    if (Params->TryGetObjectField(TEXT("scalar_parameters"), ScalarParams))
+    {
+        for (const auto& Pair : (*ScalarParams)->Values)
+        {
+            FName ParamName(*Pair.Key);
+            float Value = Pair.Value->AsNumber();
+            MaterialInstance->SetScalarParameterValueEditorOnly(ParamName, Value);
+        }
+    }
+
+    // Set vector parameters
+    const TSharedPtr<FJsonObject>* VectorParams;
+    if (Params->TryGetObjectField(TEXT("vector_parameters"), VectorParams))
+    {
+        for (const auto& Pair : (*VectorParams)->Values)
+        {
+            FName ParamName(*Pair.Key);
+            const TArray<TSharedPtr<FJsonValue>>* ValueArray;
+            if (Pair.Value->TryGetArray(ValueArray) && ValueArray->Num() >= 3)
+            {
+                FLinearColor Value;
+                Value.R = (*ValueArray)[0]->AsNumber();
+                Value.G = (*ValueArray)[1]->AsNumber();
+                Value.B = (*ValueArray)[2]->AsNumber();
+                Value.A = ValueArray->Num() >= 4 ? (*ValueArray)[3]->AsNumber() : 1.0f;
+                MaterialInstance->SetVectorParameterValueEditorOnly(ParamName, Value);
+            }
+        }
+    }
+
+    // Mark package dirty
+    Package->MarkPackageDirty();
+
+    // Notify asset registry
+    IAssetRegistry::Get()->AssetCreated(MaterialInstance);
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), InstanceName);
+    Result->SetStringField(TEXT("path"), PackagePath);
+    Result->SetStringField(TEXT("parent"), ParentMaterialPath);
+    Result->SetStringField(TEXT("message"), TEXT("Material instance created successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetMaterialInstanceParameter(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString MaterialPath;
+    if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path' parameter"));
+    }
+
+    FString ParameterName;
+    if (!Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parameter_name' parameter"));
+    }
+
+    if (!Params->HasField(TEXT("parameter_value")))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parameter_value' parameter"));
+    }
+
+    // Load material instance
+    UMaterialInstanceConstant* MaterialInstance = Cast<UMaterialInstanceConstant>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+    if (!MaterialInstance)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Material instance not found: %s"), *MaterialPath));
+    }
+
+    FName ParamFName(*ParameterName);
+    TSharedPtr<FJsonValue> ParameterValue = Params->TryGetField(TEXT("parameter_value"));
+
+    // Determine parameter type and set value
+    FString ParameterType;
+
+    // Try as scalar (number)
+    if (ParameterValue->Type == EJson::Number)
+    {
+        float ScalarValue = ParameterValue->AsNumber();
+        MaterialInstance->SetScalarParameterValueEditorOnly(ParamFName, ScalarValue);
+        ParameterType = TEXT("scalar");
+    }
+    // Try as vector (array)
+    else if (ParameterValue->Type == EJson::Array)
+    {
+        const TArray<TSharedPtr<FJsonValue>>& ValueArray = ParameterValue->AsArray();
+        if (ValueArray.Num() >= 3)
+        {
+            FLinearColor VectorValue;
+            VectorValue.R = ValueArray[0]->AsNumber();
+            VectorValue.G = ValueArray[1]->AsNumber();
+            VectorValue.B = ValueArray[2]->AsNumber();
+            VectorValue.A = ValueArray.Num() >= 4 ? ValueArray[3]->AsNumber() : 1.0f;
+            MaterialInstance->SetVectorParameterValueEditorOnly(ParamFName, VectorValue);
+            ParameterType = TEXT("vector");
+        }
+        else
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                TEXT("Vector parameter requires at least 3 values [R, G, B]"));
+        }
+    }
+    // Try as texture (string path)
+    else if (ParameterValue->Type == EJson::String)
+    {
+        FString TexturePath = ParameterValue->AsString();
+        UTexture* Texture = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(TexturePath));
+        if (Texture)
+        {
+            MaterialInstance->SetTextureParameterValueEditorOnly(ParamFName, Texture);
+            ParameterType = TEXT("texture");
+        }
+        else
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+        }
+    }
+    else
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Unsupported parameter value type"));
+    }
+
+    // Mark dirty
+    MaterialInstance->MarkPackageDirty();
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("material"), MaterialPath);
+    Result->SetStringField(TEXT("parameter"), ParameterName);
+    Result->SetStringField(TEXT("type"), ParameterType);
+    Result->SetStringField(TEXT("message"), TEXT("Parameter set successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportTexture(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString SourcePath;
+    if (!Params->TryGetStringField(TEXT("source_path"), SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_path' parameter"));
+    }
+
+    FString TextureName;
+    if (!Params->TryGetStringField(TEXT("texture_name"), TextureName))
+    {
+        // Use source filename if not provided
+        TextureName = FPaths::GetBaseFilename(SourcePath);
+    }
+
+    // Get optional destination path
+    FString DestinationPath = TEXT("/Game/Textures/");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    if (!DestinationPath.EndsWith(TEXT("/")))
+    {
+        DestinationPath += TEXT("/");
+    }
+
+    // Check if source file exists
+    if (!FPaths::FileExists(SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file not found: %s"), *SourcePath));
+    }
+
+    // Create package for the texture
+    FString PackagePath = DestinationPath + TextureName;
+    UPackage* Package = CreatePackage(*PackagePath);
+
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for texture"));
+    }
+
+    // Create texture factory
+    UTextureFactory* TextureFactory = NewObject<UTextureFactory>();
+    TextureFactory->AddToRoot();
+
+    // Import the texture
+    bool bCancelled = false;
+    UTexture2D* ImportedTexture = Cast<UTexture2D>(TextureFactory->ImportObject(
+        UTexture2D::StaticClass(),
+        Package,
+        FName(*TextureName),
+        RF_Public | RF_Standalone,
+        SourcePath,
+        nullptr,
+        bCancelled
+    ));
+
+    TextureFactory->RemoveFromRoot();
+
+    if (!ImportedTexture)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to import texture from: %s"), *SourcePath));
+    }
+
+    // Apply optional texture properties after import
+    FString CompressionType;
+    if (Params->TryGetStringField(TEXT("compression_type"), CompressionType))
+    {
+        if (CompressionType == TEXT("Normalmap") || CompressionType == TEXT("TC_Normalmap"))
+            ImportedTexture->CompressionSettings = TC_Normalmap;
+        else if (CompressionType == TEXT("Masks") || CompressionType == TEXT("TC_Masks"))
+            ImportedTexture->CompressionSettings = TC_Masks;
+        else if (CompressionType == TEXT("Default") || CompressionType == TEXT("TC_Default"))
+            ImportedTexture->CompressionSettings = TC_Default;
+        else if (CompressionType == TEXT("Grayscale") || CompressionType == TEXT("TC_Grayscale"))
+            ImportedTexture->CompressionSettings = TC_Grayscale;
+        else if (CompressionType == TEXT("HDR") || CompressionType == TEXT("TC_HDR"))
+            ImportedTexture->CompressionSettings = TC_HDR;
+    }
+
+    bool bSRGB;
+    if (Params->TryGetBoolField(TEXT("srgb"), bSRGB))
+    {
+        ImportedTexture->SRGB = bSRGB;
+    }
+
+    bool bFlipGreen;
+    if (Params->TryGetBoolField(TEXT("flip_green_channel"), bFlipGreen))
+    {
+        ImportedTexture->bFlipGreenChannel = bFlipGreen;
+    }
+
+    ImportedTexture->PostEditChange();
+    ImportedTexture->UpdateResource();
+
+    // Notify asset registry
+    IAssetRegistry::Get()->AssetCreated(ImportedTexture);
+
+    // CRITICAL: Save package to disk immediately after import.
+    // Without this, texture packages accumulate in memory (~64MB per 4K texture).
+    // Rapid imports without saving cause memory pressure that triggers GC,
+    // which can unload/corrupt landscape streaming proxies.
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+    UPackage::SavePackage(Package, ImportedTexture, *PackageFilename, SaveArgs);
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), TextureName);
+    Result->SetStringField(TEXT("path"), PackagePath);
+    Result->SetStringField(TEXT("source"), SourcePath);
+    Result->SetNumberField(TEXT("width"), ImportedTexture->GetSizeX());
+    Result->SetNumberField(TEXT("height"), ImportedTexture->GetSizeY());
+    Result->SetStringField(TEXT("message"), TEXT("Texture imported successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetTextureProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    FString TexturePath;
+    if (!Params->TryGetStringField(TEXT("texture_path"), TexturePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'texture_path' parameter"));
+    }
+
+    // Load the texture asset
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(TexturePath);
+    UTexture2D* Texture = Cast<UTexture2D>(LoadedAsset);
+    if (!Texture)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to load texture at: %s"), *TexturePath));
+    }
+
+    bool bChanged = false;
+
+    // Set compression type
+    FString CompressionType;
+    if (Params->TryGetStringField(TEXT("compression_type"), CompressionType))
+    {
+        if (CompressionType == TEXT("Normalmap") || CompressionType == TEXT("TC_Normalmap"))
+        {
+            Texture->CompressionSettings = TC_Normalmap;
+            bChanged = true;
+        }
+        else if (CompressionType == TEXT("Masks") || CompressionType == TEXT("TC_Masks"))
+        {
+            Texture->CompressionSettings = TC_Masks;
+            bChanged = true;
+        }
+        else if (CompressionType == TEXT("Default") || CompressionType == TEXT("TC_Default"))
+        {
+            Texture->CompressionSettings = TC_Default;
+            bChanged = true;
+        }
+        else if (CompressionType == TEXT("Grayscale") || CompressionType == TEXT("TC_Grayscale"))
+        {
+            Texture->CompressionSettings = TC_Grayscale;
+            bChanged = true;
+        }
+        else if (CompressionType == TEXT("HDR") || CompressionType == TEXT("TC_HDR"))
+        {
+            Texture->CompressionSettings = TC_HDR;
+            bChanged = true;
+        }
+    }
+
+    // Set sRGB
+    bool bSRGB;
+    if (Params->TryGetBoolField(TEXT("srgb"), bSRGB))
+    {
+        Texture->SRGB = bSRGB;
+        bChanged = true;
+    }
+
+    // Flip green channel (for OpenGL → DirectX normal maps)
+    bool bFlipGreen;
+    if (Params->TryGetBoolField(TEXT("flip_green_channel"), bFlipGreen))
+    {
+        Texture->bFlipGreenChannel = bFlipGreen;
+        bChanged = true;
+    }
+
+    if (bChanged)
+    {
+        Texture->PostEditChange();
+        Texture->UpdateResource();
+        Texture->MarkPackageDirty();
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("texture_path"), TexturePath);
+    Result->SetStringField(TEXT("compression"),
+        Texture->CompressionSettings == TC_Normalmap ? TEXT("TC_Normalmap") :
+        Texture->CompressionSettings == TC_Masks ? TEXT("TC_Masks") :
+        Texture->CompressionSettings == TC_Grayscale ? TEXT("TC_Grayscale") :
+        Texture->CompressionSettings == TC_HDR ? TEXT("TC_HDR") :
+        TEXT("TC_Default"));
+    Result->SetBoolField(TEXT("srgb"), Texture->SRGB);
+    Result->SetBoolField(TEXT("flip_green_channel"), Texture->bFlipGreenChannel);
+    Result->SetStringField(TEXT("message"), TEXT("Texture properties updated successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreatePBRMaterial(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString MaterialName;
+    if (!Params->TryGetStringField(TEXT("name"), MaterialName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    FString MaterialPath = TEXT("/Game/Materials/");
+    Params->TryGetStringField(TEXT("path"), MaterialPath);
+    if (!MaterialPath.EndsWith(TEXT("/"))) MaterialPath += TEXT("/");
+
+    // Get texture paths
+    FString DiffuseTexturePath, NormalTexturePath, ARMTexturePath;
+    Params->TryGetStringField(TEXT("diffuse_texture"), DiffuseTexturePath);
+    Params->TryGetStringField(TEXT("normal_texture"), NormalTexturePath);
+    Params->TryGetStringField(TEXT("arm_texture"), ARMTexturePath);
+
+    // Optional separate roughness/metallic/ao textures (if not using ARM)
+    FString RoughnessTexturePath, MetallicTexturePath, AOTexturePath;
+    Params->TryGetStringField(TEXT("roughness_texture"), RoughnessTexturePath);
+    Params->TryGetStringField(TEXT("metallic_texture"), MetallicTexturePath);
+    Params->TryGetStringField(TEXT("ao_texture"), AOTexturePath);
+
+    // Optional opacity mask texture (automatically sets Masked blend mode)
+    FString OpacityMaskTexturePath;
+    Params->TryGetStringField(TEXT("opacity_mask_texture"), OpacityMaskTexturePath);
+
+    // Optional scalar values
+    double RoughnessValue = 0.5;
+    double MetallicValue = 0.0;
+    bool bHasRoughnessValue = Params->TryGetNumberField(TEXT("roughness_value"), RoughnessValue);
+    bool bHasMetallicValue = Params->TryGetNumberField(TEXT("metallic_value"), MetallicValue);
+
+    // Create material package - delete existing asset first to avoid duplicates
+    FString FullPath = MaterialPath + MaterialName;
+    if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+    {
+        UEditorAssetLibrary::DeleteAsset(FullPath);
+    }
+
+    UPackage* Package = CreatePackage(*FullPath);
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package"));
+    }
+
+    // Create the material
+    UMaterialFactoryNew* MaterialFactory = NewObject<UMaterialFactoryNew>();
+    UMaterial* Material = Cast<UMaterial>(MaterialFactory->FactoryCreateNew(
+        UMaterial::StaticClass(), Package, FName(*MaterialName),
+        RF_Standalone | RF_Public, nullptr, GWarn));
+
+    if (!Material)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material"));
+    }
+
+    Material->PreEditChange(nullptr);
+
+    int32 PosY = 0;
+
+    // === BASE COLOR (DIFFUSE) ===
+    if (!DiffuseTexturePath.IsEmpty())
+    {
+        UTexture* DiffuseTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(DiffuseTexturePath));
+        if (DiffuseTex)
+        {
+            UMaterialExpressionTextureSample* DiffuseSample = NewObject<UMaterialExpressionTextureSample>(Material);
+            DiffuseSample->Texture = DiffuseTex;
+            DiffuseSample->SamplerType = SAMPLERTYPE_Color;
+            DiffuseSample->MaterialExpressionEditorX = -400;
+            DiffuseSample->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(DiffuseSample);
+            Material->GetEditorOnlyData()->BaseColor.Connect(0, DiffuseSample);
+            PosY += 300;
+        }
+    }
+
+    // === NORMAL MAP ===
+    if (!NormalTexturePath.IsEmpty())
+    {
+        UTexture* NormalTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(NormalTexturePath));
+        if (NormalTex)
+        {
+            UMaterialExpressionTextureSample* NormalSample = NewObject<UMaterialExpressionTextureSample>(Material);
+            NormalSample->Texture = NormalTex;
+            NormalSample->SamplerType = SAMPLERTYPE_Normal;
+            NormalSample->MaterialExpressionEditorX = -400;
+            NormalSample->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(NormalSample);
+            Material->GetEditorOnlyData()->Normal.Connect(0, NormalSample);
+            PosY += 300;
+        }
+    }
+
+    // === ARM PACKED TEXTURE (AO=R, Roughness=G, Metallic=B) ===
+    if (!ARMTexturePath.IsEmpty())
+    {
+        UTexture* ARMTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(ARMTexturePath));
+        if (ARMTex)
+        {
+            UMaterialExpressionTextureSample* ARMSample = NewObject<UMaterialExpressionTextureSample>(Material);
+            ARMSample->Texture = ARMTex;
+            ARMSample->SamplerType = SAMPLERTYPE_Masks;
+            ARMSample->MaterialExpressionEditorX = -400;
+            ARMSample->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(ARMSample);
+
+            // AO: NEVER connect from ARM texture. ARM textures from Megascans/PolyHaven
+            // have AO=0 in UV padding areas, causing dark patches. UE5 Lumen handles
+            // ambient occlusion automatically, making texture AO unnecessary and harmful.
+
+            // Roughness = Green channel
+            UMaterialExpressionComponentMask* RoughnessMask = NewObject<UMaterialExpressionComponentMask>(Material);
+            RoughnessMask->R = false; RoughnessMask->G = true; RoughnessMask->B = false; RoughnessMask->A = false;
+            RoughnessMask->Input.Connect(0, ARMSample);
+            RoughnessMask->MaterialExpressionEditorX = -100;
+            RoughnessMask->MaterialExpressionEditorY = PosY + 80;
+            Material->GetExpressionCollection().AddExpression(RoughnessMask);
+            Material->GetEditorOnlyData()->Roughness.Connect(0, RoughnessMask);
+
+            // Metallic = Blue channel
+            UMaterialExpressionComponentMask* MetallicMask = NewObject<UMaterialExpressionComponentMask>(Material);
+            MetallicMask->R = false; MetallicMask->G = false; MetallicMask->B = true; MetallicMask->A = false;
+            MetallicMask->Input.Connect(0, ARMSample);
+            MetallicMask->MaterialExpressionEditorX = -100;
+            MetallicMask->MaterialExpressionEditorY = PosY + 160;
+            Material->GetExpressionCollection().AddExpression(MetallicMask);
+            Material->GetEditorOnlyData()->Metallic.Connect(0, MetallicMask);
+
+            PosY += 400;
+        }
+    }
+    else
+    {
+        // Separate roughness/metallic/ao textures or scalar values
+        if (!RoughnessTexturePath.IsEmpty())
+        {
+            UTexture* RoughTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(RoughnessTexturePath));
+            if (RoughTex)
+            {
+                UMaterialExpressionTextureSample* RoughSample = NewObject<UMaterialExpressionTextureSample>(Material);
+                RoughSample->Texture = RoughTex;
+                RoughSample->SamplerType = SAMPLERTYPE_LinearColor;
+                RoughSample->MaterialExpressionEditorX = -400;
+                RoughSample->MaterialExpressionEditorY = PosY;
+                Material->GetExpressionCollection().AddExpression(RoughSample);
+                Material->GetEditorOnlyData()->Roughness.Connect(0, RoughSample);
+                PosY += 300;
+            }
+        }
+        else if (bHasRoughnessValue)
+        {
+            UMaterialExpressionConstant* RoughConst = NewObject<UMaterialExpressionConstant>(Material);
+            RoughConst->R = RoughnessValue;
+            RoughConst->MaterialExpressionEditorX = -200;
+            RoughConst->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(RoughConst);
+            Material->GetEditorOnlyData()->Roughness.Connect(0, RoughConst);
+            PosY += 100;
+        }
+
+        if (!MetallicTexturePath.IsEmpty())
+        {
+            UTexture* MetTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(MetallicTexturePath));
+            if (MetTex)
+            {
+                UMaterialExpressionTextureSample* MetSample = NewObject<UMaterialExpressionTextureSample>(Material);
+                MetSample->Texture = MetTex;
+                MetSample->SamplerType = SAMPLERTYPE_LinearColor;
+                MetSample->MaterialExpressionEditorX = -400;
+                MetSample->MaterialExpressionEditorY = PosY;
+                Material->GetExpressionCollection().AddExpression(MetSample);
+                Material->GetEditorOnlyData()->Metallic.Connect(0, MetSample);
+                PosY += 300;
+            }
+        }
+        else if (bHasMetallicValue)
+        {
+            UMaterialExpressionConstant* MetConst = NewObject<UMaterialExpressionConstant>(Material);
+            MetConst->R = MetallicValue;
+            MetConst->MaterialExpressionEditorX = -200;
+            MetConst->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(MetConst);
+            Material->GetEditorOnlyData()->Metallic.Connect(0, MetConst);
+            PosY += 100;
+        }
+
+        if (!AOTexturePath.IsEmpty())
+        {
+            UTexture* AOTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(AOTexturePath));
+            if (AOTex)
+            {
+                UMaterialExpressionTextureSample* AOSample = NewObject<UMaterialExpressionTextureSample>(Material);
+                AOSample->Texture = AOTex;
+                AOSample->SamplerType = SAMPLERTYPE_LinearColor;
+                AOSample->MaterialExpressionEditorX = -400;
+                AOSample->MaterialExpressionEditorY = PosY;
+                Material->GetExpressionCollection().AddExpression(AOSample);
+                Material->GetEditorOnlyData()->AmbientOcclusion.Connect(0, AOSample);
+                PosY += 300;
+            }
+        }
+    }
+
+    // === OPACITY MASK (for foliage/grass alpha cutout) ===
+    if (!OpacityMaskTexturePath.IsEmpty())
+    {
+        UTexture* OpacityTex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(OpacityMaskTexturePath));
+        if (OpacityTex)
+        {
+            UMaterialExpressionTextureSample* OpacitySample = NewObject<UMaterialExpressionTextureSample>(Material);
+            OpacitySample->Texture = OpacityTex;
+            OpacitySample->SamplerType = SAMPLERTYPE_Masks;
+            OpacitySample->MaterialExpressionEditorX = -400;
+            OpacitySample->MaterialExpressionEditorY = PosY;
+            Material->GetExpressionCollection().AddExpression(OpacitySample);
+            Material->GetEditorOnlyData()->OpacityMask.Connect(0, OpacitySample);
+            PosY += 300;
+        }
+
+        // Set blend mode to Masked when opacity mask is provided
+        Material->BlendMode = BLEND_Masked;
+    }
+
+    // Optional explicit blend mode override
+    FString BlendModeStr;
+    if (Params->TryGetStringField(TEXT("blend_mode"), BlendModeStr))
+    {
+        if (BlendModeStr == TEXT("Opaque")) Material->BlendMode = BLEND_Opaque;
+        else if (BlendModeStr == TEXT("Masked")) Material->BlendMode = BLEND_Masked;
+        else if (BlendModeStr == TEXT("Translucent")) Material->BlendMode = BLEND_Translucent;
+        else if (BlendModeStr == TEXT("Additive")) Material->BlendMode = BLEND_Additive;
+    }
+
+    // Set two-sided rendering (fixes flipped normals showing as black)
+    bool bTwoSided = false;
+    if (Params->TryGetBoolField(TEXT("two_sided"), bTwoSided) && bTwoSided)
+    {
+        Material->TwoSided = true;
+    }
+
+    // Finalize material
+    Material->PostEditChange();
+    Package->MarkPackageDirty();
+    IAssetRegistry::Get()->AssetCreated(Material);
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), MaterialName);
+    Result->SetStringField(TEXT("path"), FullPath);
+    Result->SetNumberField(TEXT("expression_count"), Material->GetExpressionCollection().Expressions.Num());
+    Result->SetStringField(TEXT("message"), TEXT("PBR material created successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMaterial(const TSharedPtr<FJsonObject>& Params)
+{
+    FString MaterialName;
+    if (!Params->TryGetStringField(TEXT("name"), MaterialName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    FString MaterialPath = TEXT("/Game/Materials/");
+    Params->TryGetStringField(TEXT("path"), MaterialPath);
+    if (!MaterialPath.EndsWith(TEXT("/"))) MaterialPath += TEXT("/");
+
+    // Texture paths
+    FString RockD, RockN, MudD, MudN, GrassD, GrassNPath, MacroTexPath;
+    Params->TryGetStringField(TEXT("rock_d"), RockD);
+    Params->TryGetStringField(TEXT("rock_n"), RockN);
+    Params->TryGetStringField(TEXT("mud_d"), MudD);
+    Params->TryGetStringField(TEXT("mud_n"), MudN);
+    Params->TryGetStringField(TEXT("grass_d"), GrassD);
+    Params->TryGetStringField(TEXT("grass_n"), GrassNPath);
+    Params->TryGetStringField(TEXT("macro_texture"), MacroTexPath);
+    if (MacroTexPath.IsEmpty()) MacroTexPath = MudD; // fallback
+
+    // Scalar parameters with defaults
+    double GroundUVScale = 0.002;
+    double MacroScale1Val = 0.3;
+    double MacroScale2Val = 2.5;
+    double MacroAmountVal = 0.4;
+    double SlopeSharpness = 3.0;
+    double GrassAmount = 0.5;
+    double RoughnessVal = 0.85;
+    Params->TryGetNumberField(TEXT("ground_uv_scale"), GroundUVScale);
+    Params->TryGetNumberField(TEXT("macro_scale_1"), MacroScale1Val);
+    Params->TryGetNumberField(TEXT("macro_scale_2"), MacroScale2Val);
+    Params->TryGetNumberField(TEXT("macro_amount"), MacroAmountVal);
+    Params->TryGetNumberField(TEXT("slope_sharpness"), SlopeSharpness);
+    Params->TryGetNumberField(TEXT("grass_amount"), GrassAmount);
+    Params->TryGetNumberField(TEXT("roughness"), RoughnessVal);
+
+    // Create material package
+    FString FullPath = MaterialPath + MaterialName;
+    if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+    {
+        UEditorAssetLibrary::DeleteAsset(FullPath);
+    }
+
+    UPackage* Package = CreatePackage(*FullPath);
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package"));
+    }
+
+    UMaterialFactoryNew* MaterialFactory = NewObject<UMaterialFactoryNew>();
+    UMaterial* Mat = Cast<UMaterial>(MaterialFactory->FactoryCreateNew(
+        UMaterial::StaticClass(), Package, FName(*MaterialName),
+        RF_Standalone | RF_Public, nullptr, GWarn));
+
+    if (!Mat)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material"));
+    }
+
+    Mat->PreEditChange(nullptr);
+
+    auto LoadTex = [](const FString& Path) -> UTexture* {
+        if (Path.IsEmpty()) return nullptr;
+        return Cast<UTexture>(UEditorAssetLibrary::LoadAsset(Path));
+    };
+
+    // Layout constants: 300px horizontal, 150px vertical spacing
+    // Flow: left (-1800) to right (900), material output at right
+    auto AddExpr = [Mat](UMaterialExpression* Expr, float X, float Y) {
+        Expr->MaterialExpressionEditorX = X;
+        Expr->MaterialExpressionEditorY = Y;
+        Mat->GetExpressionCollection().AddExpression(Expr);
+        return Expr;
+    };
+
+    // =================================================================
+    // COLUMN 1 (-1800): WorldPosition
+    // =================================================================
+    auto* WorldPos = NewObject<UMaterialExpressionWorldPosition>(Mat);
+    AddExpr(WorldPos, -1800, 0);
+
+    // =================================================================
+    // COLUMN 2 (-1500): ComponentMask + UV scale constants
+    // =================================================================
+    auto* MaskRG = NewObject<UMaterialExpressionComponentMask>(Mat);
+    MaskRG->R = true; MaskRG->G = true; MaskRG->B = false; MaskRG->A = false;
+    MaskRG->Input.Connect(0, WorldPos);
+    AddExpr(MaskRG, -1500, 0);
+
+    auto* GroundScaleConst = NewObject<UMaterialExpressionConstant>(Mat);
+    GroundScaleConst->R = GroundUVScale;
+    AddExpr(GroundScaleConst, -1500, -150);
+
+    // =================================================================
+    // COLUMN 3 (-1200): UV Multiply + Macro scale constants
+    // =================================================================
+    auto* GroundUV = NewObject<UMaterialExpressionMultiply>(Mat);
+    GroundUV->A.Connect(0, MaskRG);
+    GroundUV->B.Connect(0, GroundScaleConst);
+    AddExpr(GroundUV, -1200, 0);
+
+    auto* MacroScaleC1 = NewObject<UMaterialExpressionConstant>(Mat);
+    MacroScaleC1->R = MacroScale1Val;
+    AddExpr(MacroScaleC1, -1200, 700);
+
+    auto* MacroScaleC2 = NewObject<UMaterialExpressionConstant>(Mat);
+    MacroScaleC2->R = MacroScale2Val;
+    AddExpr(MacroScaleC2, -1200, 850);
+
+    // =================================================================
+    // COLUMN 4 (-900): Macro UV multiplies
+    // =================================================================
+    auto* MacroUV1 = NewObject<UMaterialExpressionMultiply>(Mat);
+    MacroUV1->A.Connect(0, GroundUV);
+    MacroUV1->B.Connect(0, MacroScaleC1);
+    AddExpr(MacroUV1, -900, 700);
+
+    auto* MacroUV2 = NewObject<UMaterialExpressionMultiply>(Mat);
+    MacroUV2->A.Connect(0, GroundUV);
+    MacroUV2->B.Connect(0, MacroScaleC2);
+    AddExpr(MacroUV2, -900, 850);
+
+    // =================================================================
+    // COLUMN 5 (-600): Texture Samples (ground + macro)
+    // =================================================================
+    auto CreateTexSample = [&](UTexture* Tex, EMaterialSamplerType SamplerType,
+                               UMaterialExpression* UV, float X, float Y) -> UMaterialExpressionTextureSample* {
+        if (!Tex) return nullptr;
+        auto* S = NewObject<UMaterialExpressionTextureSample>(Mat);
+        S->Texture = Tex;
+        S->SamplerType = SamplerType;
+        S->Coordinates.Connect(0, UV);
+        AddExpr(S, X, Y);
+        return S;
+    };
+
+    // Ground textures (all share GroundUV)
+    auto* RockDSample  = CreateTexSample(LoadTex(RockD),     SAMPLERTYPE_Color,  GroundUV, -600, -400);
+    auto* RockNSample  = CreateTexSample(LoadTex(RockN),     SAMPLERTYPE_Normal, GroundUV, -600, -250);
+    auto* MudDSample   = CreateTexSample(LoadTex(MudD),      SAMPLERTYPE_Color,  GroundUV, -600, -100);
+    auto* MudNSample   = CreateTexSample(LoadTex(MudN),      SAMPLERTYPE_Normal, GroundUV, -600, 50);
+    auto* GrassDSample = CreateTexSample(LoadTex(GrassD),    SAMPLERTYPE_Color,  GroundUV, -600, 200);
+    auto* GrassNSample = CreateTexSample(LoadTex(GrassNPath),SAMPLERTYPE_Normal, GroundUV, -600, 350);
+
+    // Macro variation samples (each at different UV scale)
+    UTexture* MacroTex = LoadTex(MacroTexPath);
+    auto* MacroSample1 = CreateTexSample(MacroTex, SAMPLERTYPE_Color, MacroUV1, -600, 700);
+    auto* MacroSample2 = CreateTexSample(MacroTex, SAMPLERTYPE_Color, MacroUV2, -600, 850);
+
+    // =================================================================
+    // COLUMN 6 (-300): Macro blend + Slope detection
+    // =================================================================
+
+    // Macro variation: sample1 * sample2 -> raw macro mask
+    UMaterialExpressionMultiply* MacroRaw = nullptr;
+    if (MacroSample1 && MacroSample2)
+    {
+        MacroRaw = NewObject<UMaterialExpressionMultiply>(Mat);
+        MacroRaw->A.Connect(0, MacroSample1);
+        MacroRaw->B.Connect(0, MacroSample2);
+        AddExpr(MacroRaw, -300, 770);
+    }
+
+    // Macro amount parameter + Lerp(1, MacroRaw, amount) for controllable intensity
+    UMaterialExpressionLinearInterpolate* MacroFinal = nullptr;
+    if (MacroRaw)
+    {
+        auto* MacroParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        MacroParam->ParameterName = FName(TEXT("MacroVariation"));
+        MacroParam->DefaultValue = MacroAmountVal;
+        AddExpr(MacroParam, -300, 1000);
+
+        auto* OneConst = NewObject<UMaterialExpressionConstant>(Mat);
+        OneConst->R = 1.0f;
+        AddExpr(OneConst, -300, 1100);
+
+        MacroFinal = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        MacroFinal->A.Connect(0, OneConst);      // no effect when amount=0
+        MacroFinal->B.Connect(0, MacroRaw);       // full macro when amount=1
+        MacroFinal->Alpha.Connect(0, MacroParam);
+        AddExpr(MacroFinal, 0, 900);
+    }
+
+    // Slope detection: VertexNormalWS.Z -> Abs -> Power(sharpness)
+    auto* VNormal = NewObject<UMaterialExpressionVertexNormalWS>(Mat);
+    AddExpr(VNormal, -300, -700);
+
+    auto* MaskZ = NewObject<UMaterialExpressionComponentMask>(Mat);
+    MaskZ->R = false; MaskZ->G = false; MaskZ->B = true; MaskZ->A = false;
+    MaskZ->Input.Connect(0, VNormal);
+    AddExpr(MaskZ, 0, -700);
+
+    auto* AbsNode = NewObject<UMaterialExpressionAbs>(Mat);
+    AbsNode->Input.Connect(0, MaskZ);
+    AddExpr(AbsNode, 0, -550);
+
+    auto* SlopeParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    SlopeParam->ParameterName = FName(TEXT("SlopeSharpness"));
+    SlopeParam->DefaultValue = SlopeSharpness;
+    AddExpr(SlopeParam, 0, -850);
+
+    auto* SlopePow = NewObject<UMaterialExpressionPower>(Mat);
+    SlopePow->Base.Connect(0, AbsNode);
+    SlopePow->Exponent.Connect(0, SlopeParam);
+    AddExpr(SlopePow, 300, -700);
+
+    // Grass mask from MacroSample1 R channel (reuse macro sample as noise source)
+    UMaterialExpressionComponentMask* GrassNoiseR = nullptr;
+    UMaterialExpressionScalarParameter* GrassParam = nullptr;
+    UMaterialExpressionMultiply* GrassMask = nullptr;
+    if (MacroSample1)
+    {
+        GrassNoiseR = NewObject<UMaterialExpressionComponentMask>(Mat);
+        GrassNoiseR->R = true; GrassNoiseR->G = false; GrassNoiseR->B = false; GrassNoiseR->A = false;
+        GrassNoiseR->Input.Connect(0, MacroSample1);
+        AddExpr(GrassNoiseR, -300, 500);
+
+        GrassParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        GrassParam->ParameterName = FName(TEXT("GrassAmount"));
+        GrassParam->DefaultValue = GrassAmount;
+        AddExpr(GrassParam, -300, 600);
+
+        GrassMask = NewObject<UMaterialExpressionMultiply>(Mat);
+        GrassMask->A.Connect(0, GrassNoiseR);
+        GrassMask->B.Connect(0, GrassParam);
+        AddExpr(GrassMask, 0, 500);
+    }
+
+    // =================================================================
+    // COLUMN 7 (0-300): BaseColor blend chain
+    // =================================================================
+
+    UMaterialExpression* FinalBC = nullptr;
+
+    // Slope blend: Lerp(Rock, Mud, slope_mask) — rock on steep, mud on flat
+    if (RockDSample && MudDSample)
+    {
+        auto* SlopeBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        SlopeBC->A.Connect(0, RockDSample);
+        SlopeBC->B.Connect(0, MudDSample);
+        SlopeBC->Alpha.Connect(0, SlopePow);
+        AddExpr(SlopeBC, 0, -200);
+        FinalBC = SlopeBC;
+    }
+    else if (RockDSample) { FinalBC = RockDSample; }
+    else if (MudDSample) { FinalBC = MudDSample; }
+
+    // Grass overlay
+    if (GrassDSample && GrassMask && FinalBC)
+    {
+        auto* GrassBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        GrassBC->A.Connect(0, FinalBC);
+        GrassBC->B.Connect(0, GrassDSample);
+        GrassBC->Alpha.Connect(0, GrassMask);
+        AddExpr(GrassBC, 300, -200);
+        FinalBC = GrassBC;
+    }
+
+    // Apply macro variation to BaseColor
+    if (MacroFinal && FinalBC)
+    {
+        auto* MacroApply = NewObject<UMaterialExpressionMultiply>(Mat);
+        MacroApply->A.Connect(0, FinalBC);
+        MacroApply->B.Connect(0, MacroFinal);
+        AddExpr(MacroApply, 600, -200);
+        FinalBC = MacroApply;
+    }
+
+    if (FinalBC)
+    {
+        Mat->GetEditorOnlyData()->BaseColor.Connect(0, FinalBC);
+    }
+
+    // =================================================================
+    // COLUMN 7-8 (0-600): Normal blend chain (mirrors BaseColor)
+    // =================================================================
+
+    UMaterialExpression* FinalN = nullptr;
+
+    if (RockNSample && MudNSample)
+    {
+        auto* SlopeN = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        SlopeN->A.Connect(0, RockNSample);
+        SlopeN->B.Connect(0, MudNSample);
+        SlopeN->Alpha.Connect(0, SlopePow);
+        AddExpr(SlopeN, 0, 1400);
+        FinalN = SlopeN;
+    }
+    else if (RockNSample) { FinalN = RockNSample; }
+    else if (MudNSample) { FinalN = MudNSample; }
+
+    if (GrassNSample && GrassMask && FinalN)
+    {
+        auto* GrassNLerp = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        GrassNLerp->A.Connect(0, FinalN);
+        GrassNLerp->B.Connect(0, GrassNSample);
+        GrassNLerp->Alpha.Connect(0, GrassMask); // reuse same mask (single node, multiple outputs OK)
+        AddExpr(GrassNLerp, 300, 1400);
+        FinalN = GrassNLerp;
+    }
+
+    if (FinalN)
+    {
+        Mat->GetEditorOnlyData()->Normal.Connect(0, FinalN);
+    }
+
+    // =================================================================
+    // COLUMN 9 (900): Roughness & Metallic outputs
+    // =================================================================
+
+    auto* RoughParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+    RoughParam->ParameterName = FName(TEXT("Roughness"));
+    RoughParam->DefaultValue = RoughnessVal;
+    AddExpr(RoughParam, 900, 200);
+    Mat->GetEditorOnlyData()->Roughness.Connect(0, RoughParam);
+
+    auto* MetalConst = NewObject<UMaterialExpressionConstant>(Mat);
+    MetalConst->R = 0.0f;
+    AddExpr(MetalConst, 900, 400);
+    Mat->GetEditorOnlyData()->Metallic.Connect(0, MetalConst);
+
+    // =========================================================
+    // FINALIZE
+    // =========================================================
+
+    Mat->PostEditChange();
+    Package->MarkPackageDirty();
+    IAssetRegistry::Get()->AssetCreated(Mat);
+
+    // Save the package to disk immediately
+    FString PackageFilename;
+    if (FPackageName::TryConvertLongPackageNameToFilename(FullPath, PackageFilename, FPackageName::GetAssetPackageExtension()))
+    {
+        FSavePackageArgs SaveArgs;
+        SaveArgs.TopLevelFlags = RF_Standalone;
+        UPackage::SavePackage(Package, Mat, *PackageFilename, SaveArgs);
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), MaterialName);
+    Result->SetStringField(TEXT("path"), FullPath);
+    Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material created atomically with macro variation anti-tiling, slope blend, grass overlay, normals, roughness, metallic"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportMesh(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString SourcePath;
+    if (!Params->TryGetStringField(TEXT("source_path"), SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_path' parameter"));
+    }
+
+    // Check if source file exists
+    if (!FPaths::FileExists(SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file not found: %s"), *SourcePath));
+    }
+
+    // Get optional parameters
+    FString AssetName;
+    if (!Params->TryGetStringField(TEXT("asset_name"), AssetName))
+    {
+        AssetName = FPaths::GetBaseFilename(SourcePath);
+    }
+
+    FString DestinationPath = TEXT("/Game/Meshes/");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    if (!DestinationPath.EndsWith(TEXT("/")))
+    {
+        DestinationPath += TEXT("/");
+    }
+
+    bool bImportMaterials = false;
+    Params->TryGetBoolField(TEXT("import_materials"), bImportMaterials);
+
+    bool bImportTextures = false;
+    Params->TryGetBoolField(TEXT("import_textures"), bImportTextures);
+
+    bool bGenerateCollision = true;
+    Params->TryGetBoolField(TEXT("generate_collision"), bGenerateCollision);
+
+    bool bEnableNanite = true;
+    Params->TryGetBoolField(TEXT("enable_nanite"), bEnableNanite);
+
+    bool bCombineMeshes = true;
+    Params->TryGetBoolField(TEXT("combine_meshes"), bCombineMeshes);
+
+    // Create the import task
+    UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
+    ImportTask->AddToRoot();
+    ImportTask->Filename = SourcePath;
+    ImportTask->DestinationPath = DestinationPath;
+    ImportTask->DestinationName = AssetName;
+    ImportTask->bReplaceExisting = true;
+    ImportTask->bAutomated = true;
+    ImportTask->bSave = false;
+
+    // Configure FBX import settings
+    UFbxImportUI* FbxUI = NewObject<UFbxImportUI>();
+    FbxUI->bImportMesh = true;
+    FbxUI->bImportAnimations = false;
+    FbxUI->bImportMaterials = bImportMaterials;
+    FbxUI->bImportTextures = bImportTextures;
+    FbxUI->bOverrideFullName = true;
+    FbxUI->MeshTypeToImport = FBXIT_StaticMesh;
+
+    // Configure static mesh import data
+    FbxUI->StaticMeshImportData->bAutoGenerateCollision = bGenerateCollision;
+    FbxUI->StaticMeshImportData->bCombineMeshes = bCombineMeshes;
+    FbxUI->StaticMeshImportData->NormalImportMethod = FBXNIM_ImportNormalsAndTangents;
+    FbxUI->StaticMeshImportData->bComputeWeightedNormals = true;
+
+    ImportTask->Options = FbxUI;
+
+    // Execute import
+    FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+    TArray<UAssetImportTask*> Tasks;
+    Tasks.Add(ImportTask);
+    AssetToolsModule.Get().ImportAssetTasks(Tasks);
+
+    // Check results
+    TArray<UObject*> ImportedObjects = ImportTask->GetObjects();
+
+    ImportTask->RemoveFromRoot();
+
+    if (ImportedObjects.Num() == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to import mesh from: %s"), *SourcePath));
+    }
+
+    UObject* ImportedObject = ImportedObjects[0];
+    UStaticMesh* StaticMesh = Cast<UStaticMesh>(ImportedObject);
+
+    // Enable Nanite if requested
+    if (StaticMesh && bEnableNanite)
+    {
+        FMeshNaniteSettings NaniteSettings = StaticMesh->GetNaniteSettings();
+        NaniteSettings.bEnabled = true;
+        StaticMesh->SetNaniteSettings(NaniteSettings);
+        StaticMesh->PostEditChange();
+    }
+
+    // CRITICAL: Save the imported mesh package to disk immediately.
+    // Prevents unsaved packages from accumulating in memory and
+    // causing GC pressure that can corrupt landscape streaming proxies.
+    if (ImportedObject)
+    {
+        UPackage* MeshPackage = ImportedObject->GetOutermost();
+        if (MeshPackage)
+        {
+            FString MeshPackagePath = DestinationPath + AssetName;
+            FString MeshPackageFilename = FPackageName::LongPackageNameToFilename(MeshPackagePath, FPackageName::GetAssetPackageExtension());
+            FSavePackageArgs SaveArgs;
+            SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+            UPackage::SavePackage(MeshPackage, ImportedObject, *MeshPackageFilename, SaveArgs);
+        }
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), AssetName);
+    Result->SetStringField(TEXT("path"), DestinationPath + AssetName);
+    Result->SetStringField(TEXT("source"), SourcePath);
+    Result->SetStringField(TEXT("class"), ImportedObject->GetClass()->GetName());
+
+    if (StaticMesh)
+    {
+        // Get mesh stats
+        if (StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0)
+        {
+            const FStaticMeshLODResources& LOD0 = StaticMesh->GetRenderData()->LODResources[0];
+            Result->SetNumberField(TEXT("vertex_count"), LOD0.GetNumVertices());
+            Result->SetNumberField(TEXT("triangle_count"), LOD0.GetNumTriangles());
+        }
+
+        // Get material slots
+        TArray<TSharedPtr<FJsonValue>> MaterialSlots;
+        for (const FStaticMaterial& Mat : StaticMesh->GetStaticMaterials())
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            SlotObj->SetStringField(TEXT("name"), Mat.MaterialSlotName.ToString());
+            SlotObj->SetStringField(TEXT("material"), Mat.MaterialInterface ? Mat.MaterialInterface->GetPathName() : TEXT("None"));
+            MaterialSlots.Add(MakeShared<FJsonValueObject>(SlotObj));
+        }
+        Result->SetArrayField(TEXT("material_slots"), MaterialSlots);
+
+        // Bounding box
+        FBox BoundingBox = StaticMesh->GetBoundingBox();
+        TSharedPtr<FJsonObject> BoundsObj = MakeShared<FJsonObject>();
+        BoundsObj->SetNumberField(TEXT("min_x"), BoundingBox.Min.X);
+        BoundsObj->SetNumberField(TEXT("min_y"), BoundingBox.Min.Y);
+        BoundsObj->SetNumberField(TEXT("min_z"), BoundingBox.Min.Z);
+        BoundsObj->SetNumberField(TEXT("max_x"), BoundingBox.Max.X);
+        BoundsObj->SetNumberField(TEXT("max_y"), BoundingBox.Max.Y);
+        BoundsObj->SetNumberField(TEXT("max_z"), BoundingBox.Max.Z);
+        Result->SetObjectField(TEXT("bounds"), BoundsObj);
+
+        Result->SetBoolField(TEXT("nanite_enabled"), StaticMesh->IsNaniteEnabled());
+    }
+
+    Result->SetStringField(TEXT("message"), TEXT("Mesh imported successfully"));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportSkeletalMesh(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString SourcePath;
+    if (!Params->TryGetStringField(TEXT("source_path"), SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_path' parameter"));
+    }
+
+    if (!FPaths::FileExists(SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file not found: %s"), *SourcePath));
+    }
+
+    // Check file size to detect corrupt FBX files (known issue: some are 94 bytes with JSON text)
+    int64 FileSize = IFileManager::Get().FileSize(*SourcePath);
+    if (FileSize < 1024)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file too small (%lld bytes), likely corrupt: %s"), FileSize, *SourcePath));
+    }
+
+    // Get optional parameters
+    FString AssetName;
+    if (!Params->TryGetStringField(TEXT("asset_name"), AssetName))
+    {
+        AssetName = FPaths::GetBaseFilename(SourcePath);
+    }
+
+    FString DestinationPath = TEXT("/Game/Characters/");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    if (!DestinationPath.EndsWith(TEXT("/")))
+    {
+        DestinationPath += TEXT("/");
+    }
+
+    bool bImportAnimations = false;
+    Params->TryGetBoolField(TEXT("import_animations"), bImportAnimations);
+
+    bool bCreatePhysicsAsset = true;
+    Params->TryGetBoolField(TEXT("create_physics_asset"), bCreatePhysicsAsset);
+
+    bool bImportMorphTargets = true;
+    Params->TryGetBoolField(TEXT("import_morph_targets"), bImportMorphTargets);
+
+    bool bImportMaterials = false;
+    Params->TryGetBoolField(TEXT("import_materials"), bImportMaterials);
+
+    bool bImportTextures = false;
+    Params->TryGetBoolField(TEXT("import_textures"), bImportTextures);
+
+    // Optional: reuse existing skeleton
+    FString SkeletonPath;
+    Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath);
+
+    // Create the import task
+    UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
+    ImportTask->AddToRoot();
+    ImportTask->Filename = SourcePath;
+    ImportTask->DestinationPath = DestinationPath;
+    ImportTask->DestinationName = AssetName;
+    ImportTask->bReplaceExisting = true;
+    ImportTask->bAutomated = true;
+    ImportTask->bSave = false;
+
+    // Configure FBX import settings for SKELETAL mesh
+    UFbxImportUI* FbxUI = NewObject<UFbxImportUI>();
+    FbxUI->bImportMesh = true;
+    FbxUI->bImportAsSkeletal = true;
+    FbxUI->MeshTypeToImport = FBXIT_SkeletalMesh;
+    FbxUI->bImportAnimations = bImportAnimations;
+    FbxUI->bImportMaterials = bImportMaterials;
+    FbxUI->bImportTextures = bImportTextures;
+    FbxUI->bOverrideFullName = true;
+    FbxUI->bCreatePhysicsAsset = bCreatePhysicsAsset;
+
+    // Configure skeletal mesh import data
+    FbxUI->SkeletalMeshImportData->bImportMorphTargets = bImportMorphTargets;
+    FbxUI->SkeletalMeshImportData->NormalImportMethod = FBXNIM_ImportNormalsAndTangents;
+    FbxUI->SkeletalMeshImportData->bComputeWeightedNormals = true;
+
+    // Reuse existing skeleton if specified
+    if (!SkeletonPath.IsEmpty())
+    {
+        USkeleton* ExistingSkeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+        if (ExistingSkeleton)
+        {
+            FbxUI->Skeleton = ExistingSkeleton;
+            UE_LOG(LogTemp, Log, TEXT("import_skeletal_mesh: Reusing existing skeleton: %s"), *SkeletonPath);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("import_skeletal_mesh: Could not load skeleton at '%s', will create new"), *SkeletonPath);
+        }
+    }
+
+    ImportTask->Options = FbxUI;
+
+    // Execute import
+    FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+    TArray<UAssetImportTask*> Tasks;
+    Tasks.Add(ImportTask);
+    AssetToolsModule.Get().ImportAssetTasks(Tasks);
+
+    // Collect all imported objects
+    TArray<UObject*> ImportedObjects = ImportTask->GetObjects();
+    ImportTask->RemoveFromRoot();
+
+    if (ImportedObjects.Num() == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to import skeletal mesh from: %s"), *SourcePath));
+    }
+
+    // Find the skeletal mesh and skeleton among imported objects
+    USkeletalMesh* SkeletalMesh = nullptr;
+    USkeleton* Skeleton = nullptr;
+    TArray<UAnimSequence*> ImportedAnims;
+
+    for (UObject* Obj : ImportedObjects)
+    {
+        if (USkeletalMesh* SK = Cast<USkeletalMesh>(Obj))
+        {
+            SkeletalMesh = SK;
+            Skeleton = SK->GetSkeleton();
+        }
+        else if (UAnimSequence* Anim = Cast<UAnimSequence>(Obj))
+        {
+            ImportedAnims.Add(Anim);
+        }
+    }
+
+    // Save all imported packages immediately to prevent memory accumulation
+    for (UObject* Obj : ImportedObjects)
+    {
+        if (Obj)
+        {
+            UPackage* ObjPackage = Obj->GetOutermost();
+            if (ObjPackage)
+            {
+                FString ObjPackagePath = ObjPackage->GetName();
+                FString ObjPackageFilename = FPackageName::LongPackageNameToFilename(ObjPackagePath, FPackageName::GetAssetPackageExtension());
+                FSavePackageArgs SaveArgs;
+                SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+                UPackage::SavePackage(ObjPackage, Obj, *ObjPackageFilename, SaveArgs);
+            }
+        }
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), AssetName);
+    Result->SetStringField(TEXT("path"), DestinationPath + AssetName);
+    Result->SetStringField(TEXT("source"), SourcePath);
+    Result->SetNumberField(TEXT("imported_objects_count"), ImportedObjects.Num());
+
+    if (SkeletalMesh)
+    {
+        Result->SetStringField(TEXT("class"), TEXT("SkeletalMesh"));
+        Result->SetStringField(TEXT("skeletal_mesh_path"), SkeletalMesh->GetPathName());
+
+        if (Skeleton)
+        {
+            Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+            Result->SetNumberField(TEXT("bone_count"), Skeleton->GetReferenceSkeleton().GetNum());
+
+            // List bone names
+            TArray<TSharedPtr<FJsonValue>> BoneNames;
+            const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+            for (int32 i = 0; i < FMath::Min(RefSkeleton.GetNum(), 50); i++) // Cap at 50 to avoid huge responses
+            {
+                BoneNames.Add(MakeShared<FJsonValueString>(RefSkeleton.GetBoneName(i).ToString()));
+            }
+            Result->SetArrayField(TEXT("bone_names"), BoneNames);
+        }
+
+        // Material slots
+        TArray<TSharedPtr<FJsonValue>> MaterialSlots;
+        for (const FSkeletalMaterial& Mat : SkeletalMesh->GetMaterials())
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            SlotObj->SetStringField(TEXT("name"), Mat.MaterialSlotName.ToString());
+            SlotObj->SetStringField(TEXT("material"), Mat.MaterialInterface ? Mat.MaterialInterface->GetPathName() : TEXT("None"));
+            MaterialSlots.Add(MakeShared<FJsonValueObject>(SlotObj));
+        }
+        Result->SetArrayField(TEXT("material_slots"), MaterialSlots);
+
+        // Morph targets
+        TArray<TSharedPtr<FJsonValue>> MorphTargetNames;
+        for (UMorphTarget* MorphTarget : SkeletalMesh->GetMorphTargets())
+        {
+            if (MorphTarget)
+            {
+                MorphTargetNames.Add(MakeShared<FJsonValueString>(MorphTarget->GetName()));
+            }
+        }
+        Result->SetArrayField(TEXT("morph_targets"), MorphTargetNames);
+    }
+    else
+    {
+        Result->SetStringField(TEXT("class"), ImportedObjects[0]->GetClass()->GetName());
+    }
+
+    // Include imported animation info
+    if (ImportedAnims.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> AnimArray;
+        for (UAnimSequence* Anim : ImportedAnims)
+        {
+            TSharedPtr<FJsonObject> AnimObj = MakeShared<FJsonObject>();
+            AnimObj->SetStringField(TEXT("name"), Anim->GetName());
+            AnimObj->SetStringField(TEXT("path"), Anim->GetPathName());
+            AnimObj->SetNumberField(TEXT("duration"), Anim->GetPlayLength());
+            AnimObj->SetNumberField(TEXT("num_frames"), Anim->GetNumberOfSampledKeys());
+            AnimArray.Add(MakeShared<FJsonValueObject>(AnimObj));
+        }
+        Result->SetArrayField(TEXT("imported_animations"), AnimArray);
+    }
+
+    Result->SetStringField(TEXT("message"), TEXT("Skeletal mesh imported successfully"));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportAnimation(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString SourcePath;
+    if (!Params->TryGetStringField(TEXT("source_path"), SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_path' parameter"));
+    }
+
+    if (!FPaths::FileExists(SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file not found: %s"), *SourcePath));
+    }
+
+    // Skeleton is REQUIRED for animation-only import
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Missing 'skeleton_path' parameter. Animation import requires an existing skeleton. "
+                 "Import a skeletal mesh first to create one."));
+    }
+
+    USkeleton* TargetSkeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+    if (!TargetSkeleton)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Could not load skeleton at: %s"), *SkeletonPath));
+    }
+
+    // Get optional parameters
+    FString AssetName;
+    if (!Params->TryGetStringField(TEXT("animation_name"), AssetName))
+    {
+        AssetName = FPaths::GetBaseFilename(SourcePath);
+    }
+
+    FString DestinationPath = TEXT("/Game/Characters/Animations/");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    if (!DestinationPath.EndsWith(TEXT("/")))
+    {
+        DestinationPath += TEXT("/");
+    }
+
+    // Create the import task
+    UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
+    ImportTask->AddToRoot();
+    ImportTask->Filename = SourcePath;
+    ImportTask->DestinationPath = DestinationPath;
+    ImportTask->DestinationName = AssetName;
+    ImportTask->bReplaceExisting = true;
+    ImportTask->bAutomated = true;
+    ImportTask->bSave = false;
+
+    // Configure FBX import settings for ANIMATION-ONLY import
+    UFbxImportUI* FbxUI = NewObject<UFbxImportUI>();
+    FbxUI->bImportMesh = false;
+    FbxUI->bImportAnimations = true;
+    FbxUI->MeshTypeToImport = FBXIT_Animation;
+    FbxUI->bImportMaterials = false;
+    FbxUI->bImportTextures = false;
+    FbxUI->bOverrideFullName = true;
+    FbxUI->Skeleton = TargetSkeleton;
+
+    ImportTask->Options = FbxUI;
+
+    // Execute import
+    FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+    TArray<UAssetImportTask*> Tasks;
+    Tasks.Add(ImportTask);
+    AssetToolsModule.Get().ImportAssetTasks(Tasks);
+
+    // Collect results
+    TArray<UObject*> ImportedObjects = ImportTask->GetObjects();
+    ImportTask->RemoveFromRoot();
+
+    if (ImportedObjects.Num() == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to import animation from: %s. Ensure the FBX contains animation data compatible with the target skeleton."), *SourcePath));
+    }
+
+    // Save all imported animation packages
+    for (UObject* Obj : ImportedObjects)
+    {
+        if (Obj)
+        {
+            UPackage* ObjPackage = Obj->GetOutermost();
+            if (ObjPackage)
+            {
+                FString ObjPackagePath = ObjPackage->GetName();
+                FString ObjPackageFilename = FPackageName::LongPackageNameToFilename(ObjPackagePath, FPackageName::GetAssetPackageExtension());
+                FSavePackageArgs SaveArgs;
+                SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+                UPackage::SavePackage(ObjPackage, Obj, *ObjPackageFilename, SaveArgs);
+            }
+        }
+    }
+
+    // Build result - iterate all imported objects (may contain multiple AnimSequences)
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("source"), SourcePath);
+    Result->SetStringField(TEXT("skeleton_path"), SkeletonPath);
+    Result->SetNumberField(TEXT("imported_count"), ImportedObjects.Num());
+
+    TArray<TSharedPtr<FJsonValue>> AnimArray;
+    for (UObject* Obj : ImportedObjects)
+    {
+        UAnimSequence* Anim = Cast<UAnimSequence>(Obj);
+        if (Anim)
+        {
+            TSharedPtr<FJsonObject> AnimObj = MakeShared<FJsonObject>();
+            AnimObj->SetStringField(TEXT("name"), Anim->GetName());
+            AnimObj->SetStringField(TEXT("path"), Anim->GetPathName());
+            AnimObj->SetNumberField(TEXT("duration_seconds"), Anim->GetPlayLength());
+            AnimObj->SetNumberField(TEXT("num_frames"), Anim->GetNumberOfSampledKeys());
+            AnimObj->SetStringField(TEXT("rate_scale"), FString::SanitizeFloat(Anim->RateScale));
+            AnimArray.Add(MakeShared<FJsonValueObject>(AnimObj));
+        }
+    }
+    Result->SetArrayField(TEXT("animations"), AnimArray);
+
+    if (AnimArray.Num() == 0)
+    {
+        Result->SetStringField(TEXT("warning"), TEXT("Import succeeded but no AnimSequence assets were created. The FBX may contain only mesh data."));
+    }
+
+    Result->SetStringField(TEXT("message"), FString::Printf(TEXT("Imported %d animation(s) successfully"), AnimArray.Num()));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleListAssets(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Path = TEXT("/Game/");
+    Params->TryGetStringField(TEXT("path"), Path);
+
+    FString AssetType;
+    Params->TryGetStringField(TEXT("asset_type"), AssetType);
+
+    bool bRecursive = true;
+    Params->TryGetBoolField(TEXT("recursive"), bRecursive);
+
+    // Build asset filter
+    FARFilter Filter;
+    Filter.PackagePaths.Add(FName(*Path));
+    Filter.bRecursivePaths = bRecursive;
+
+    // Add class filter if specified
+    if (!AssetType.IsEmpty())
+    {
+        FTopLevelAssetPath ClassPath(TEXT("/Script/Engine"), *AssetType);
+        Filter.ClassPaths.Add(ClassPath);
+    }
+
+    // Query asset registry
+    IAssetRegistry& AssetRegistry = *IAssetRegistry::Get();
+    TArray<FAssetData> AssetDataList;
+    AssetRegistry.GetAssets(Filter, AssetDataList);
+
+    // Build result
+    TArray<TSharedPtr<FJsonValue>> AssetsArray;
+    for (const FAssetData& AssetData : AssetDataList)
+    {
+        TSharedPtr<FJsonObject> AssetObj = MakeShared<FJsonObject>();
+        AssetObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+        AssetObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+        AssetObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+        AssetObj->SetStringField(TEXT("package_path"), AssetData.PackagePath.ToString());
+        AssetsArray.Add(MakeShared<FJsonValueObject>(AssetObj));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("count"), AssetDataList.Num());
+    Result->SetArrayField(TEXT("assets"), AssetsArray);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleDoesAssetExist(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    bool bExists = UEditorAssetLibrary::DoesAssetExist(AssetPath);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetBoolField(TEXT("exists"), bExists);
+
+    if (bExists)
+    {
+        UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AssetPath);
+        if (LoadedAsset)
+        {
+            Result->SetStringField(TEXT("asset_class"), LoadedAsset->GetClass()->GetName());
+        }
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetAssetInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    if (!UEditorAssetLibrary::DoesAssetExist(AssetPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+    }
+
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    if (!LoadedAsset)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), LoadedAsset->GetName());
+    Result->SetStringField(TEXT("path"), AssetPath);
+    Result->SetStringField(TEXT("class"), LoadedAsset->GetClass()->GetName());
+
+    // Static Mesh specific info
+    UStaticMesh* StaticMesh = Cast<UStaticMesh>(LoadedAsset);
+    if (StaticMesh)
+    {
+        if (StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0)
+        {
+            const FStaticMeshLODResources& LOD0 = StaticMesh->GetRenderData()->LODResources[0];
+            Result->SetNumberField(TEXT("vertex_count"), LOD0.GetNumVertices());
+            Result->SetNumberField(TEXT("triangle_count"), LOD0.GetNumTriangles());
+        }
+
+        Result->SetNumberField(TEXT("lod_count"), StaticMesh->GetRenderData() ? StaticMesh->GetRenderData()->LODResources.Num() : 0);
+        Result->SetBoolField(TEXT("nanite_enabled"), StaticMesh->IsNaniteEnabled());
+
+        // Material slots
+        TArray<TSharedPtr<FJsonValue>> MaterialSlots;
+        for (const FStaticMaterial& Mat : StaticMesh->GetStaticMaterials())
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            SlotObj->SetStringField(TEXT("name"), Mat.MaterialSlotName.ToString());
+            SlotObj->SetStringField(TEXT("material"), Mat.MaterialInterface ? Mat.MaterialInterface->GetPathName() : TEXT("None"));
+            MaterialSlots.Add(MakeShared<FJsonValueObject>(SlotObj));
+        }
+        Result->SetArrayField(TEXT("material_slots"), MaterialSlots);
+
+        // Bounding box
+        FBox BoundingBox = StaticMesh->GetBoundingBox();
+        TSharedPtr<FJsonObject> BoundsObj = MakeShared<FJsonObject>();
+        BoundsObj->SetNumberField(TEXT("min_x"), BoundingBox.Min.X);
+        BoundsObj->SetNumberField(TEXT("min_y"), BoundingBox.Min.Y);
+        BoundsObj->SetNumberField(TEXT("min_z"), BoundingBox.Min.Z);
+        BoundsObj->SetNumberField(TEXT("max_x"), BoundingBox.Max.X);
+        BoundsObj->SetNumberField(TEXT("max_y"), BoundingBox.Max.Y);
+        BoundsObj->SetNumberField(TEXT("max_z"), BoundingBox.Max.Z);
+        Result->SetObjectField(TEXT("bounds"), BoundsObj);
+    }
+
+    // Texture specific info
+    UTexture2D* Texture = Cast<UTexture2D>(LoadedAsset);
+    if (Texture)
+    {
+        Result->SetNumberField(TEXT("width"), Texture->GetSizeX());
+        Result->SetNumberField(TEXT("height"), Texture->GetSizeY());
+        Result->SetStringField(TEXT("pixel_format"), GetPixelFormatString(Texture->GetPixelFormat()));
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetHeightAtLocation(const TSharedPtr<FJsonObject>& Params)
+{
+    double X = 0.0, Y = 0.0;
+    if (!Params->TryGetNumberField(TEXT("x"), X) || !Params->TryGetNumberField(TEXT("y"), Y))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'x' and/or 'y' parameters"));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    FVector Start(X, Y, 100000.0);
+    FVector End(X, Y, -100000.0);
+
+    FCollisionQueryParams TraceParams(FName(TEXT("MCPHeightQuery")), true);
+    TraceParams.bReturnPhysicalMaterial = false;
+
+    FHitResult HitResult;
+    bool bHit = World->LineTraceSingleByChannel(
+        HitResult,
+        Start,
+        End,
+        ECC_WorldStatic,
+        TraceParams
+    );
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+
+    if (bHit)
+    {
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetNumberField(TEXT("x"), HitResult.Location.X);
+        Result->SetNumberField(TEXT("y"), HitResult.Location.Y);
+        Result->SetNumberField(TEXT("z"), HitResult.Location.Z);
+        Result->SetStringField(TEXT("hit_actor"), HitResult.GetActor() ? HitResult.GetActor()->GetName() : TEXT("None"));
+        Result->SetNumberField(TEXT("normal_x"), HitResult.ImpactNormal.X);
+        Result->SetNumberField(TEXT("normal_y"), HitResult.ImpactNormal.Y);
+        Result->SetNumberField(TEXT("normal_z"), HitResult.ImpactNormal.Z);
+    }
+    else
+    {
+        Result->SetBoolField(TEXT("success"), false);
+        Result->SetStringField(TEXT("error"), TEXT("No surface found at location"));
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSnapActorToGround(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Get actor bounds for Z offset
+    FVector Origin, BoxExtent;
+    TargetActor->GetActorBounds(false, Origin, BoxExtent);
+
+    FVector ActorLocation = TargetActor->GetActorLocation();
+
+    // Trace from high above the actor straight down
+    FVector Start(ActorLocation.X, ActorLocation.Y, 100000.0);
+    FVector End(ActorLocation.X, ActorLocation.Y, -100000.0);
+
+    FCollisionQueryParams TraceParams(FName(TEXT("MCPSnapToGround")), true);
+    TraceParams.AddIgnoredActor(TargetActor);
+
+    FHitResult HitResult;
+    bool bHit = World->LineTraceSingleByChannel(
+        HitResult,
+        Start,
+        End,
+        ECC_WorldStatic,
+        TraceParams
+    );
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+
+    if (bHit)
+    {
+        // Place actor so its bottom sits on the surface
+        FVector NewLocation = ActorLocation;
+        NewLocation.Z = HitResult.Location.Z;
+
+        TargetActor->SetActorLocation(NewLocation);
+
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("actor"), ActorName);
+        Result->SetNumberField(TEXT("old_z"), ActorLocation.Z);
+        Result->SetNumberField(TEXT("new_z"), NewLocation.Z);
+        Result->SetNumberField(TEXT("surface_z"), HitResult.Location.Z);
+        Result->SetStringField(TEXT("hit_actor"), HitResult.GetActor() ? HitResult.GetActor()->GetName() : TEXT("None"));
+    }
+    else
+    {
+        Result->SetBoolField(TEXT("success"), false);
+        Result->SetStringField(TEXT("error"), TEXT("No ground surface found below actor"));
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterMeshesOnLandscape(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    // Parse center point [X, Y]
+    if (!Params->HasField(TEXT("center")))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'center' parameter [x, y]"));
+    }
+    const TArray<TSharedPtr<FJsonValue>>& CenterArr = Params->GetArrayField(TEXT("center"));
+    if (CenterArr.Num() < 2)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'center' must have at least 2 elements [x, y]"));
+    }
+    double CenterX = CenterArr[0]->AsNumber();
+    double CenterY = CenterArr[1]->AsNumber();
+
+    // Parse items array
+    if (!Params->HasField(TEXT("items")))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'items' array"));
+    }
+    const TArray<TSharedPtr<FJsonValue>>& Items = Params->GetArrayField(TEXT("items"));
+
+    // Optional: delete existing actors with same names first
+    bool bDeleteExisting = false;
+    Params->TryGetBoolField(TEXT("delete_existing"), bDeleteExisting);
+
+    // Randomization parameters for organic scatter
+    double RandomOffset = 0.0;   // Random XY jitter range (± units)
+    Params->TryGetNumberField(TEXT("random_offset"), RandomOffset);
+    bool bRandomYaw = false;     // Full 360° random yaw per item
+    Params->TryGetBoolField(TEXT("random_yaw"), bRandomYaw);
+    double RandomScaleVariance = 0.0;  // ± fraction of scale (e.g. 0.2 = ±20%)
+    Params->TryGetNumberField(TEXT("random_scale_variance"), RandomScaleVariance);
+
+    TArray<TSharedPtr<FJsonValue>> ResultActors;
+    TArray<FString> Errors;
+
+    FCollisionQueryParams TraceParams(FName(TEXT("MCPScatterTrace")), true);
+    TraceParams.bReturnPhysicalMaterial = false;
+
+    for (const TSharedPtr<FJsonValue>& ItemVal : Items)
+    {
+        TSharedPtr<FJsonObject> Item = ItemVal->AsObject();
+        if (!Item.IsValid()) continue;
+
+        FString Name;
+        if (!Item->TryGetStringField(TEXT("name"), Name))
+        {
+            Errors.Add(TEXT("Item missing 'name' field, skipped"));
+            continue;
+        }
+
+        FString MeshPath;
+        if (!Item->TryGetStringField(TEXT("static_mesh"), MeshPath))
+        {
+            Errors.Add(FString::Printf(TEXT("%s: missing 'static_mesh', skipped"), *Name));
+            continue;
+        }
+
+        // Parse offset [dx, dy] in Unreal units
+        double OffsetX = 0.0, OffsetY = 0.0;
+        if (Item->HasField(TEXT("offset")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& OffArr = Item->GetArrayField(TEXT("offset"));
+            if (OffArr.Num() >= 2)
+            {
+                OffsetX = OffArr[0]->AsNumber();
+                OffsetY = OffArr[1]->AsNumber();
+            }
+        }
+
+        // Apply random offset jitter
+        if (RandomOffset > 0.0)
+        {
+            OffsetX += FMath::FRandRange(-RandomOffset, RandomOffset);
+            OffsetY += FMath::FRandRange(-RandomOffset, RandomOffset);
+        }
+
+        // Parse rotation [Pitch, Yaw, Roll]
+        FRotator Rotation(0, 0, 0);
+        if (Item->HasField(TEXT("rotation")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& RotArr = Item->GetArrayField(TEXT("rotation"));
+            if (RotArr.Num() >= 3)
+            {
+                Rotation.Pitch = RotArr[0]->AsNumber();
+                Rotation.Yaw = RotArr[1]->AsNumber();
+                Rotation.Roll = RotArr[2]->AsNumber();
+            }
+        }
+
+        // Apply random yaw (full 360°) - also adds slight pitch/roll for natural tilt
+        if (bRandomYaw)
+        {
+            Rotation.Yaw = FMath::FRandRange(0.0, 360.0);
+            Rotation.Pitch += FMath::FRandRange(-3.0, 3.0);
+            Rotation.Roll += FMath::FRandRange(-3.0, 3.0);
+        }
+
+        // Parse scale [X, Y, Z] or uniform
+        FVector Scale(1, 1, 1);
+        if (Item->HasField(TEXT("scale")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& ScaleArr = Item->GetArrayField(TEXT("scale"));
+            if (ScaleArr.Num() >= 3)
+            {
+                Scale.X = ScaleArr[0]->AsNumber();
+                Scale.Y = ScaleArr[1]->AsNumber();
+                Scale.Z = ScaleArr[2]->AsNumber();
+            }
+            else if (ScaleArr.Num() == 1)
+            {
+                Scale = FVector(ScaleArr[0]->AsNumber());
+            }
+        }
+
+        // Apply random scale variance (uniform, keeps proportions)
+        if (RandomScaleVariance > 0.0)
+        {
+            double ScaleMult = 1.0 + FMath::FRandRange(-RandomScaleVariance, RandomScaleVariance);
+            Scale *= ScaleMult;
+        }
+
+        // Calculate world position
+        double WorldX = CenterX + OffsetX;
+        double WorldY = CenterY + OffsetY;
+
+        // Delete existing actor if requested
+        if (bDeleteExisting)
+        {
+            TArray<AActor*> AllActors;
+            UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+            for (AActor* Actor : AllActors)
+            {
+                if (IsValid(Actor) && Actor->GetName() == Name)
+                {
+                    // Use EditorActorSubsystem for safe editor deletion (handles OFPA packages)
+                    UEditorActorSubsystem* EAS = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+                    if (EAS)
+                    {
+                        EAS->DestroyActor(Actor);
+                    }
+                    else
+                    {
+                        World->DestroyActor(Actor);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Line trace to find terrain height
+        FVector TraceStart(WorldX, WorldY, 100000.0);
+        FVector TraceEnd(WorldX, WorldY, -100000.0);
+        FHitResult HitResult;
+
+        bool bHit = World->LineTraceSingleByChannel(
+            HitResult, TraceStart, TraceEnd, ECC_WorldStatic, TraceParams
+        );
+
+        if (!bHit)
+        {
+            Errors.Add(FString::Printf(TEXT("%s: no surface at (%.1f, %.1f), skipped"), *Name, WorldX, WorldY));
+            continue;
+        }
+
+        double SurfaceZ = HitResult.Location.Z;
+
+        // Load mesh
+        UStaticMesh* Mesh = Cast<UStaticMesh>(UEditorAssetLibrary::LoadAsset(MeshPath));
+        if (!Mesh)
+        {
+            Errors.Add(FString::Printf(TEXT("%s: mesh not found '%s', skipped"), *Name, *MeshPath));
+            continue;
+        }
+
+        // Spawn actor with safe name mode (Requested = use name if free, auto-generate if taken)
+        FVector Location(WorldX, WorldY, SurfaceZ);
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.Name = *Name;
+        SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
+        AStaticMeshActor* NewActor = World->SpawnActor<AStaticMeshActor>(
+            AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams
+        );
+
+        if (!NewActor)
+        {
+            Errors.Add(FString::Printf(TEXT("%s: spawn failed"), *Name));
+            continue;
+        }
+
+        NewActor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+        NewActor->SetActorScale3D(Scale);
+        NewActor->SetFolderPath(TEXT("ScatteredMeshes"));
+
+        // Build result entry
+        TSharedPtr<FJsonObject> ActorResult = MakeShared<FJsonObject>();
+        ActorResult->SetStringField(TEXT("name"), Name);
+        ActorResult->SetStringField(TEXT("mesh"), MeshPath);
+        ActorResult->SetNumberField(TEXT("x"), WorldX);
+        ActorResult->SetNumberField(TEXT("y"), WorldY);
+        ActorResult->SetNumberField(TEXT("z"), SurfaceZ);
+        ActorResult->SetStringField(TEXT("surface_actor"), HitResult.GetActor() ? HitResult.GetActor()->GetName() : TEXT("None"));
+        ResultActors.Add(MakeShared<FJsonValueObject>(ActorResult));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("placed_count"), ResultActors.Num());
+    Result->SetArrayField(TEXT("actors"), ResultActors);
+
+    if (Errors.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> ErrArray;
+        for (const FString& Err : Errors)
+        {
+            ErrArray.Add(MakeShared<FJsonValueString>(Err));
+        }
+        Result->SetArrayField(TEXT("errors"), ErrArray);
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params)
+{
+    FString FilePath;
+    if (!Params->TryGetStringField(TEXT("file_path"), FilePath))
+    {
+        FilePath = FPaths::ProjectSavedDir() / TEXT("Screenshots") / TEXT("MCP_Screenshot.png");
+    }
+
+    // Ensure directory exists
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+    PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
+
+    // Get the level editor viewport (not asset/material editor viewports)
+    FViewport* Viewport = nullptr;
+    FEditorViewportClient* UsedClient = nullptr;
+
+    if (GEditor)
+    {
+        // Prefer level editor viewports - these show the actual scene
+        const TArray<FLevelEditorViewportClient*>& LevelViewports = GEditor->GetLevelViewportClients();
+        for (FLevelEditorViewportClient* ViewportClient : LevelViewports)
+        {
+            if (ViewportClient && ViewportClient->Viewport)
+            {
+                Viewport = ViewportClient->Viewport;
+                UsedClient = ViewportClient;
+                break;
+            }
+        }
+
+        // Fallback: try active viewport, then any viewport
+        if (!Viewport)
+        {
+            Viewport = GEditor->GetActiveViewport();
+        }
+        if (!Viewport)
+        {
+            for (FEditorViewportClient* ViewportClient : GEditor->GetAllViewportClients())
+            {
+                if (ViewportClient && ViewportClient->Viewport)
+                {
+                    Viewport = ViewportClient->Viewport;
+                    UsedClient = ViewportClient;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!Viewport)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor viewport found"));
+    }
+
+    // Force a viewport redraw to ensure we capture the latest frame.
+    // Note: ReadPixels internally calls FlushRenderingCommands, so we don't call it separately
+    // to avoid potential deadlocks in FTSTicker context.
+    if (UsedClient)
+    {
+        UsedClient->Invalidate();
+        Viewport->Draw(false);
+    }
+
+    int32 Width = Viewport->GetSizeXY().X;
+    int32 Height = Viewport->GetSizeXY().Y;
+
+    if (Width == 0 || Height == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Viewport has zero size - make sure an editor viewport is visible"));
+    }
+
+    // Read pixels from the viewport
+    TArray<FColor> Bitmap;
+    if (!Viewport->ReadPixels(Bitmap))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to read pixels from viewport"));
+    }
+
+    // Encode to PNG via ImageWrapper
+    IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+    TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+
+    if (!ImageWrapper.IsValid())
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create PNG image wrapper"));
+    }
+
+    if (!ImageWrapper->SetRaw(Bitmap.GetData(), Bitmap.Num() * sizeof(FColor), Width, Height, ERGBFormat::BGRA, 8))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to set raw pixel data"));
+    }
+
+    TArray64<uint8> PNGData = ImageWrapper->GetCompressed();
+    if (PNGData.Num() == 0)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PNG compression failed"));
+    }
+
+    if (!FFileHelper::SaveArrayToFile(PNGData, *FilePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to save screenshot to: %s"), *FilePath));
+    }
+
+    // Convert to absolute path for external tools
+    FString AbsPath = FPaths::ConvertRelativePathToFull(FilePath);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("file_path"), AbsPath);
+    Result->SetNumberField(TEXT("width"), Width);
+    Result->SetNumberField(TEXT("height"), Height);
+    Result->SetStringField(TEXT("message"), FString::Printf(TEXT("Screenshot saved: %dx%d to %s"), Width, Height, *AbsPath));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetMaterialInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString MaterialPath;
+    if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path' parameter"));
+    }
+
+    UMaterial* Material = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+    if (!Material)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), Material->GetName());
+    Result->SetStringField(TEXT("path"), MaterialPath);
+    Result->SetBoolField(TEXT("two_sided"), Material->IsTwoSided());
+
+    // Blend mode
+    FString BlendMode;
+    switch (Material->BlendMode)
+    {
+        case BLEND_Opaque: BlendMode = TEXT("Opaque"); break;
+        case BLEND_Masked: BlendMode = TEXT("Masked"); break;
+        case BLEND_Translucent: BlendMode = TEXT("Translucent"); break;
+        case BLEND_Additive: BlendMode = TEXT("Additive"); break;
+        case BLEND_Modulate: BlendMode = TEXT("Modulate"); break;
+        default: BlendMode = TEXT("Unknown"); break;
+    }
+    Result->SetStringField(TEXT("blend_mode"), BlendMode);
+
+    // Shading model
+    FString ShadingModel;
+    switch (Material->GetShadingModels().GetFirstShadingModel())
+    {
+        case MSM_DefaultLit: ShadingModel = TEXT("DefaultLit"); break;
+        case MSM_Unlit: ShadingModel = TEXT("Unlit"); break;
+        case MSM_Subsurface: ShadingModel = TEXT("Subsurface"); break;
+        default: ShadingModel = TEXT("Other"); break;
+    }
+    Result->SetStringField(TEXT("shading_model"), ShadingModel);
+
+    // Expressions
+    TArray<TSharedPtr<FJsonValue>> ExprArray;
+    for (UMaterialExpression* Expr : Material->GetExpressionCollection().Expressions)
+    {
+        if (!Expr) continue;
+        TSharedPtr<FJsonObject> ExprInfo = MakeShared<FJsonObject>();
+        ExprInfo->SetStringField(TEXT("class"), Expr->GetClass()->GetName());
+        ExprInfo->SetStringField(TEXT("desc"), Expr->GetDescription());
+
+        // TextureSample details
+        UMaterialExpressionTextureSample* TexSample = Cast<UMaterialExpressionTextureSample>(Expr);
+        if (TexSample)
+        {
+            ExprInfo->SetStringField(TEXT("texture"), TexSample->Texture ? TexSample->Texture->GetPathName() : TEXT("None"));
+            FString SamplerStr;
+            switch (TexSample->SamplerType)
+            {
+                case SAMPLERTYPE_Color: SamplerStr = TEXT("Color"); break;
+                case SAMPLERTYPE_Normal: SamplerStr = TEXT("Normal"); break;
+                case SAMPLERTYPE_Masks: SamplerStr = TEXT("Masks"); break;
+                case SAMPLERTYPE_LinearColor: SamplerStr = TEXT("LinearColor"); break;
+                case SAMPLERTYPE_Grayscale: SamplerStr = TEXT("Grayscale"); break;
+                default: SamplerStr = TEXT("Unknown"); break;
+            }
+            ExprInfo->SetStringField(TEXT("sampler_type"), SamplerStr);
+        }
+
+        // ComponentMask details
+        UMaterialExpressionComponentMask* Mask = Cast<UMaterialExpressionComponentMask>(Expr);
+        if (Mask)
+        {
+            FString Channels;
+            if (Mask->R) Channels += TEXT("R");
+            if (Mask->G) Channels += TEXT("G");
+            if (Mask->B) Channels += TEXT("B");
+            if (Mask->A) Channels += TEXT("A");
+            ExprInfo->SetStringField(TEXT("channels"), Channels);
+        }
+
+        ExprArray.Add(MakeShared<FJsonValueObject>(ExprInfo));
+    }
+    Result->SetArrayField(TEXT("expressions"), ExprArray);
+    Result->SetNumberField(TEXT("expression_count"), ExprArray.Num());
+
+    // Check which outputs are connected
+    auto* EditorData = Material->GetEditorOnlyData();
+    Result->SetBoolField(TEXT("base_color_connected"), EditorData->BaseColor.IsConnected());
+    Result->SetBoolField(TEXT("normal_connected"), EditorData->Normal.IsConnected());
+    Result->SetBoolField(TEXT("roughness_connected"), EditorData->Roughness.IsConnected());
+    Result->SetBoolField(TEXT("metallic_connected"), EditorData->Metallic.IsConnected());
+    Result->SetBoolField(TEXT("ao_connected"), EditorData->AmbientOcclusion.IsConnected());
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleFocusViewportOnActor(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && Actor->GetName() == ActorName)
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Optional distance parameter
+    double Distance = 500.0;
+    Params->TryGetNumberField(TEXT("distance"), Distance);
+
+    // Get actor bounds for framing
+    FVector Origin, BoxExtent;
+    TargetActor->GetActorBounds(false, Origin, BoxExtent);
+    float MaxExtent = FMath::Max3(BoxExtent.X, BoxExtent.Y, BoxExtent.Z);
+    if (MaxExtent < 50.0f) MaxExtent = 50.0f;
+
+    // Calculate camera position: offset from actor center
+    double ActualDistance = MaxExtent * 2.0 + Distance;
+    FVector CamLocation = Origin + FVector(-ActualDistance * 0.7, -ActualDistance * 0.5, ActualDistance * 0.4);
+    FRotator CamRotation = (Origin - CamLocation).Rotation();
+
+    // Apply to the first level editor viewport (not asset editors, material previews, etc.)
+    bool bApplied = false;
+    const TArray<FLevelEditorViewportClient*>& LevelViewports = GEditor->GetLevelViewportClients();
+    for (FLevelEditorViewportClient* ViewportClient : LevelViewports)
+    {
+        if (ViewportClient)
+        {
+            // Disable orbit camera and real-time override that may fight our position
+            ViewportClient->SetViewLocation(CamLocation);
+            ViewportClient->SetViewRotation(CamRotation);
+            ViewportClient->Invalidate();
+            // Force an immediate viewport redraw so subsequent screenshot captures the new view
+            if (ViewportClient->Viewport)
+            {
+                ViewportClient->Viewport->Draw(false);
+            }
+            bApplied = true;
+            break;
+        }
+    }
+
+    // Fallback to any viewport client if no level viewport found
+    if (!bApplied)
+    {
+        for (FEditorViewportClient* ViewportClient : GEditor->GetAllViewportClients())
+        {
+            if (ViewportClient)
+            {
+                ViewportClient->SetViewLocation(CamLocation);
+                ViewportClient->SetViewRotation(CamRotation);
+                ViewportClient->Invalidate();
+                if (ViewportClient->Viewport)
+                {
+                    ViewportClient->Viewport->Draw(false);
+                }
+                bApplied = true;
+                break;
+            }
+        }
+    }
+
+    if (!bApplied)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No viewport client found"));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("actor"), ActorName);
+    Result->SetNumberField(TEXT("cam_x"), CamLocation.X);
+    Result->SetNumberField(TEXT("cam_y"), CamLocation.Y);
+    Result->SetNumberField(TEXT("cam_z"), CamLocation.Z);
+    Result->SetStringField(TEXT("message"), FString::Printf(TEXT("Viewport focused on %s"), *ActorName));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetTextureInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString TexturePath;
+    if (!Params->TryGetStringField(TEXT("texture_path"), TexturePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'texture_path' parameter"));
+    }
+
+    UTexture2D* Texture = Cast<UTexture2D>(UEditorAssetLibrary::LoadAsset(TexturePath));
+    if (!Texture)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), Texture->GetName());
+    Result->SetStringField(TEXT("path"), TexturePath);
+    Result->SetNumberField(TEXT("width"), Texture->GetSizeX());
+    Result->SetNumberField(TEXT("height"), Texture->GetSizeY());
+    Result->SetBoolField(TEXT("srgb"), Texture->SRGB);
+
+    // Compression setting
+    FString CompressionStr;
+    switch (Texture->CompressionSettings)
+    {
+        case TC_Default: CompressionStr = TEXT("TC_Default"); break;
+        case TC_Normalmap: CompressionStr = TEXT("TC_Normalmap"); break;
+        case TC_Masks: CompressionStr = TEXT("TC_Masks"); break;
+        case TC_Grayscale: CompressionStr = TEXT("TC_Grayscale"); break;
+        case TC_HDR: CompressionStr = TEXT("TC_HDR"); break;
+        default: CompressionStr = FString::Printf(TEXT("TC_%d"), (int32)Texture->CompressionSettings); break;
+    }
+    Result->SetStringField(TEXT("compression"), CompressionStr);
+    Result->SetBoolField(TEXT("flip_green_channel"), Texture->bFlipGreenChannel);
+    Result->SetNumberField(TEXT("num_mips"), Texture->GetNumMips());
+
+    // LOD bias and group
+    Result->SetNumberField(TEXT("lod_bias"), Texture->LODBias);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleDeleteActorsByPattern(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Pattern;
+    if (!Params->TryGetStringField(TEXT("pattern"), Pattern))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pattern' parameter"));
+    }
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
+    }
+
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+
+    // Phase 1: Collect matching actors (never modify during iteration)
+    TArray<AActor*> ToDestroy;
+    TArray<FString> DeletedNames;
+    TArray<FString> FailedNames;
+
+    for (AActor* Actor : AllActors)
+    {
+        if (!IsValid(Actor)) continue;
+        FString ActorName = Actor->GetName();
+        if (ActorName.Contains(Pattern))
+        {
+            ToDestroy.Add(Actor);
+            DeletedNames.Add(ActorName);
+        }
+    }
+
+    // Phase 2: Use EditorActorSubsystem for safe batch deletion
+    // Handles OFPA packages, scene outliner, editor notifications
+    UEditorActorSubsystem* EditorActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+    if (EditorActorSubsystem)
+    {
+        for (AActor* Actor : ToDestroy)
+        {
+            if (IsValid(Actor))
+            {
+                if (!EditorActorSubsystem->DestroyActor(Actor))
+                {
+                    FailedNames.Add(Actor->GetName());
+                }
+            }
+        }
+    }
+    else
+    {
+        // Fallback: direct destroy (less safe in editor)
+        for (AActor* Actor : ToDestroy)
+        {
+            if (IsValid(Actor))
+            {
+                if (!World->DestroyActor(Actor))
+                {
+                    FailedNames.Add(Actor->GetName());
+                }
+            }
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("deleted_count"), DeletedNames.Num());
+    Result->SetStringField(TEXT("pattern"), Pattern);
+
+    TArray<TSharedPtr<FJsonValue>> DeletedArray;
+    for (const FString& Name : DeletedNames)
+    {
+        DeletedArray.Add(MakeShared<FJsonValueString>(Name));
+    }
+    Result->SetArrayField(TEXT("deleted_actors"), DeletedArray);
+
+    if (FailedNames.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> FailedArray;
+        for (const FString& Name : FailedNames)
+        {
+            FailedArray.Add(MakeShared<FJsonValueString>(Name));
+        }
+        Result->SetArrayField(TEXT("failed_actors"), FailedArray);
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleDeleteAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    // Verify asset exists
+    if (!UEditorAssetLibrary::DoesAssetExist(AssetPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+    }
+
+    bool bForceDelete = false;
+    Params->TryGetBoolField(TEXT("force_delete"), bForceDelete);
+
+    bool bCheckReferences = true;
+    Params->TryGetBoolField(TEXT("check_references"), bCheckReferences);
+
+    // Get asset info before deletion for the response
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    if (!LoadedAsset)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
+    }
+
+    FString AssetName = LoadedAsset->GetName();
+    FString AssetClass = LoadedAsset->GetClass()->GetName();
+
+    // Check for referencers if requested
+    if (bCheckReferences)
+    {
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+        IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+        // Get the package name for referencer lookup
+        FName PackageName = FName(*LoadedAsset->GetOutermost()->GetName());
+        TArray<FName> Referencers;
+        AssetRegistry.GetReferencers(PackageName, Referencers);
+
+        // Filter out self-references and script/engine references
+        TArray<FString> RealReferencers;
+        for (const FName& Ref : Referencers)
+        {
+            FString RefStr = Ref.ToString();
+            // Skip self-reference, engine content, and script packages
+            if (RefStr == PackageName.ToString()) continue;
+            if (RefStr.StartsWith(TEXT("/Engine/"))) continue;
+            if (RefStr.StartsWith(TEXT("/Script/"))) continue;
+            RealReferencers.Add(RefStr);
+        }
+
+        if (RealReferencers.Num() > 0 && !bForceDelete)
+        {
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), false);
+            Result->SetStringField(TEXT("error"), TEXT("Asset has references. Use force_delete=true to delete anyway."));
+            Result->SetStringField(TEXT("asset_path"), AssetPath);
+            Result->SetStringField(TEXT("asset_class"), AssetClass);
+            Result->SetNumberField(TEXT("referencer_count"), RealReferencers.Num());
+
+            TArray<TSharedPtr<FJsonValue>> RefArray;
+            for (const FString& Ref : RealReferencers)
+            {
+                RefArray.Add(MakeShared<FJsonValueString>(Ref));
+            }
+            Result->SetArrayField(TEXT("referencers"), RefArray);
+            return Result;
+        }
+    }
+
+    // Perform the deletion
+    bool bDeleted = UEditorAssetLibrary::DeleteAsset(AssetPath);
+
+    if (!bDeleted)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to delete asset: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("deleted_asset"), AssetPath);
+    Result->SetStringField(TEXT("asset_name"), AssetName);
+    Result->SetStringField(TEXT("asset_class"), AssetClass);
+    Result->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset '%s' deleted successfully"), *AssetName));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetNaniteEnabled(const TSharedPtr<FJsonObject>& Params)
+{
+    FString MeshPath = Params->GetStringField(TEXT("mesh_path"));
+    bool bEnabled = Params->HasField(TEXT("enabled")) ? Params->GetBoolField(TEXT("enabled")) : false;
+
+    UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+    if (!Mesh)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Static mesh not found: %s"), *MeshPath));
+    }
+
+    FMeshNaniteSettings NaniteSettings = Mesh->GetNaniteSettings();
+    bool bWasEnabled = NaniteSettings.bEnabled;
+    NaniteSettings.bEnabled = bEnabled;
+    Mesh->SetNaniteSettings(NaniteSettings);
+    Mesh->PostEditChange();
+    Mesh->MarkPackageDirty();
+
+    // Save to disk
+    UEditorAssetLibrary::SaveLoadedAsset(Mesh);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("mesh_path"), MeshPath);
+    Result->SetBoolField(TEXT("nanite_enabled"), bEnabled);
+    Result->SetBoolField(TEXT("was_enabled"), bWasEnabled);
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Nanite %s on %s (was %s)"),
+            bEnabled ? TEXT("enabled") : TEXT("disabled"),
+            *Mesh->GetName(),
+            bWasEnabled ? TEXT("enabled") : TEXT("disabled")));
+    return Result;
+}

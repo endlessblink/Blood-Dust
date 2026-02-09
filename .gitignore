@@ -1,0 +1,57 @@
+# ============================================
+# Blood & Dust - AI Game Production
+# Only tracking: Unreal project + MCP server + project config
+# ============================================
+
+# --- Exclude EVERYTHING by default ---
+*
+
+# --- Include Unreal project ---
+!unreal/
+!unreal/blood-and-dust/
+!unreal/blood-and-dust/**
+
+# --- Include MCP server ---
+!unreal/mcp/
+!unreal/mcp/**
+
+# --- But exclude UE build artifacts ---
+unreal/blood-and-dust/bood_and_dust/Binaries/
+unreal/blood-and-dust/bood_and_dust/Intermediate/
+unreal/blood-and-dust/bood_and_dust/DerivedDataCache/
+unreal/blood-and-dust/bood_and_dust/Saved/
+unreal/blood-and-dust/bood_and_dust/Plugins/UnrealMCP/Binaries/
+unreal/blood-and-dust/bood_and_dust/Plugins/UnrealMCP/Intermediate/
+
+# --- Exclude engine source ---
+unreal/engine/
+
+# --- Include project root config files ---
+!.gitignore
+!CLAUDE.md
+!MASTER_PLAN.md
+!.mcp.json
+!.claude/
+!.claude/**
+
+# --- Python artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.uv/
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# --- IDE ---
+.vscode/
+.idea/
+*.code-workspace
+
+# --- oh-my-claudecode state ---
+.omc/

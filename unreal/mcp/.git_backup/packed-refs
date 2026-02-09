@@ -1,0 +1,10 @@
+# pack-refs with: peeled fully-peeled sorted 
+121aaf65e705239c41d7b2eb9ccfce00d81ab108 refs/remotes/origin/BlueprintGraph
+a8fea171ba751fac08188b3664426054cb4ad143 refs/remotes/origin/dev
+a2e433cfa84ba9c479916d5f614edff7e2820b70 refs/remotes/origin/feat/blueprints-server
+c76fb674c5f0e7bfec2fb88d8aabc3b79e306546 refs/remotes/origin/feat/complex-building
+3a0abc22b879e5adfb7965474e552c305efa0cc7 refs/remotes/origin/feat/newTools
+73aba258423b64beb9c295d6894407f318f4b81a refs/remotes/origin/feat/safe-spawn
+d707575e617039caef81af200d56fbb3081463a6 refs/remotes/origin/feat/spatial-awarness
+8e1ad7ed668bab4498ff8465f48c95736e0ae643 refs/remotes/origin/main
+c01368a6cf7691271c3700caa140c008222b1581 refs/remotes/origin/sync-plugins

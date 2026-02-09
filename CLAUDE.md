@@ -1,0 +1,176 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+
+# IMPORTANT
+
+## NO SIMPLE SOLUTIONS!!! Fixing things the right way
+
+## Project Overview
+
+Multi-engine game development workspace demonstrating AI-driven game creation via Model Context Protocol (MCP). Primary focus is the **Blood & Dust** game - a 3D third-person game with **Rembrandt Dutch Golden Age oil painting visual style**.
+
+### Components
+- `unreal/blood-and-dust/bood_and_dust/` - Main Unreal Engine 5.7 project
+- `unreal/mcp/` - Python MCP server for Unreal Engine control
+- `unreal/engine/` - Full Unreal Engine 5.7 source tree
+- `blender/mcp/` - Blender MCP integration for 3D modeling
+- `blender/projects/` - Blender scene files
+- `godot/blood&dust/` - Reference Godot 4.6 implementation
+
+## MCP Servers
+
+### unrealMCP (Primary)
+```bash
+cd unreal/mcp/Python
+uv run unreal_mcp_server_advanced.py
+```
+40+ tools for Blueprint scripting, world building, actor management, materials, and procedural generation (towns, castles, mansions, mazes).
+
+### blenderMCP
+```bash
+uvx blender-mcp
+```
+Requires Blender running with addon enabled. Supports Poly Haven, Hyper3D, Hunyuan3D, and Sketchfab integration.
+
+## Commands
+
+### Launch Unreal Project
+```bash
+/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/engine/Engine/Binaries/Linux/UnrealEditor "/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/bood_and_dust.uproject"
+```
+
+### Rebuild UnrealMCP Plugin
+```bash
+/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/engine/Engine/Build/BatchFiles/Linux/Build.sh bood_and_dustEditor Linux Development -Project="/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/bood_and_dust.uproject"
+```
+
+### Godot (Reference)
+```bash
+./godot/Godot_v4.6-stable_linux.x86_64 --path "godot/blood&dust" --editor
+```
+
+## Visual Style Target
+
+Rembrandt Dutch Golden Age aesthetic:
+- **Palette:** `#2D261E` (dark), `#8C6D46` (mid ochre), `#B37233` (golden highlight)
+- **Lighting:** Chiaroscuro - low angle golden directional light, minimal ambient
+- **Atmosphere:** Warm ochre volumetric fog, dark stormy sky with golden horizon break
+- **Terrain:** Muted earth tones (burnt sienna, raw umber)
+
+## Key Actor Names (Current Level)
+
+- `Floor_UAID_F4A475FF15A3736A02_1961940706` - Main terrain plane
+- `DirectionalLight_UAID_F4A475FF15A3736A02_1961932697` - Sun light
+- `ExponentialHeightFog_UAID_F4A475FF15A3736A02_1961936700` - Atmospheric fog
+- `SkyAtmosphere_UAID_F4A475FF15A3736A02_1961927691` - Sky system
+- `PostProcessVolume_UAID_F4A475FF15A3736A02_1961895679` - Color grading
+
+## Assets
+
+### Ground Textures
+`/Game/assets/material/textures/ground_textures/` - ground_1, ground_2, ground_4, ground_5
+
+### Materials
+`/Game/assets/material/M_EarthTone` - Main terrain material
+
+### Backdrop Images (from Godot)
+`godot/blood&dust/assets/Backdrop/` - backdrop_n.png, backdrop_s.png, backdrop_e.png
+
+### Blender Textures
+`blender/textures/` - rock_boulder, aerial_rocks, rocky_terrain, brown_mud_leaves, grass_dry, sand_01
+
+## Architecture Notes
+
+### UnrealMCP Plugin
+- Location: `unreal/blood-and-dust/bood_and_dust/Plugins/UnrealMCP/`
+- C++ commands in `Source/UnrealMCP/Private/Commands/`
+- Build.cs dependencies include CinematicCamera, MaterialEditor, RenderCore
+
+### Python MCP Server
+- Main server: `unreal/mcp/Python/unreal_mcp_server_advanced.py`
+- Modular helpers in `Python/helpers/` for procedural generation
+- Blueprint graph management in `Python/helpers/blueprint_graph/`
+
+## MCP Client Configuration
+
+Add to `~/.config/claude-desktop/mcp.json` or equivalent:
+```json
+{
+  "mcpServers": {
+    "unrealMCP": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/unreal/mcp/Python", "run", "unreal_mcp_server_advanced.py"]
+    },
+    "blenderMCP": {
+      "command": "uvx",
+      "args": ["blender-mcp"]
+    }
+  }
+}
+```
+
+## Hardware Context
+- GPU: NVIDIA RTX 4070 Ti (12GB)
+- OS: Linux (Tuxedo), Kernel 6.14
+- Excellent Vulkan support for Unreal on Linux
+
+## MANDATORY UnrealMCP Safety Rules
+
+These rules exist because violating them CRASHES Unreal Engine. They are non-negotiable.
+
+### Actor Deletion Rules
+1. **NEVER use `World->DestroyActor()` or `Actor->Destroy()` in editor context.** Use `EditorActorSubsystem::DestroyActors()` instead - it handles editor notifications, scene outliner updates, and OFPA package cleanup.
+2. **NEVER call `Actor->Rename()` on editor actors.** UE5.5+ OFPA (One File Per Actor) causes `UDeletedObjectPlaceholder` assertion crashes when renaming actors that have external packages.
+3. **NEVER delete and spawn actors with the same name in the same tick.** `DestroyActor` marks pending-kill but the name stays registered in `FUObjectHashTables` until GC runs. Spawning with the same name causes "Cannot generate unique name" fatal crash.
+4. **NEVER destroy actors during iteration.** Collect actors into a TArray first, then destroy from the array.
+
+### Actor Spawning Rules
+5. **ALWAYS use `ESpawnActorNameMode::Requested`** (not the default `Required_Fatal`). This gracefully generates a unique name if the requested name is taken, instead of crashing.
+6. **NEVER reuse actor names.** Always append a unique suffix (timestamp, GUID, counter). Names are only freed after garbage collection, not after DestroyActor.
+7. **ALWAYS check `IsValid(Actor)` before operating on any actor pointer.** `IsPendingKill()` is deprecated in UE5.
+
+### Bulk Operation Rules
+8. **NEVER perform more than 3 spawn/destroy operations in a single FTSTicker tick.** Each spawn/destroy triggers component registration, physics scene updates, and rendering cleanup. More than 3 per tick risks crashes and frame hitches.
+9. **NEVER call MCP tools in parallel.** Each MCP tool creates its own FTSTicker callback. Multiple callbacks firing in the same frame can crash.
+10. **Separate delete and spawn phases.** If replacing actors: Phase 1 = destroy all (spread across ticks), then Phase 2 = spawn new (spread across ticks). Never interleave.
+
+### Viewport & Screenshot Rules
+11. **NEVER call `FlushRenderingCommands()` in FTSTicker callbacks.** It blocks the game thread waiting for render thread, risking deadlocks. Let the engine handle rendering sync naturally.
+12. **Use `FScreenshotRequest::RequestScreenshot()` for screenshots** instead of direct `Viewport->ReadPixels()`. The request API handles rendering synchronization internally.
+13. **Use `GEditor->GetLevelViewportClients()` for viewport access**, not `GetAllViewportClients()` or `GetActiveViewport()` which may return non-level viewports (material editors, asset previews).
+
+### Texture Import & Heavy Asset Rules
+14. **NEVER import more than 2 textures without pausing.** Each `import_texture` call triggers `PostEditChange()` (texture recompression), `UpdateResource()` (GPU upload), and `AssetCreated()` (registry broadcast). Back-to-back imports create catastrophic memory pressure and notification storms that can crash the engine or corrupt landscape streaming proxies.
+15. **Treat `import_texture` as a HEAVY operation** on par with `import_mesh`. Each import decompresses the source image (~64MB for a 4K texture), builds platform mip chains, and broadcasts to all editor subsystems synchronously.
+16. **After every 2 texture imports, call a lightweight operation** (e.g., `get_actors_in_level`, `list_assets`, or `does_asset_exist`) to give the engine a full tick to process streaming updates, GC, and notification queues before importing more textures.
+17. **NEVER import textures while landscape operations are pending.** Texture imports trigger AssetRegistry notifications that can cause World Partition to re-evaluate landscape streaming proxy loading, potentially unloading/corrupting landscape sections.
+18. **`CreatePackage()` + `MarkPackageDirty()` without save accumulates in memory.** Each unsaved package stays in RAM until user saves. Multiple unsaved texture packages compete with landscape streaming proxies for memory budget.
+
+### Material Creation Rules
+19. **UE 5.7 has NO `bUsedWithLandscape` flag.** Landscape materials compile without special usage flags. Checkerboard on landscape = shader compilation error (check for ERROR nodes in the material graph).
+20. **ALWAYS match vector dimensions in material expressions.** Texture samples output float4 (RGBA). UV coordinates are float2. Before combining them (Add, Multiply), use ComponentMask to match dimensions. `Add(float2, float4)` = ERROR node.
+21. **ALWAYS verify shader compilation after creating/modifying materials.** Check for checkerboard in viewport or ERROR labels on nodes. A material with 32 expressions that compiles with errors is worse than a simple 3-node material that works.
+22. **NEVER use LandscapeLayerCoords for UV generation** — `mapping_scale` does NOT persist through editor restart. Use `WorldPosition × Constant` instead (values always persist).
+23. **NEVER use LandscapeLayerBlend** via MCP — causes `TextureReferenceIndex != INDEX_NONE` crash in HLSLMaterialTranslator.cpp.
+24. **NEVER build more than 10 material nodes without recompiling and visually verifying.** Material graph errors are silent — MCP returns "success" even when connections are invalid. Verify early and often.
+
+### Material Rules
+25. **NEVER connect AmbientOcclusion from ARM textures.** ARM textures from Megascans/PolyHaven have AO=0 in UV padding areas, causing dark glossy patches on meshes. UE5 Lumen handles ambient occlusion automatically. The `create_pbr_material` tool intentionally does NOT connect AO.
+
+### General MCP Rules
+26. **ALWAYS call MCP tools strictly sequentially.** Wait for one response before sending the next command.
+27. **NEVER batch heavy operations in a single FTSTicker callback.** If an operation needs to process N items, use a recurring ticker that processes 3 items per tick.
+27. **Test new C++ changes with a SINGLE lightweight operation first** before attempting bulk operations. Verify the fix works before scaling up.
+28. **Heavy operations classification:** The following MCP commands are HEAVY and need extra caution: `import_texture`, `import_mesh`, `create_pbr_material`, `create_landscape_material`, `scatter_meshes_on_landscape`. Always allow a full engine tick between consecutive heavy operations.
+29. **FTSTicker callbacks can stack.** If commands arrive faster than the game thread processes them, multiple ticker callbacks queue up and fire back-to-back in the same or consecutive frames with no breathing room for engine subsystems (streaming, GC, landscape component updates).
+30. **`PostEditChange()` is a nuclear broadcast.** It triggers dozens of subsystem notifications synchronously (texture streaming, shader recompilation, asset registry updates). Calling it 6+ times in rapid succession overwhelms the editor's ability to maintain consistency.
+
+### Skeletal Mesh & Animation Import Rules
+31. **Skeletal mesh import is HEAVIER than static mesh.** It creates a USkeleton, UPhysicsAsset, processes skin weights and bone hierarchy. Allow 5+ seconds cooldown before the next heavy operation. Add `import_skeletal_mesh` to `HEAVY_COMMANDS_COOLDOWN` and `LARGE_OPERATION_COMMANDS`.
+32. **Animation-only import REQUIRES an existing skeleton.** Always validate that `skeleton_path` resolves to a valid `USkeleton` before calling `import_animation`. Null skeleton = crash or silent failure.
+33. **ACharacter CDO components are NOT in SimpleConstructionScript.** `UCapsuleComponent`, `USkeletalMeshComponent` (Mesh), and `UCharacterMovementComponent` are created in the C++ constructor. To modify their defaults in a Blueprint: compile the BP first, then access via `Blueprint->GeneratedClass->GetDefaultObject<ACharacter>()`. SpringArm and Camera must be added via SCS since they are not part of base ACharacter.
+34. **`UAnimBlueprintFactory` CRASHES if `TargetSkeleton` is null** and `bTemplate` is false. Always validate the skeleton asset exists and loads successfully before calling `FactoryCreateNew()`.
+35. **FBX files can produce multiple assets.** When importing skeletal mesh with `bImportAnimations=true`, iterate `ImportTask->GetObjects()` to find all created assets (SkeletalMesh + AnimSequence[]). Do not assume a single result.
+36. **NEVER import skeletal mesh + animation in parallel MCP calls.** Always strictly sequential with breathing room between each. The skeleton created by mesh import must be fully saved before animation import references it.
