@@ -1686,6 +1686,33 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetTextureProperties
     return Result;
 }
 
+// Helper function to auto-detect correct sampler type from texture compression settings
+static EMaterialSamplerType GetSamplerTypeForTexture(UTexture* Texture)
+{
+    if (!Texture) return SAMPLERTYPE_LinearColor;
+
+    UTexture2D* Tex2D = Cast<UTexture2D>(Texture);
+    if (!Tex2D) return SAMPLERTYPE_LinearColor;
+
+    switch (Tex2D->CompressionSettings)
+    {
+    case TC_Default:
+        return Tex2D->SRGB ? SAMPLERTYPE_Color : SAMPLERTYPE_LinearColor;
+    case TC_Normalmap:
+        return SAMPLERTYPE_Normal;
+    case TC_Masks:
+        return SAMPLERTYPE_Masks;
+    case TC_Grayscale:
+        return SAMPLERTYPE_Grayscale;
+    case TC_Alpha:
+        return SAMPLERTYPE_Alpha;
+    case TC_DistanceFieldFont:
+        return SAMPLERTYPE_DistanceFieldFont;
+    default:
+        return SAMPLERTYPE_LinearColor;
+    }
+}
+
 TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreatePBRMaterial(const TSharedPtr<FJsonObject>& Params)
 {
     // Get required parameters
@@ -1831,7 +1858,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreatePBRMaterial(co
             {
                 UMaterialExpressionTextureSample* RoughSample = NewObject<UMaterialExpressionTextureSample>(Material);
                 RoughSample->Texture = RoughTex;
-                RoughSample->SamplerType = SAMPLERTYPE_LinearColor;
+                RoughSample->SamplerType = GetSamplerTypeForTexture(RoughTex);
                 RoughSample->MaterialExpressionEditorX = -400;
                 RoughSample->MaterialExpressionEditorY = PosY;
                 Material->GetExpressionCollection().AddExpression(RoughSample);
@@ -1857,7 +1884,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreatePBRMaterial(co
             {
                 UMaterialExpressionTextureSample* MetSample = NewObject<UMaterialExpressionTextureSample>(Material);
                 MetSample->Texture = MetTex;
-                MetSample->SamplerType = SAMPLERTYPE_LinearColor;
+                MetSample->SamplerType = GetSamplerTypeForTexture(MetTex);
                 MetSample->MaterialExpressionEditorX = -400;
                 MetSample->MaterialExpressionEditorY = PosY;
                 Material->GetExpressionCollection().AddExpression(MetSample);
@@ -1883,7 +1910,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreatePBRMaterial(co
             {
                 UMaterialExpressionTextureSample* AOSample = NewObject<UMaterialExpressionTextureSample>(Material);
                 AOSample->Texture = AOTex;
-                AOSample->SamplerType = SAMPLERTYPE_LinearColor;
+                AOSample->SamplerType = GetSamplerTypeForTexture(AOTex);
                 AOSample->MaterialExpressionEditorX = -400;
                 AOSample->MaterialExpressionEditorY = PosY;
                 Material->GetExpressionCollection().AddExpression(AOSample);
@@ -1992,8 +2019,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
 
     double HeightBlendStrength = 0.5;
     double PuddleHeightBias = 1.0;
+    double RubbleAmount = 0.3;
+    double StoneAmount = 0.2;
     Params->TryGetNumberField(TEXT("height_blend_strength"), HeightBlendStrength);
     Params->TryGetNumberField(TEXT("puddle_height_bias"), PuddleHeightBias);
+    Params->TryGetNumberField(TEXT("rubble_amount"), RubbleAmount);
+    Params->TryGetNumberField(TEXT("stone_amount"), StoneAmount);
 
     // Create material package
     FString FullPath = MaterialPath + MaterialName;
@@ -2059,7 +2090,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // =================================================================
     // COMMENT BOX 1: UV Generation (Yellow)
     // =================================================================
-    AddComment(TEXT("UV Generation"), FLinearColor(0.8f, 0.7f, 0.1f), -2600, -300, 700, 400);
+    AddComment(TEXT("1. World Position -> Texture Coordinates"), FLinearColor(0.8f, 0.7f, 0.1f), -2600, -300, 700, 400);
 
     // =================================================================
     // SECTION 1: Base UVs (3 nodes)
@@ -2087,7 +2118,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // SECTION 1B: Distance-Based Tiling Fade (6 nodes)
     // Fade UV warp and rotation dissolve at far distances to hide tiling
     // =================================================================
-    AddComment(TEXT("Distance-Based Tiling Fade"), FLinearColor(0.4f, 0.8f, 0.4f), -2600, 100, 700, 500);
+    AddComment(TEXT("2. Camera Distance Fade (hide tiling at range)"), FLinearColor(0.4f, 0.8f, 0.4f), -2600, 100, 700, 500);
 
     // Camera position
     auto* CamPos = NewObject<UMaterialExpressionCameraPositionWS>(Mat);
@@ -2119,7 +2150,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // =================================================================
     // COMMENT BOX 2: UV Noise Distortion (Orange)
     // =================================================================
-    AddComment(TEXT("UV Noise Distortion"), FLinearColor(0.9f, 0.5f, 0.1f), -2100, 300, 1200, 700);
+    AddComment(TEXT("3. Anti-Tiling: UV Warping"), FLinearColor(0.9f, 0.5f, 0.1f), -2100, 300, 1200, 700);
 
     // =================================================================
     // SECTION 2: UV Distortion (~10 nodes)
@@ -2219,7 +2250,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // UVs, then dissolve between them with noise. Fixed angle avoids the
     // swirl artifacts that per-pixel noise rotation creates.
     // =================================================================
-    AddComment(TEXT("Fixed Rotation + Dissolve"), FLinearColor(0.9f, 0.3f, 0.6f), -800, 1600, 1200, 800);
+    AddComment(TEXT("4. Anti-Tiling: Rotated Sample Blend"), FLinearColor(0.9f, 0.3f, 0.6f), -800, 1600, 1200, 800);
 
     // Fixed rotation: 37.5 degrees (irrational w.r.t. 90° → never aligns with tile grid)
     // sin(37.5°) ≈ 0.6088,  cos(37.5°) ≈ 0.7934
@@ -2328,7 +2359,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     // =================================================================
     // COMMENT BOX 3: Macro Brightness Variation (Cyan)
     // =================================================================
-    AddComment(TEXT("Macro Brightness Variation"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 2500, 700, 400);
+    AddComment(TEXT("5. Large-Scale Brightness Variation"), FLinearColor(0.1f, 0.7f, 0.8f), -1600, 2500, 700, 400);
 
     // =================================================================
     // SECTION 3: Macro Variation Noise (4 nodes)
@@ -2440,21 +2471,21 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     };
 
     // COMMENT BOX 4: Rock Layer (Red) - 4 samplers (orig+rot D, orig+rot N)
-    AddComment(TEXT("Rock Layer (slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -1000, -1100, 700, 700);
+    AddComment(TEXT("6. Rock Texture (steep slopes)"), FLinearColor(0.8f, 0.2f, 0.2f), -1000, -1100, 700, 700);
     FLayerResult RockLayer = BuildRotBlendLayer(TexRockD, TexRockN, -1000);
 
     // COMMENT BOX 5: Mud Layer (Brown) - 4 samplers
-    AddComment(TEXT("Mud Layer (flat areas)"), FLinearColor(0.6f, 0.4f, 0.2f), -1000, -200, 700, 700);
+    AddComment(TEXT("7. Mud/Earth Texture (flat ground)"), FLinearColor(0.6f, 0.4f, 0.2f), -1000, -200, 700, 700);
     FLayerResult MudLayer = BuildRotBlendLayer(TexMudD, TexMudN, -100);
 
     // COMMENT BOX 6: Grass Layer (Green) - 4 samplers
-    AddComment(TEXT("Grass Layer (overlay)"), FLinearColor(0.2f, 0.7f, 0.2f), -1000, 600, 700, 700);
+    AddComment(TEXT("8. Grass Texture (overlay patches)"), FLinearColor(0.2f, 0.7f, 0.2f), -1000, 600, 700, 700);
     FLayerResult GrassLayer = BuildRotBlendLayer(TexGrassD, TexGrassN, 700);
 
     // =================================================================
     // COMMENT BOX 7: Slope Detection + Outputs (Purple)
     // =================================================================
-    AddComment(TEXT("Slope Detection + Outputs"), FLinearColor(0.5f, 0.2f, 0.7f), -400, -1700, 1500, 4000);
+    AddComment(TEXT("9. Slope Detection -> Layer Blending -> Output"), FLinearColor(0.5f, 0.2f, 0.7f), -400, -1700, 1500, 4000);
 
     // =================================================================
     // SECTION 5: Slope Detection (5 nodes)
@@ -2501,7 +2532,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     AddExpr(GrassNoise, -300, 1600);
 
     auto* GrassPowConst = NewObject<UMaterialExpressionConstant>(Mat);
-    GrassPowConst->R = 2.0f;
+    GrassPowConst->R = 1.2f;  // Lower power = more responsive GrassAmount control
     AddExpr(GrassPowConst, -300, 1800);
 
     auto* GrassNoisePow = NewObject<UMaterialExpressionPower>(Mat);
@@ -2681,9 +2712,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     MaskWorldZ->Input.Connect(0, WorldPos);
     AddExpr(MaskWorldZ, 700, 800);
 
-    // Normalize Z to 0-1 range (landscape ~-25600 to ~25600, use /50000 + 0.5)
+    // Normalize Z to 0-1 range (landscape Z range ~3500 units, use /5000 + 0.5)
     auto* ZDivConst = NewObject<UMaterialExpressionConstant>(Mat);
-    ZDivConst->R = 50000.0f;
+    ZDivConst->R = 5000.0f;
     AddExpr(ZDivConst, 700, 950);
 
     auto* ZDiv = NewObject<UMaterialExpressionDivide>(Mat);
@@ -2725,7 +2756,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
 
     if (TexMudDetail && FinalBC)
     {
-        AddComment(TEXT("Mud/Dirt Overlay (Multi-Octave)"), FLinearColor(0.5f, 0.35f, 0.1f), 1800, -1700, 1200, 700);
+        AddComment(TEXT("10. Dirt Patches (concentrated in low areas)"), FLinearColor(0.5f, 0.35f, 0.1f), 1800, -1700, 1200, 700);
 
         // --- UPGRADE 6: Multi-octave mud noise ---
         // Zone noise: large clusters where mud CAN form
@@ -2825,13 +2856,233 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     }
 
     // =================================================================
-    // COMMENT BOX 9: Puddle Overlay (Blue)
+    // COMMENT BOX 10B: Rubble Overlay (Tan/Beige)
+    // Scattered rubble patches — lighter rocky debris on flat areas.
+    // Multi-octave noise for concentrated patches.
+    // =================================================================
+    if (FinalBC)
+    {
+        AddComment(TEXT("12. Rubble Patches (scattered rocky debris)"), FLinearColor(0.7f, 0.6f, 0.3f), 3300, -1700, 1200, 700);
+
+        // Rubble zone noise: where rubble clusters form
+        auto* RubbleZonePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        RubbleZonePosOffset->Constant = FLinearColor(25000.0f, 14000.0f, 0.0f, 0.0f);
+        AddExpr(RubbleZonePosOffset, 3350, -1600);
+
+        auto* RubbleZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        RubbleZonePosAdd->A.Connect(0, WorldPos);
+        RubbleZonePosAdd->B.Connect(0, RubbleZonePosOffset);
+        AddExpr(RubbleZonePosAdd, 3550, -1600);
+
+        auto* RubbleZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        RubbleZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        RubbleZoneNoise->Scale = 0.00012f;  // Large zone clusters
+        RubbleZoneNoise->Quality = 1;
+        RubbleZoneNoise->Levels = 3;
+        RubbleZoneNoise->OutputMin = 0.0f;
+        RubbleZoneNoise->OutputMax = 1.0f;
+        RubbleZoneNoise->bTurbulence = true;
+        RubbleZoneNoise->bTiling = false;
+        RubbleZoneNoise->LevelScale = 2.0f;
+        RubbleZoneNoise->Position.Connect(0, RubbleZonePosAdd);
+        AddExpr(RubbleZoneNoise, 3750, -1600);
+
+        // Shape noise: individual rubble patches
+        auto* RubbleShapePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        RubbleShapePosOffset->Constant = FLinearColor(30000.0f, 18000.0f, 0.0f, 0.0f);
+        AddExpr(RubbleShapePosOffset, 3350, -1400);
+
+        auto* RubbleShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        RubbleShapePosAdd->A.Connect(0, WorldPos);
+        RubbleShapePosAdd->B.Connect(0, RubbleShapePosOffset);
+        AddExpr(RubbleShapePosAdd, 3550, -1400);
+
+        auto* RubbleShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        RubbleShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        RubbleShapeNoise->Scale = 0.0008f;  // Smaller shapes
+        RubbleShapeNoise->Quality = 1;
+        RubbleShapeNoise->Levels = 2;
+        RubbleShapeNoise->OutputMin = 0.0f;
+        RubbleShapeNoise->OutputMax = 1.0f;
+        RubbleShapeNoise->bTurbulence = false;
+        RubbleShapeNoise->bTiling = false;
+        RubbleShapeNoise->LevelScale = 2.0f;
+        RubbleShapeNoise->Position.Connect(0, RubbleShapePosAdd);
+        AddExpr(RubbleShapeNoise, 3750, -1400);
+
+        // Multiply zone * shape for concentration
+        auto* RubbleCombined = NewObject<UMaterialExpressionMultiply>(Mat);
+        RubbleCombined->A.Connect(0, RubbleZoneNoise);
+        RubbleCombined->B.Connect(0, RubbleShapeNoise);
+        AddExpr(RubbleCombined, 3950, -1500);
+
+        // Sharpen edges
+        auto* RubblePowConst = NewObject<UMaterialExpressionConstant>(Mat);
+        RubblePowConst->R = 1.5f;
+        AddExpr(RubblePowConst, 3950, -1350);
+
+        auto* RubbleMaskPow = NewObject<UMaterialExpressionPower>(Mat);
+        RubbleMaskPow->Base.Connect(0, RubbleCombined);
+        RubbleMaskPow->Exponent.Connect(0, RubblePowConst);
+        AddExpr(RubbleMaskPow, 4150, -1450);
+
+        // RubbleAmount MI parameter
+        auto* RubbleAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        RubbleAmountParam->ParameterName = FName(TEXT("RubbleAmount"));
+        RubbleAmountParam->DefaultValue = RubbleAmount;
+        AddExpr(RubbleAmountParam, 3950, -1200);
+
+        // RubbleAlpha = RubbleMask * RubbleAmount * SlopePow (flat areas)
+        auto* RubbleAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        RubbleAmountMul->A.Connect(0, RubbleMaskPow);
+        RubbleAmountMul->B.Connect(0, RubbleAmountParam);
+        AddExpr(RubbleAmountMul, 4150, -1300);
+
+        auto* RubbleSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        RubbleSlopeMul->A.Connect(0, RubbleAmountMul);
+        RubbleSlopeMul->B.Connect(0, SlopePow);
+        AddExpr(RubbleSlopeMul, 4350, -1350);
+
+        // Rubble color: light tan/beige rocky debris
+        auto* RubbleColor = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        RubbleColor->Constant = FLinearColor(0.18f, 0.14f, 0.09f, 1.0f);
+        AddExpr(RubbleColor, 4150, -1150);
+
+        // Blend rubble into base color
+        auto* RubbleBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        RubbleBC->A.Connect(0, FinalBC);
+        RubbleBC->B.Connect(0, RubbleColor);
+        RubbleBC->Alpha.Connect(0, RubbleSlopeMul);
+        AddExpr(RubbleBC, 4550, -1250);
+        FinalBC = RubbleBC;
+    }
+
+    // =================================================================
+    // COMMENT BOX 10C: Stone Overlay (Dark Grey)
+    // Scattered dark stone patches — small hard stones/pebbles.
+    // Multi-octave noise, prefers slopes more than rubble.
+    // =================================================================
+    if (FinalBC)
+    {
+        AddComment(TEXT("13. Stone Patches (hard pebbles on slopes)"), FLinearColor(0.4f, 0.4f, 0.5f), 3300, -900, 1200, 700);
+
+        // Stone zone noise
+        auto* StoneZonePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        StoneZonePosOffset->Constant = FLinearColor(35000.0f, 22000.0f, 0.0f, 0.0f);
+        AddExpr(StoneZonePosOffset, 3350, -800);
+
+        auto* StoneZonePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        StoneZonePosAdd->A.Connect(0, WorldPos);
+        StoneZonePosAdd->B.Connect(0, StoneZonePosOffset);
+        AddExpr(StoneZonePosAdd, 3550, -800);
+
+        auto* StoneZoneNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        StoneZoneNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        StoneZoneNoise->Scale = 0.00015f;  // Medium zone clusters
+        StoneZoneNoise->Quality = 1;
+        StoneZoneNoise->Levels = 3;
+        StoneZoneNoise->OutputMin = 0.0f;
+        StoneZoneNoise->OutputMax = 1.0f;
+        StoneZoneNoise->bTurbulence = true;
+        StoneZoneNoise->bTiling = false;
+        StoneZoneNoise->LevelScale = 2.0f;
+        StoneZoneNoise->Position.Connect(0, StoneZonePosAdd);
+        AddExpr(StoneZoneNoise, 3750, -800);
+
+        // Shape noise: individual stone patches (higher frequency = smaller)
+        auto* StoneShapePosOffset = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        StoneShapePosOffset->Constant = FLinearColor(40000.0f, 28000.0f, 0.0f, 0.0f);
+        AddExpr(StoneShapePosOffset, 3350, -600);
+
+        auto* StoneShapePosAdd = NewObject<UMaterialExpressionAdd>(Mat);
+        StoneShapePosAdd->A.Connect(0, WorldPos);
+        StoneShapePosAdd->B.Connect(0, StoneShapePosOffset);
+        AddExpr(StoneShapePosAdd, 3550, -600);
+
+        auto* StoneShapeNoise = NewObject<UMaterialExpressionNoise>(Mat);
+        StoneShapeNoise->NoiseFunction = NOISEFUNCTION_GradientALU;
+        StoneShapeNoise->Scale = 0.001f;  // Small individual stones
+        StoneShapeNoise->Quality = 1;
+        StoneShapeNoise->Levels = 2;
+        StoneShapeNoise->OutputMin = 0.0f;
+        StoneShapeNoise->OutputMax = 1.0f;
+        StoneShapeNoise->bTurbulence = false;
+        StoneShapeNoise->bTiling = false;
+        StoneShapeNoise->LevelScale = 2.0f;
+        StoneShapeNoise->Position.Connect(0, StoneShapePosAdd);
+        AddExpr(StoneShapeNoise, 3750, -600);
+
+        // Multiply zone * shape
+        auto* StoneCombined = NewObject<UMaterialExpressionMultiply>(Mat);
+        StoneCombined->A.Connect(0, StoneZoneNoise);
+        StoneCombined->B.Connect(0, StoneShapeNoise);
+        AddExpr(StoneCombined, 3950, -700);
+
+        // Sharpen edges
+        auto* StonePowConst = NewObject<UMaterialExpressionConstant>(Mat);
+        StonePowConst->R = 2.0f;
+        AddExpr(StonePowConst, 3950, -550);
+
+        auto* StoneMaskPow = NewObject<UMaterialExpressionPower>(Mat);
+        StoneMaskPow->Base.Connect(0, StoneCombined);
+        StoneMaskPow->Exponent.Connect(0, StonePowConst);
+        AddExpr(StoneMaskPow, 4150, -650);
+
+        // StoneAmount MI parameter
+        auto* StoneAmountParam = NewObject<UMaterialExpressionScalarParameter>(Mat);
+        StoneAmountParam->ParameterName = FName(TEXT("StoneAmount"));
+        StoneAmountParam->DefaultValue = StoneAmount;
+        AddExpr(StoneAmountParam, 3950, -400);
+
+        // StoneAlpha = StoneMask * StoneAmount * OneMinus(SlopePow) -- prefers slopes
+        auto* InvSlopePow = NewObject<UMaterialExpressionOneMinus>(Mat);
+        InvSlopePow->Input.Connect(0, SlopePow);
+        AddExpr(InvSlopePow, 4150, -400);
+
+        auto* StoneAmountMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        StoneAmountMul->A.Connect(0, StoneMaskPow);
+        StoneAmountMul->B.Connect(0, StoneAmountParam);
+        AddExpr(StoneAmountMul, 4350, -550);
+
+        auto* StoneSlopeMul = NewObject<UMaterialExpressionMultiply>(Mat);
+        StoneSlopeMul->A.Connect(0, StoneAmountMul);
+        StoneSlopeMul->B.Connect(0, InvSlopePow);
+        AddExpr(StoneSlopeMul, 4550, -500);
+
+        // Stone color: dark grey (hard stone/pebble look)
+        auto* StoneColor = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+        StoneColor->Constant = FLinearColor(0.06f, 0.055f, 0.05f, 1.0f);
+        AddExpr(StoneColor, 4350, -350);
+
+        // Blend stone into base color
+        auto* StoneBC = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        StoneBC->A.Connect(0, FinalBC);
+        StoneBC->B.Connect(0, StoneColor);
+        StoneBC->Alpha.Connect(0, StoneSlopeMul);
+        AddExpr(StoneBC, 4750, -450);
+        FinalBC = StoneBC;
+
+        // Stone also lowers roughness slightly (smooth stone surface)
+        auto* StoneRoughConst = NewObject<UMaterialExpressionConstant>(Mat);
+        StoneRoughConst->R = 0.55f;
+        AddExpr(StoneRoughConst, 4550, -300);
+
+        auto* StoneRough = NewObject<UMaterialExpressionLinearInterpolate>(Mat);
+        StoneRough->A.Connect(0, FinalRough);
+        StoneRough->B.Connect(0, StoneRoughConst);
+        StoneRough->Alpha.Connect(0, StoneSlopeMul);
+        AddExpr(StoneRough, 4750, -300);
+        FinalRough = StoneRough;
+    }
+
+    // =================================================================
+    // COMMENT BOX 11: Puddle Overlay (Blue)
     // Procedural dark puddles on flat areas. No textures needed.
     // Dark color, very low roughness (wet/shiny), flat normal.
     // =================================================================
     if (FinalBC)
     {
-        AddComment(TEXT("Puddle Overlay (Multi-Octave + Height + Wet Edge)"), FLinearColor(0.2f, 0.4f, 0.8f), 1800, -800, 1400, 1200);
+        AddComment(TEXT("14. Puddles & Wet Areas (valleys, with wet edge halo)"), FLinearColor(0.2f, 0.4f, 0.8f), 1800, -800, 1400, 1200);
 
         // --- UPGRADE 3: Multi-octave puddle mask ---
         // Zone noise: large puddle clusters
@@ -3039,8 +3290,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCreateLandscapeMater
     Result->SetStringField(TEXT("name"), MaterialName);
     Result->SetStringField(TEXT("path"), FullPath);
     Result->SetNumberField(TEXT("expression_count"), Mat->GetExpressionCollection().Expressions.Num());
-    Result->SetNumberField(TEXT("comment_count"), 9);
-    Result->SetStringField(TEXT("message"), TEXT("Landscape material v8: height-based layer blend, transition noise, multi-octave puddle+mud, World-Z height bias, wet edge darkening, distance tiling fade, UV distortion + fixed-angle rotation dissolve, 13 samplers, 10 exposed params"));
+    Result->SetNumberField(TEXT("comment_count"), 14);
+    Result->SetStringField(TEXT("message"), TEXT("Landscape material v9: height-based layer blend, transition noise, multi-octave puddle+mud+rubble+stone, World-Z height bias, wet edge darkening, distance tiling fade, UV distortion + rotation dissolve, 13 samplers, 12 exposed params"));
 
     return Result;
 }

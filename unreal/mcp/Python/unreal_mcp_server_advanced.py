@@ -1162,9 +1162,11 @@ def create_landscape_material(
     puddle_amount: float = 0.2,
     height_blend_strength: float = 0.5,
     puddle_height_bias: float = 1.0,
+    rubble_amount: float = 0.3,
+    stone_amount: float = 0.2,
 ) -> Dict[str, Any]:
     """
-    Create a complete landscape material v8 with UV noise distortion anti-tiling.
+    Create a complete landscape material v9 with UV noise distortion anti-tiling.
 
     Builds the entire material graph in C++ with:
     - UV noise distortion + fixed-angle rotation dissolve: warps UVs with noise,
@@ -1201,6 +1203,8 @@ def create_landscape_material(
     - puddle_amount: Puddle overlay intensity (default 0.2, MI-editable)
     - height_blend_strength: How much texture height affects layer transitions (default 0.5, MI-editable)
     - puddle_height_bias: How strongly puddles/mud prefer low-lying areas (default 1.0, MI-editable)
+    - rubble_amount: Rubble patch intensity on flat areas (default 0.3, MI-editable)
+    - stone_amount: Stone patch intensity on slopes (default 0.2, MI-editable)
 
     Returns:
         Dictionary with material path, expression count, and sampler count.
@@ -1248,6 +1252,8 @@ def create_landscape_material(
         params["puddle_amount"] = puddle_amount
         params["height_blend_strength"] = height_blend_strength
         params["puddle_height_bias"] = puddle_height_bias
+        params["rubble_amount"] = rubble_amount
+        params["stone_amount"] = stone_amount
 
         response = unreal.send_command("create_landscape_material", params)
         return response or {"success": False, "message": "No response from Unreal"}
@@ -4297,7 +4303,8 @@ def set_node_property(
     target_type: Optional[str] = None,
     target_function: Optional[str] = None,
     target_class: Optional[str] = None,
-    event_type: Optional[str] = None
+    event_type: Optional[str] = None,
+    default_value: Any = None
 ) -> Dict[str, Any]:
     """
     Set a property on a Blueprint node or perform semantic node editing.
@@ -4323,16 +4330,21 @@ def set_node_property(
             Phase 3 (Reference Updates - DESTRUCTIVE):
                 - "set_function_call": Change function being called (requires target_function)
                 - "set_event_type": Change event type (requires event_type)
+            Phase 4 (Pin Defaults):
+                - "set_pin_default": Set default value on a pin (requires pin_name, default_value)
+                    For primitive pins (float, int, bool, string): pass the value as string
+                    For object pins (UObject references): pass the asset path (e.g., "/Game/Animations/MyAnim.MyAnim")
 
     Semantic action parameters:
         pin_type: Type of pin to add ("SwitchCase", "ExecutionOutput", "ArrayElement", "EnumValue")
-        pin_name: Name of pin to remove or modify
+        pin_name: Name of pin to remove or modify, or pin to set default on
         enum_type: Full path to enum type (e.g., "/Game/Enums/ECardinalDirection")
         new_type: New type for pin or value ("int", "float", "string", "bool", "vector", etc.)
         target_type: Target class path for casting
         target_function: Name of function to call
         target_class: Optional class containing the function
         event_type: Event type (e.g., "BeginPlay", "Tick", "Destroyed")
+        default_value: Default value for a pin (used with action="set_pin_default")
 
     Returns:
         Dictionary with success status and details
@@ -4375,6 +4387,24 @@ def set_node_property(
                 target_function="BeginPlay",
                 target_class="APawn"
             )
+
+        Semantic mode (set pin default - primitive):
+            set_node_property(
+                blueprint_name="MyActorBlueprint",
+                node_id="K2Node_CallFunction_123",
+                action="set_pin_default",
+                pin_name="NewSpeed",
+                default_value="800.0"
+            )
+
+        Semantic mode (set pin default - object/asset):
+            set_node_property(
+                blueprint_name="MyActorBlueprint",
+                node_id="K2Node_CallFunction_456",
+                action="set_pin_default",
+                pin_name="AnimSequence",
+                default_value="/Game/Animations/MyAnim.MyAnim"
+            )
     """
     unreal = get_unreal_connection()
     if not unreal:
@@ -4400,6 +4430,8 @@ def set_node_property(
                 kwargs["target_class"] = target_class
             if event_type is not None:
                 kwargs["event_type"] = event_type
+            if default_value is not None:
+                kwargs["default_value"] = str(default_value)
 
         result = node_properties.set_node_property(
             unreal,
