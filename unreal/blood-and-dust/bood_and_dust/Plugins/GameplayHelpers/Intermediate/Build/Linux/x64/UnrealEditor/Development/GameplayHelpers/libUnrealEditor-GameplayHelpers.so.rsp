@@ -1,0 +1,8 @@
+"/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Plugins/GameplayHelpers/Intermediate/Build/Linux/x64/UnrealEditor/Development/GameplayHelpers/Module.GameplayHelpers.cpp.o"
+"/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Plugins/GameplayHelpers/Intermediate/Build/Linux/x64/UnrealEditor/Development/GameplayHelpers/GameplayHelpersModule.cpp.o"
+"/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Plugins/GameplayHelpers/Intermediate/Build/Linux/x64/UnrealEditor/Development/GameplayHelpers/GameplayHelperLibrary.cpp.o"
+-soname="libUnrealEditor-GameplayHelpers.so"
+-rpath-link="/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Plugins/GameplayHelpers/Binaries/Linux"
+-L"../Binaries/Linux"
+--start-group
+--end-group

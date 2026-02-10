@@ -47,6 +47,7 @@
 // AnimGraph State Machine includes
 #include "AnimGraphNode_StateMachine.h"
 #include "AnimGraphNode_Root.h"
+#include "AnimGraphNode_Slot.h"
 #include "AnimGraphNode_SequencePlayer.h"
 #include "AnimGraphNode_StateResult.h"
 #include "AnimGraphNode_TransitionResult.h"
@@ -2332,7 +2333,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	SMNode->PostPlacedNewNode(); // Creates EditorStateMachineGraph
 	SMNode->AllocateDefaultPins();
 
-	// Connect SM output to Root input (find first output/input pins)
+	// Connect SM output → Slot (DefaultSlot) → Root input
+	// The Slot node enables montage/PlaySlotAnimationAsDynamicMontage playback
 	UEdGraphPin* SMOutputPin = nullptr;
 	for (UEdGraphPin* Pin : SMNode->Pins)
 	{
@@ -2351,9 +2353,32 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 			break;
 		}
 	}
-	if (SMOutputPin && RootInputPin)
+
+	// Create Slot node between SM and Root for montage playback
+	UAnimGraphNode_Slot* SlotNode = NewObject<UAnimGraphNode_Slot>(AnimGraph);
+	SlotNode->Node.SlotName = FName("DefaultSlot");
+	SlotNode->NodePosX = RootNode->NodePosX - 200;
+	SlotNode->NodePosY = RootNode->NodePosY;
+	AnimGraph->AddNode(SlotNode, true, false);
+	SlotNode->CreateNewGuid();
+	SlotNode->AllocateDefaultPins();
+
+	UEdGraphPin* SlotInputPin = nullptr;
+	UEdGraphPin* SlotOutputPin = nullptr;
+	for (UEdGraphPin* Pin : SlotNode->Pins)
 	{
-		SMOutputPin->MakeLinkTo(RootInputPin);
+		if (Pin->Direction == EGPD_Input) SlotInputPin = Pin;
+		if (Pin->Direction == EGPD_Output) SlotOutputPin = Pin;
+	}
+
+	// Wire: SM → Slot → Root
+	if (SMOutputPin && SlotInputPin)
+	{
+		SMOutputPin->MakeLinkTo(SlotInputPin);
+	}
+	if (SlotOutputPin && RootInputPin)
+	{
+		SlotOutputPin->MakeLinkTo(RootInputPin);
 	}
 
 	// === Part 4: Create States ===
