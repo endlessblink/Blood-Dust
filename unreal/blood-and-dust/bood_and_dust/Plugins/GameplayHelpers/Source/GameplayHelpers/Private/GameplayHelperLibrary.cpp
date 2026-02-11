@@ -3,6 +3,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
+#include "TimerManager.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -20,7 +21,7 @@ void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float 
 	MovementComp->MaxWalkSpeed = NewSpeed;
 }
 
-void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate, float BlendIn, float BlendOut)
+void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate, float BlendIn, float BlendOut, bool bStopMovement)
 {
 	if (!Character || !AnimSequence)
 	{
@@ -39,6 +40,20 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		return;
 	}
 
+	// Stop movement during the animation if requested
+	UCharacterMovementComponent* MovementComp = nullptr;
+	float SavedSpeed = 0.0f;
+	if (bStopMovement)
+	{
+		MovementComp = Character->GetCharacterMovement();
+		if (MovementComp)
+		{
+			SavedSpeed = MovementComp->MaxWalkSpeed;
+			MovementComp->MaxWalkSpeed = 0.0f;
+			MovementComp->StopMovementImmediately();
+		}
+	}
+
 	AnimInst->PlaySlotAnimationAsDynamicMontage(
 		AnimSequence,
 		FName("DefaultSlot"),
@@ -49,4 +64,27 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		-1.0f,  // BlendOutTriggerTime = auto
 		0.0f    // InTimeToStartMontageAt
 	);
+
+	// Set timer to restore movement speed after animation completes
+	if (bStopMovement && MovementComp)
+	{
+		float Duration = AnimSequence->GetPlayLength() / FMath::Max(PlayRate, 0.01f);
+		// Restore slightly before animation ends (during blend out) for smoother feel
+		float RestoreTime = FMath::Max(Duration - BlendOut, 0.1f);
+
+		FTimerHandle TimerHandle;
+		TWeakObjectPtr<UCharacterMovementComponent> WeakMoveComp(MovementComp);
+		Character->GetWorldTimerManager().SetTimer(
+			TimerHandle,
+			[WeakMoveComp, SavedSpeed]()
+			{
+				if (WeakMoveComp.IsValid())
+				{
+					WeakMoveComp->MaxWalkSpeed = SavedSpeed;
+				}
+			},
+			RestoreTime,
+			false // Don't loop
+		);
+	}
 }

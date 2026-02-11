@@ -237,7 +237,11 @@
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .gitignore)",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nFix: exclude all plugin Binaries/Intermediate from git\n\nUpdated .gitignore to use wildcard for all plugins, removed\nGameplayHelpers build artifacts from tracking.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(ffmpeg:*)",
+      "mcp__unrealMCP__import_sound",
+      "Bash(git status:*)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: ABP/BP robot updates, game-designer skill, MASTER_PLAN tasks\n\nNew: game-designer skill. Updated ABP_Robot, BP_RobotCharacter,\nBlueprintCommands, MASTER_PLAN.md.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

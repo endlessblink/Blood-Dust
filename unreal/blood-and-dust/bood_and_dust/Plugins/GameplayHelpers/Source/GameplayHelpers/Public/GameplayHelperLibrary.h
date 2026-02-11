@@ -32,5 +32,5 @@ public:
 	 * Uses the DefaultSlot so multiple calls interrupt each other (no stacking).
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|Animation", meta=(DefaultToSelf="Character"))
-	static void PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate = 1.0f, float BlendIn = 0.25f, float BlendOut = 0.25f);
+	static void PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate = 1.0f, float BlendIn = 0.25f, float BlendOut = 0.25f, bool bStopMovement = false);
 };
