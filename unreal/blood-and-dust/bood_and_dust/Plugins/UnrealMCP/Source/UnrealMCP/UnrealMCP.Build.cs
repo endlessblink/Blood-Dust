@@ -67,7 +67,8 @@ public class UnrealMCP : ModuleRules
 				"Landscape",             // For landscape/terrain editing
 				"LandscapeEditor",       // For landscape editing tools
 				"Foliage",               // For foliage editing
-			"InputBlueprintNodes"    // For K2Node_EnhancedInputAction
+			"InputBlueprintNodes",   // For K2Node_EnhancedInputAction
+				"AudioEditor"            // For USoundFactory (sound import)
 			}
 		);
 		

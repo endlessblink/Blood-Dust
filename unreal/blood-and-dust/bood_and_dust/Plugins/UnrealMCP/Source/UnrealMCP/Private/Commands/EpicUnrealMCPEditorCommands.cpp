@@ -106,6 +106,12 @@
 // HISM for foliage scatter
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 
+// Audio import
+#include "Sound/SoundWave.h"
+#include "Sound/AmbientSound.h"
+#include "Components/AudioComponent.h"
+#include "Factories/SoundFactory.h"
+
 // Landscape filter for foliage scatter line traces
 #include "LandscapeProxy.h"
 
@@ -255,6 +261,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     else if (CommandType == TEXT("scatter_foliage"))
     {
         return HandleScatterFoliage(Params);
+    }
+    // Audio import
+    else if (CommandType == TEXT("import_sound"))
+    {
+        return HandleImportSound(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -432,6 +443,69 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActor(const TSh
             }
         }
         NewActor = PPVolume;
+    }
+    else if (ActorType == TEXT("AmbientSound"))
+    {
+        AAmbientSound* SoundActor = World->SpawnActor<AAmbientSound>(AAmbientSound::StaticClass(), Location, Rotation, SpawnParams);
+        if (SoundActor)
+        {
+            UAudioComponent* AudioComp = SoundActor->GetAudioComponent();
+            if (AudioComp)
+            {
+                // Set sound asset
+                FString SoundPath;
+                if (Params->TryGetStringField(TEXT("sound_asset"), SoundPath))
+                {
+                    USoundBase* Sound = Cast<USoundBase>(UEditorAssetLibrary::LoadAsset(SoundPath));
+                    if (Sound)
+                    {
+                        AudioComp->SetSound(Sound);
+                    }
+                    else
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("Could not find sound asset at path: %s"), *SoundPath);
+                    }
+                }
+
+                // Volume multiplier
+                double VolumeMultiplier = 1.0;
+                if (Params->TryGetNumberField(TEXT("volume_multiplier"), VolumeMultiplier))
+                {
+                    AudioComp->VolumeMultiplier = static_cast<float>(VolumeMultiplier);
+                }
+
+                // Pitch multiplier
+                double PitchMultiplier = 1.0;
+                if (Params->TryGetNumberField(TEXT("pitch_multiplier"), PitchMultiplier))
+                {
+                    AudioComp->PitchMultiplier = static_cast<float>(PitchMultiplier);
+                }
+
+                // Auto activate
+                bool bAutoActivate = true;
+                if (Params->TryGetBoolField(TEXT("auto_activate"), bAutoActivate))
+                {
+                    AudioComp->SetAutoActivate(bAutoActivate);
+                }
+
+                // UI sound (non-spatialized, for music)
+                bool bUISound = false;
+                if (Params->TryGetBoolField(TEXT("is_ui_sound"), bUISound) && bUISound)
+                {
+                    AudioComp->bIsUISound = true;
+                    AudioComp->bAllowSpatialization = false;
+                }
+
+                // Attenuation override for max distance
+                double AttenuationMaxDist = 0.0;
+                if (Params->TryGetNumberField(TEXT("attenuation_max_distance"), AttenuationMaxDist))
+                {
+                    AudioComp->bOverrideAttenuation = true;
+                    AudioComp->AttenuationOverrides.FalloffDistance = static_cast<float>(AttenuationMaxDist);
+                }
+            }
+        }
+        NewActor = SoundActor;
     }
     else if (ActorType == TEXT("DecalActor"))
     {
@@ -5502,6 +5576,110 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     Result->SetStringField(TEXT("message"),
         FString::Printf(TEXT("Scattered %d instances of %s via HISM (Poisson disk, %d candidates, %d slope-rejected, %d no-hit)"),
             ValidInstances.Num(), *Mesh->GetName(), Points.Num(), RejectedSlope, RejectedNoHit));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportSound(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString SourcePath;
+    if (!Params->TryGetStringField(TEXT("source_path"), SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_path' parameter"));
+    }
+
+    FString SoundName;
+    if (!Params->TryGetStringField(TEXT("sound_name"), SoundName))
+    {
+        // Use source filename if not provided
+        SoundName = FPaths::GetBaseFilename(SourcePath);
+    }
+
+    // Get optional destination path
+    FString DestinationPath = TEXT("/Game/Audio/");
+    Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+    if (!DestinationPath.EndsWith(TEXT("/")))
+    {
+        DestinationPath += TEXT("/");
+    }
+
+    // Check if source file exists
+    if (!FPaths::FileExists(SourcePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file not found: %s"), *SourcePath));
+    }
+
+    // Create package for the sound
+    FString PackagePath = DestinationPath + SoundName;
+    UPackage* Package = CreatePackage(*PackagePath);
+
+    if (!Package)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for sound"));
+    }
+
+    // Create sound factory
+    USoundFactory* SoundFactory = NewObject<USoundFactory>();
+    SoundFactory->AddToRoot();
+
+    // Import the sound
+    bool bCancelled = false;
+    USoundWave* ImportedSound = Cast<USoundWave>(SoundFactory->ImportObject(
+        USoundWave::StaticClass(),
+        Package,
+        FName(*SoundName),
+        RF_Public | RF_Standalone,
+        SourcePath,
+        nullptr,
+        bCancelled
+    ));
+
+    SoundFactory->RemoveFromRoot();
+
+    if (!ImportedSound)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to import sound from: %s"), *SourcePath));
+    }
+
+    // Apply optional properties
+    bool bLooping = false;
+    if (Params->TryGetBoolField(TEXT("looping"), bLooping))
+    {
+        ImportedSound->bLooping = bLooping;
+    }
+
+    double Volume = 1.0;
+    if (Params->TryGetNumberField(TEXT("volume"), Volume))
+    {
+        ImportedSound->Volume = static_cast<float>(Volume);
+    }
+
+    ImportedSound->PostEditChange();
+
+    // Notify asset registry
+    IAssetRegistry::Get()->AssetCreated(ImportedSound);
+
+    // Save package to disk immediately (same pattern as texture import)
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+    UPackage::SavePackage(Package, ImportedSound, *PackageFilename, SaveArgs);
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("name"), SoundName);
+    Result->SetStringField(TEXT("path"), PackagePath);
+    Result->SetStringField(TEXT("source"), SourcePath);
+    Result->SetNumberField(TEXT("duration_seconds"), ImportedSound->Duration);
+    Result->SetNumberField(TEXT("sample_rate"), static_cast<double>(ImportedSound->GetSampleRateForCurrentPlatform()));
+    Result->SetNumberField(TEXT("num_channels"), static_cast<double>(ImportedSound->NumChannels));
+    Result->SetBoolField(TEXT("looping"), ImportedSound->bLooping);
+    Result->SetStringField(TEXT("message"), TEXT("Sound imported successfully"));
 
     return Result;
 }

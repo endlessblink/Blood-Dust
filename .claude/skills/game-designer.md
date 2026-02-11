@@ -81,6 +81,11 @@ Use `AskUserQuestion` tool with these 6 questions:
 - "Phase 6: NPCs"
 - "Phase 7: Combat"
 
+**Q7: Sound Design** (header: "Audio")
+- "Ambient soundscape only (Recommended)" — Wind, environment sounds
+- "Full soundtrack + ambient" — Background music + environment sounds
+- "Skip audio" — No audio this session
+
 ### Decision Tree
 Map answers to phase configuration. Store choices for later phases.
 
@@ -535,7 +540,64 @@ Or create a separate BP_NPC_Robot blueprint with Health.
 Skip damage calculation. Just play attack animation when LMB pressed. NPCs stand still. This is the safe option for a demo.
 
 ### Checkpoint
-> "Phase 7 complete. Basic combat system in place. Press **Ctrl+S** to save. Take a final screenshot for the demo reel!"
+> "Phase 7 complete. Basic combat system in place. Press **Ctrl+S** to save. Ready for Phase 8?"
+
+---
+
+## Phase 8: Sound & Music (~15 min, ~20 MCP calls)
+
+### Prerequisites
+Audio files available on disk (WAV or OGG format). Free sources:
+- freesound.org — ambient wind, footsteps, sword clashes
+- incompetech.com — royalty-free background music
+
+### Step 1: Import Sound Assets
+
+```
+import_sound(source_path="/path/to/wind_ambient.wav", sound_name="S_Wind_Ambient", destination_path="/Game/Audio/Ambient/")
+```
+Pause with `list_assets(path="/Game/Audio/")` between imports.
+
+```
+import_sound(source_path="/path/to/combat_music.ogg", sound_name="S_Combat_Music", destination_path="/Game/Audio/Music/", looping=True)
+```
+
+### Step 2: Place Ambient Sounds (3D spatialized)
+
+```
+spawn_actor(type="AmbientSound", name="Ambient_Wind_01", location=[0, 0, 500],
+    sound_asset="/Game/Audio/Ambient/S_Wind_Ambient", volume_multiplier=0.6,
+    auto_activate=True, attenuation_max_distance=10000)
+```
+
+Spread 2-4 ambient sounds across the level for coverage. Max 3 spawns, then breathing room.
+
+### Step 3: Background Music (2D non-spatialized)
+
+```
+spawn_actor(type="AmbientSound", name="Music_Background", location=[0, 0, 0],
+    sound_asset="/Game/Audio/Music/S_Combat_Music", is_ui_sound=True,
+    volume_multiplier=0.3, auto_activate=True)
+```
+
+2D/UI sound has no distance falloff — player hears it everywhere at constant volume.
+
+### Step 4: Character Audio Component (optional)
+
+```
+add_component_to_blueprint(
+    blueprint_name="/Game/Characters/Robot/BP_RobotCharacter",
+    component_type="AudioComponent", component_name="FootstepAudio",
+    sound_asset="/Game/Audio/SFX/S_Footstep", auto_activate=False)
+```
+
+**Checkpoint:** Take screenshot, ask user to test audio in PIE (Play In Editor).
+
+### Troubleshooting
+- **No sound in PIE**: Check sound asset path is correct, auto_activate is true
+- **Sound too quiet/loud**: Adjust volume_multiplier (0.0 to 2.0 range)
+- **Music follows camera**: Correct — is_ui_sound=true makes it non-spatialized
+- **Sound cuts off**: Increase attenuation_max_distance
 
 ---
 
@@ -547,10 +609,9 @@ After automated phases, inform the user about manual editor work:
 |---------|-------------------|-------|
 | M1: Fire/Smoke FX | Add Niagara particle at torch locations | Niagara Editor |
 | M2: Health Bar HUD | Create UMG Widget BP, bind to Health var | Widget Blueprint |
-| M3: Audio | Import WAV/OGG, add AudioComponents | Content Browser |
-| M4: AI Behavior | Create Behavior Tree for NPC patrol/combat | BT Editor |
-| M5: Game Mode | Set Default Pawn to BP_RobotCharacter | Project Settings > Maps & Modes |
-| M6: Player Start | Place PlayerStart actor in level | Level Editor |
+| M3: AI Behavior | Create Behavior Tree for NPC patrol/combat | BT Editor |
+| M4: Game Mode | Set Default Pawn to BP_RobotCharacter | Project Settings > Maps & Modes |
+| M5: Player Start | Place PlayerStart actor in level | Level Editor |
 
 Provide variable names and asset paths so manual work is easy.
 
@@ -598,7 +659,8 @@ Always use `get_height_at_location` before placing. Add capsule half-height offs
 | **Milestone: Environment Complete** | | | **~90 min** |
 | 6: NPCs | 10-40 min | 20-60 | 130 min |
 | 7: Combat | 30-60 min | 80-120 | 210 min |
-| **Milestone: Playable Demo** | | | **~3-3.5 hrs** |
+| 8: Sound & Music | 15 min | ~20 | 225 min |
+| **Milestone: Playable Demo with Audio** | | | **~3.5-4 hrs** |
 
 ## What CANNOT Be Done via MCP
 
@@ -606,7 +668,6 @@ Always use `get_height_at_location` before placing. Add capsule half-height offs
 |---------|-----|-----------|
 | Niagara FX (fire, smoke) | No Niagara MCP tools | Place torch meshes, add FX manually |
 | Health Bar HUD | No UMG/Widget tools | Create Widget BP manually, bind to Health var |
-| Audio/sound | No audio MCP tools | Import audio manually, add AudioComponent |
 | AI behavior trees | No BT MCP tools | Simple Blueprint patrol (Phase 6b) |
 | Animation montages | No montage playback API | State machine transitions only |
 | Physics-based combat | No physics impulse tools | Overlap-based damage only |
@@ -617,5 +678,4 @@ Always use `get_height_at_location` before placing. Add capsule half-height offs
 - `create_widget_blueprint` — HUD elements (health bar, crosshair)
 - `play_animation_montage` — one-shot attack animations
 - `create_behavior_tree` — AI patrol and combat behavior
-- `add_audio_component` — ambient sound, SFX
 - `set_game_mode_default_pawn` — auto-configure game mode

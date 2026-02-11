@@ -104,6 +104,7 @@ class UnrealConnection:
         "import_mesh",
         "import_skeletal_mesh",
         "import_animation",
+        "import_sound",
         "create_pbr_material",
         "create_landscape_material",
         "scatter_meshes_on_landscape",
@@ -119,6 +120,7 @@ class UnrealConnection:
         "import_mesh": 3.0,          # FBX parsing + Nanite building + collision
         "import_skeletal_mesh": 5.0, # FBX parsing + skeleton + skin weights + physics asset
         "import_animation": 3.0,    # FBX parsing + animation curve processing
+        "import_sound": 2.0,         # Sound decompression + asset creation
         "create_pbr_material": 1.0,  # Material compilation + shader compile
         "create_landscape_material": 2.0,  # Full material graph + shader compile
         "scatter_meshes_on_landscape": 2.0,  # Multiple spawns + line traces
@@ -991,6 +993,60 @@ def import_texture(
         return response or {"success": False, "message": "No response from Unreal"}
     except Exception as e:
         logger.error(f"import_texture error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def import_sound(
+    source_path: str,
+    sound_name: str = "",
+    destination_path: str = "/Game/Audio/",
+    looping: bool = False,
+    volume: float = 1.0
+) -> Dict[str, Any]:
+    """
+    Import a sound file from disk into the Unreal project.
+
+    Supports WAV and OGG audio formats.
+
+    Parameters:
+    - source_path: Full filesystem path to the source audio file (WAV or OGG)
+    - sound_name: Name for the imported sound (defaults to source filename)
+    - destination_path: Content browser path for the sound (default: "/Game/Audio/")
+    - looping: Whether the sound should loop (default: False)
+    - volume: Volume multiplier (default: 1.0)
+
+    Returns:
+        Dictionary with success status, sound path, duration, sample rate, and channel count.
+
+    Example usage:
+        # Import ambient wind sound
+        import_sound("/home/user/audio/wind_ambient.wav", "S_Wind_Ambient", "/Game/Audio/Ambient/")
+
+        # Import looping background music
+        import_sound("/home/user/audio/combat_music.ogg", "S_Combat_Music", "/Game/Audio/Music/",
+                     looping=True, volume=0.5)
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "source_path": source_path,
+            "destination_path": destination_path
+        }
+        if sound_name:
+            params["sound_name"] = sound_name
+        if looping:
+            params["looping"] = looping
+        if volume != 1.0:
+            params["volume"] = volume
+
+        response = unreal.send_command("import_sound", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"import_sound error: {e}")
         return {"success": False, "message": str(e)}
 
 
@@ -2923,6 +2979,12 @@ def spawn_actor(
     location: List[float] = [0.0, 0.0, 0.0],
     rotation: List[float] = [0.0, 0.0, 0.0],
     scale: List[float] = [1.0, 1.0, 1.0],
+    sound_asset: str = "",
+    volume_multiplier: float = 1.0,
+    pitch_multiplier: float = 1.0,
+    auto_activate: bool = True,
+    is_ui_sound: bool = False,
+    attenuation_max_distance: float = 0.0,
 ) -> dict:
     """
     Spawn an actor in the level.
@@ -2931,7 +2993,14 @@ def spawn_actor(
     - name: Unique name for the actor
     - type: Actor type - "StaticMeshActor", "PointLight", "SpotLight",
             "DirectionalLight", "CameraActor", "CineCameraActor",
-            "ExponentialHeightFog", "SkyLight", "PostProcessVolume", "DecalActor"
+            "ExponentialHeightFog", "SkyLight", "PostProcessVolume", "DecalActor",
+            "AmbientSound" - Spatialized or 2D audio source. Extra params:
+                sound_asset (str): Path to USoundWave or USoundCue (e.g., "/Game/Audio/S_Wind")
+                volume_multiplier (float): Volume scale, default 1.0
+                pitch_multiplier (float): Pitch scale, default 1.0
+                auto_activate (bool): Start playing automatically, default true
+                is_ui_sound (bool): If true, non-spatialized 2D audio (for music), default false
+                attenuation_max_distance (float): Max hearing distance in units
     - static_mesh: For StaticMeshActor, the mesh asset path (e.g. "/Game/Meshes/Rocks/SM_Boulder_01")
     - location: [X, Y, Z] position in Unreal units
     - rotation: [Pitch, Yaw, Roll] in degrees
@@ -2954,6 +3023,19 @@ def spawn_actor(
     }
     if static_mesh:
         params["static_mesh"] = static_mesh
+    # AmbientSound-specific parameters
+    if sound_asset:
+        params["sound_asset"] = sound_asset
+    if volume_multiplier != 1.0:
+        params["volume_multiplier"] = volume_multiplier
+    if pitch_multiplier != 1.0:
+        params["pitch_multiplier"] = pitch_multiplier
+    if not auto_activate:
+        params["auto_activate"] = False
+    if is_ui_sound:
+        params["is_ui_sound"] = True
+    if attenuation_max_distance > 0.0:
+        params["attenuation_max_distance"] = attenuation_max_distance
     response = unreal.send_command("spawn_actor", params)
     return response.get("result", response)
 

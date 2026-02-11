@@ -81,6 +81,8 @@
 | TASK-015F | Phase 5: World Building (ruins/castle/town) | P2 | OPEN | - |
 | TASK-015G | Phase 6: NPC Spawn & Patrol | P2 | OPEN | TASK-015B |
 | TASK-015H | Phase 7: Combat Foundation | P2 | OPEN | TASK-015G |
+| TASK-015I | Phase 8: Sound & Music | P2 | OPEN | - |
+| **FEATURE-016** | **Audio Pipeline: import_sound + AmbientSound + BP AudioComponent** | **P1** | **DONE** (2026-02-11) | - |
 
 ## Active Work
 
@@ -561,6 +563,22 @@ Reusable skill for importing any character with the full pipeline:
 | 5: World Building | OPEN | 10-50 | 15-30 min |
 | 6: NPCs | OPEN | 20-60 | 10-40 min |
 | 7: Combat | OPEN | 80-120 | 30-60 min |
+| 8: Sound & Music | OPEN | ~20 | 15 min |
+
+---
+
+### FEATURE-016: Audio Pipeline
+
+**Status**: DONE (2026-02-11)
+**Priority**: P1
+**Goal**: C++ MCP tools for importing sound assets, spawning ambient sound actors, and adding audio components to Blueprints.
+
+#### Delivered
+- `import_sound` — Imports WAV/OGG as USoundWave (with looping, volume params)
+- `spawn_actor(type="AmbientSound")` — 3D spatialized or 2D music via `is_ui_sound`
+- `add_component_to_blueprint` — AudioComponent with sound_asset, volume, looping, auto_activate
+- Python `import_sound` @mcp.tool() + HEAVY dicts (2.0s cooldown)
+- Game designer skill Phase 8: Sound & Music
 
 ---
 

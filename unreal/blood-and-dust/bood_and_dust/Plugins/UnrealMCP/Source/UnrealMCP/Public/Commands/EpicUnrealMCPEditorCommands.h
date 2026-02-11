@@ -77,4 +77,7 @@ private:
 
     // HISM-based foliage scatter (Poisson disk + slope filter)
     TSharedPtr<FJsonObject> HandleScatterFoliage(const TSharedPtr<FJsonObject>& Params);
+
+    // Audio import
+    TSharedPtr<FJsonObject> HandleImportSound(const TSharedPtr<FJsonObject>& Params);
 };

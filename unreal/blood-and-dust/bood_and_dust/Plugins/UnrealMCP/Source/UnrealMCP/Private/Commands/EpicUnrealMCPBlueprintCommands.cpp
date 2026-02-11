@@ -13,6 +13,9 @@
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/AudioComponent.h"
+#include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/Material.h"
@@ -334,6 +337,51 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleAddComponentToBlu
             if (Params->HasField(TEXT("scale")))
             {
                 SceneComponent->SetRelativeScale3D(FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale")));
+            }
+        }
+
+        // Audio-specific properties for UAudioComponent
+        if (UAudioComponent* AudioComp = Cast<UAudioComponent>(NewNode->ComponentTemplate))
+        {
+            FString SoundPath;
+            if (Params->TryGetStringField(TEXT("sound_asset"), SoundPath))
+            {
+                USoundBase* Sound = Cast<USoundBase>(UEditorAssetLibrary::LoadAsset(SoundPath));
+                if (Sound)
+                {
+                    AudioComp->SetSound(Sound);
+                }
+            }
+
+            bool bLooping = false;
+            if (Params->TryGetBoolField(TEXT("looping"), bLooping) && bLooping)
+            {
+                // Looping is set on the SoundWave, not the component directly.
+                // If the sound asset is a SoundWave, set bLooping on it.
+                USoundWave* SoundWave = Cast<USoundWave>(AudioComp->Sound);
+                if (SoundWave)
+                {
+                    SoundWave->bLooping = true;
+                }
+            }
+
+            bool bAutoActivate = true;
+            if (Params->TryGetBoolField(TEXT("auto_activate"), bAutoActivate))
+            {
+                AudioComp->SetAutoActivate(bAutoActivate);
+            }
+
+            double VolumeVal = 1.0;
+            if (Params->TryGetNumberField(TEXT("volume"), VolumeVal))
+            {
+                AudioComp->VolumeMultiplier = static_cast<float>(VolumeVal);
+            }
+
+            bool bUISound = false;
+            if (Params->TryGetBoolField(TEXT("is_ui_sound"), bUISound) && bUISound)
+            {
+                AudioComp->bIsUISound = true;
+                AudioComp->bAllowSpatialization = false;
             }
         }
 
@@ -2506,6 +2554,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	UAnimStateTransitionNode* WalkToJump = (bHasJump && JumpState) ? CreateTransition(WalkState, JumpState) : nullptr;
 	UAnimStateTransitionNode* RunToJump = (bHasJump && bHasRun && JumpState && RunState) ? CreateTransition(RunState, JumpState) : nullptr;
 	UAnimStateTransitionNode* JumpToIdle = (bHasJump && JumpState) ? CreateTransition(JumpState, IdleState) : nullptr;
+
+	// Jump transitions: fast entry (0.1s), slow exit (0.5s) for smooth landing
+	if (IdleToJump) IdleToJump->CrossfadeDuration = 0.1f;
+	if (WalkToJump) WalkToJump->CrossfadeDuration = 0.1f;
+	if (RunToJump) RunToJump->CrossfadeDuration = 0.1f;
+	if (JumpToIdle) JumpToIdle->CrossfadeDuration = 0.5f;
 
 	// === Part 7: Add Speed variable to AnimBP ===
 	int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(AnimBP, FName("Speed"));
