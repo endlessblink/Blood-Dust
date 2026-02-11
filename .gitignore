@@ -20,8 +20,8 @@ unreal/blood-and-dust/bood_and_dust/Binaries/
 unreal/blood-and-dust/bood_and_dust/Intermediate/
 unreal/blood-and-dust/bood_and_dust/DerivedDataCache/
 unreal/blood-and-dust/bood_and_dust/Saved/
-unreal/blood-and-dust/bood_and_dust/Plugins/UnrealMCP/Binaries/
-unreal/blood-and-dust/bood_and_dust/Plugins/UnrealMCP/Intermediate/
+unreal/blood-and-dust/bood_and_dust/Plugins/*/Binaries/
+unreal/blood-and-dust/bood_and_dust/Plugins/*/Intermediate/
 
 # --- Exclude engine source ---
 unreal/engine/
