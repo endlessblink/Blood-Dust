@@ -233,7 +233,10 @@
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: robot material cleanup, texture updates\n\nRemoved M_Robot.uasset, updated SK_Robot, T_Robot_M, T_Robot_R.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(while read f)",
       "Bash(do identify:*)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: GameplayHelpers plugin, robot material consolidation, level updates\n\nNew: GameplayHelpers plugin. Consolidated M_Robot into Characters/Robot,\nremoved duplicate from Materials/. Updated BP_RobotCharacter,\nBlueprintCommands, level actors.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: GameplayHelpers plugin, robot material consolidation, level updates\n\nNew: GameplayHelpers plugin. Consolidated M_Robot into Characters/Robot,\nremoved duplicate from Materials/. Updated BP_RobotCharacter,\nBlueprintCommands, level actors.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture add .gitignore)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nFix: exclude all plugin Binaries/Intermediate from git\n\nUpdated .gitignore to use wildcard for all plugins, removed\nGameplayHelpers build artifacts from tracking.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -2765,11 +2765,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 				if (IsFallingReturn && SetFallingInput) IsFallingReturn->MakeLinkTo(SetFallingInput);
 			}
 
-			// Wire exec: SetSpeed.Then -> SetIsFalling.Execute
+			// Wire exec: SetSpeed.Then -> CastToChar.Execute -> CastToChar.Then -> SetIsFalling.Execute
+			// DynamicCast has exec pins that MUST be in the chain or BP compiler errors
 			{
 				UEdGraphPin* SetSpeedThen = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Then);
+				UEdGraphPin* CastExec = CastToCharNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+				if (SetSpeedThen && CastExec) SetSpeedThen->MakeLinkTo(CastExec);
+
+				UEdGraphPin* CastThen = CastToCharNode->FindPin(UEdGraphSchema_K2::PN_Then);
 				UEdGraphPin* SetFallingExec = SetIsFallingNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-				if (SetSpeedThen && SetFallingExec) SetSpeedThen->MakeLinkTo(SetFallingExec);
+				if (CastThen && SetFallingExec) CastThen->MakeLinkTo(SetFallingExec);
 			}
 		}
 	}
