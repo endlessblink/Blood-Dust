@@ -1678,6 +1678,7 @@ def setup_locomotion_state_machine(
     idle_animation: str,
     walk_animation: str,
     run_animation: str = "",
+    jump_animation: str = "",
     walk_speed_threshold: float = 5.0,
     run_speed_threshold: float = 300.0,
     crossfade_duration: float = 0.2
@@ -1694,6 +1695,7 @@ def setup_locomotion_state_machine(
     - idle_animation: Content path to idle AnimSequence
     - walk_animation: Content path to walk AnimSequence
     - run_animation: Optional content path to run AnimSequence (omit for 2-state Idle/Walk)
+    - jump_animation: Optional content path to jump AnimSequence
     - walk_speed_threshold: Speed threshold for Idle↔Walk transition (default: 5.0)
     - run_speed_threshold: Speed threshold for Walk↔Run transition (default: 300.0)
     - crossfade_duration: Blend duration between states in seconds (default: 0.2)
@@ -1707,6 +1709,7 @@ def setup_locomotion_state_machine(
             idle_animation="/Game/Characters/Robot/Animations/Idle",
             walk_animation="/Game/Characters/Robot/Animations/Walking",
             run_animation="/Game/Characters/Robot/Animations/Running",
+            jump_animation="/Game/Characters/Robot/Animations/Jump",
             walk_speed_threshold=5.0,
             run_speed_threshold=300.0
         )
@@ -1726,6 +1729,8 @@ def setup_locomotion_state_machine(
         }
         if run_animation:
             params["run_animation"] = run_animation
+        if jump_animation:
+            params["jump_animation"] = jump_animation
 
         response = unreal.send_command("setup_locomotion_state_machine", params)
         return response or {"success": False, "message": "No response from Unreal"}

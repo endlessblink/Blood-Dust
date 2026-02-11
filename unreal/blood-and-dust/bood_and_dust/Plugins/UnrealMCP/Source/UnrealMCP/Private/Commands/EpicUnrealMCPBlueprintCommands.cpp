@@ -60,6 +60,7 @@
 #include "AnimationTransitionGraph.h"
 #include "Animation/AnimSequence.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_DynamicCast.h"
 #include "Kismet/KismetMathLibrary.h"
 
 FEpicUnrealMCPBlueprintCommands::FEpicUnrealMCPBlueprintCommands()
@@ -2262,6 +2263,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	}
 	Params->TryGetStringField(TEXT("run_animation"), RunAnimPath);
 
+	FString JumpAnimPath;
+	Params->TryGetStringField(TEXT("jump_animation"), JumpAnimPath);
+	bool bHasJump = !JumpAnimPath.IsEmpty();
+
 	double WalkThreshold = 5.0, RunThreshold = 300.0;
 	double CrossfadeDuration = 0.2;
 	Params->TryGetNumberField(TEXT("walk_speed_threshold"), WalkThreshold);
@@ -2292,6 +2297,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	if (bHasRun && !RunAnim)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load run animation: %s"), *RunAnimPath));
+	}
+
+	UAnimSequence* JumpAnim = bHasJump ? LoadObject<UAnimSequence>(nullptr, *JumpAnimPath) : nullptr;
+	if (bHasJump && !JumpAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load jump animation: %s"), *JumpAnimPath));
 	}
 
 	// === Part 2: Find AnimGraph ===
@@ -2451,6 +2462,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	UAnimStateNode* IdleState = CreateState(TEXT("Idle"), IdleAnim, 200, 0);
 	UAnimStateNode* WalkState = CreateState(TEXT("Walk"), WalkAnim, 500, -150);
 	UAnimStateNode* RunState = bHasRun ? CreateState(TEXT("Run"), RunAnim, 800, 0) : nullptr;
+	UAnimStateNode* JumpState = bHasJump ? CreateState(TEXT("Jump"), JumpAnim, 500, 200) : nullptr;
 
 	// === Part 5: Connect Entry to Idle ===
 	if (SMGraph->EntryNode && IdleState)
@@ -2489,6 +2501,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	UAnimStateTransitionNode* WalkToRun = bHasRun ? CreateTransition(WalkState, RunState) : nullptr;
 	UAnimStateTransitionNode* RunToWalk = bHasRun ? CreateTransition(RunState, WalkState) : nullptr;
 
+	// Jump transitions: any locomotion state -> Jump (when IsFalling), Jump -> Idle (when not falling)
+	UAnimStateTransitionNode* IdleToJump = (bHasJump && JumpState) ? CreateTransition(IdleState, JumpState) : nullptr;
+	UAnimStateTransitionNode* WalkToJump = (bHasJump && JumpState) ? CreateTransition(WalkState, JumpState) : nullptr;
+	UAnimStateTransitionNode* RunToJump = (bHasJump && bHasRun && JumpState && RunState) ? CreateTransition(RunState, JumpState) : nullptr;
+	UAnimStateTransitionNode* JumpToIdle = (bHasJump && JumpState) ? CreateTransition(JumpState, IdleState) : nullptr;
+
 	// === Part 7: Add Speed variable to AnimBP ===
 	int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(AnimBP, FName("Speed"));
 	if (VarIndex == INDEX_NONE)
@@ -2503,8 +2521,23 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		AnimBP->NewVariables.Add(SpeedVar);
 	}
 
-	// Part 7.5: Compile so Speed variable is baked into generated class
-	// This is required before K2Node_VariableGet/Set can allocate pins for Speed
+	if (bHasJump)
+	{
+		int32 FallingVarIndex = FBlueprintEditorUtils::FindNewVariableIndex(AnimBP, FName("IsFalling"));
+		if (FallingVarIndex == INDEX_NONE)
+		{
+			FBPVariableDescription IsFallingVar;
+			IsFallingVar.VarName = FName("IsFalling");
+			IsFallingVar.VarGuid = FGuid::NewGuid();
+			IsFallingVar.VarType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+			IsFallingVar.DefaultValue = TEXT("false");
+			IsFallingVar.PropertyFlags |= CPF_BlueprintVisible;
+			AnimBP->NewVariables.Add(IsFallingVar);
+		}
+	}
+
+	// Part 7.5: Compile so Speed (and IsFalling) variables are baked into generated class
+	// This is required before K2Node_VariableGet/Set can allocate pins for Speed/IsFalling
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
 	FKismetEditorUtilities::CompileBlueprint(AnimBP);
 
@@ -2641,6 +2674,104 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 					VSizeReturn != nullptr, SpeedInput != nullptr);
 			}
 		}
+
+		// === IsFalling chain (only when jump is enabled) ===
+		if (bHasJump)
+		{
+			// Cast TryGetPawnOwner result to ACharacter (need ACharacter* for GetCharacterMovement)
+			UK2Node_DynamicCast* CastToCharNode = NewObject<UK2Node_DynamicCast>(EventGraph);
+			CastToCharNode->TargetType = ACharacter::StaticClass();
+			CastToCharNode->NodePosX = 300;
+			CastToCharNode->NodePosY = 600;
+			EventGraph->AddNode(CastToCharNode, true, false);
+			CastToCharNode->CreateNewGuid();
+			CastToCharNode->AllocateDefaultPins();
+
+			// Wire TryGetPawnOwner.ReturnValue -> Cast.Object
+			if (GetPawnNode)
+			{
+				UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+				UEdGraphPin* CastInput = CastToCharNode->GetCastSourcePin();
+				if (PawnReturn && CastInput) PawnReturn->MakeLinkTo(CastInput);
+			}
+
+			// GetCharacterMovement (ACharacter member function)
+			UFunction* GetCMCFunc = ACharacter::StaticClass()->FindFunctionByName(FName("GetCharacterMovement"));
+			UK2Node_CallFunction* GetCMCNode = nullptr;
+			if (GetCMCFunc)
+			{
+				GetCMCNode = NewObject<UK2Node_CallFunction>(EventGraph);
+				GetCMCNode->SetFromFunction(GetCMCFunc);
+				GetCMCNode->NodePosX = 600;
+				GetCMCNode->NodePosY = 600;
+				EventGraph->AddNode(GetCMCNode, true, false);
+				GetCMCNode->CreateNewGuid();
+				GetCMCNode->AllocateDefaultPins();
+
+				// Wire Cast.AsCharacter -> GetCharacterMovement.self
+				UEdGraphPin* CastResult = CastToCharNode->GetCastResultPin();
+				UEdGraphPin* CMCSelf = GetCMCNode->FindPin(UEdGraphSchema_K2::PN_Self);
+				if (CastResult && CMCSelf) CastResult->MakeLinkTo(CMCSelf);
+			}
+
+			// IsFalling (UCharacterMovementComponent member function, returns bool)
+			UFunction* IsFallingFunc = UCharacterMovementComponent::StaticClass()->FindFunctionByName(FName("IsFalling"));
+			UK2Node_CallFunction* IsFallingNode = nullptr;
+			if (IsFallingFunc)
+			{
+				IsFallingNode = NewObject<UK2Node_CallFunction>(EventGraph);
+				IsFallingNode->SetFromFunction(IsFallingFunc);
+				IsFallingNode->NodePosX = 900;
+				IsFallingNode->NodePosY = 600;
+				EventGraph->AddNode(IsFallingNode, true, false);
+				IsFallingNode->CreateNewGuid();
+				IsFallingNode->AllocateDefaultPins();
+
+				// Wire GetCharacterMovement.ReturnValue -> IsFalling.self
+				if (GetCMCNode)
+				{
+					UEdGraphPin* CMCReturn = GetCMCNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+					UEdGraphPin* IsFallingSelf = IsFallingNode->FindPin(UEdGraphSchema_K2::PN_Self);
+					if (CMCReturn && IsFallingSelf) CMCReturn->MakeLinkTo(IsFallingSelf);
+				}
+			}
+
+			// Set IsFalling variable
+			UK2Node_VariableSet* SetIsFallingNode = NewObject<UK2Node_VariableSet>(EventGraph);
+			SetIsFallingNode->VariableReference.SetSelfMember(FName("IsFalling"));
+			SetIsFallingNode->NodePosX = 1200;
+			SetIsFallingNode->NodePosY = 600;
+			EventGraph->AddNode(SetIsFallingNode, true, false);
+			SetIsFallingNode->CreateNewGuid();
+			SetIsFallingNode->AllocateDefaultPins();
+
+			// Wire IsFalling.ReturnValue -> SetIsFalling input
+			if (IsFallingNode)
+			{
+				UEdGraphPin* IsFallingReturn = IsFallingNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+				UEdGraphPin* SetFallingInput = SetIsFallingNode->FindPin(FName("IsFalling"));
+				if (!SetFallingInput)
+				{
+					// Fallback: find boolean input pin
+					for (UEdGraphPin* Pin : SetIsFallingNode->Pins)
+					{
+						if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean)
+						{
+							SetFallingInput = Pin;
+							break;
+						}
+					}
+				}
+				if (IsFallingReturn && SetFallingInput) IsFallingReturn->MakeLinkTo(SetFallingInput);
+			}
+
+			// Wire exec: SetSpeed.Then -> SetIsFalling.Execute
+			{
+				UEdGraphPin* SetSpeedThen = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Then);
+				UEdGraphPin* SetFallingExec = SetIsFallingNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+				if (SetSpeedThen && SetFallingExec) SetSpeedThen->MakeLinkTo(SetFallingExec);
+			}
+		}
 	}
 
 	// === Part 9: Setup Transition Rules (speed comparison) ===
@@ -2772,6 +2903,78 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	if (WalkToRun) SetupTransitionRule(WalkToRun, true, RunThreshold);
 	if (RunToWalk) SetupTransitionRule(RunToWalk, false, RunThreshold);
 
+	// Jump transition rules (IsFalling-based)
+	if (bHasJump)
+	{
+		// Find Not_PreBool function for inverting IsFalling
+		UFunction* NotBoolFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(FName("Not_PreBool"));
+
+		auto SetupBoolTransitionRule = [&](UAnimStateTransitionNode* TransNode, bool bInvert)
+		{
+			if (!TransNode || !TransNode->BoundGraph) return;
+
+			UAnimationTransitionGraph* TransGraph = Cast<UAnimationTransitionGraph>(TransNode->BoundGraph);
+			if (!TransGraph || !TransGraph->MyResultNode) return;
+
+			// VariableGet for IsFalling
+			UK2Node_VariableGet* FallingGet = NewObject<UK2Node_VariableGet>(TransGraph);
+			FallingGet->VariableReference.SetSelfMember(FName("IsFalling"));
+			FallingGet->NodePosX = -300;
+			FallingGet->NodePosY = 0;
+			TransGraph->AddNode(FallingGet, true, false);
+			FallingGet->CreateNewGuid();
+			FallingGet->AllocateDefaultPins();
+
+			// Find transition result bool input
+			UEdGraphPin* ResultPin = nullptr;
+			for (UEdGraphPin* Pin : TransGraph->MyResultNode->Pins)
+			{
+				if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean)
+				{
+					ResultPin = Pin;
+					break;
+				}
+			}
+			if (!ResultPin)
+			{
+				ResultPin = TransGraph->MyResultNode->FindPin(TEXT("bCanEnterTransition"));
+			}
+
+			if (bInvert && NotBoolFunc)
+			{
+				// IsFalling -> NOT -> Result (for exit-jump transitions)
+				UK2Node_CallFunction* NotNode = NewObject<UK2Node_CallFunction>(TransGraph);
+				NotNode->SetFromFunction(NotBoolFunc);
+				NotNode->NodePosX = -100;
+				NotNode->NodePosY = 0;
+				TransGraph->AddNode(NotNode, true, false);
+				NotNode->CreateNewGuid();
+				NotNode->AllocateDefaultPins();
+
+				UEdGraphPin* FallingOut = FallingGet->GetValuePin();
+				UEdGraphPin* NotA = NotNode->FindPin(TEXT("A"));
+				if (FallingOut && NotA) FallingOut->MakeLinkTo(NotA);
+
+				UEdGraphPin* NotReturn = NotNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+				if (NotReturn && ResultPin) NotReturn->MakeLinkTo(ResultPin);
+			}
+			else
+			{
+				// IsFalling directly -> Result (for enter-jump transitions)
+				UEdGraphPin* FallingOut = FallingGet->GetValuePin();
+				if (FallingOut && ResultPin) FallingOut->MakeLinkTo(ResultPin);
+			}
+		};
+
+		// Enter jump: IsFalling = true
+		SetupBoolTransitionRule(IdleToJump, false);
+		SetupBoolTransitionRule(WalkToJump, false);
+		if (RunToJump) SetupBoolTransitionRule(RunToJump, false);
+
+		// Exit jump: IsFalling = false (inverted)
+		SetupBoolTransitionRule(JumpToIdle, true);
+	}
+
 	// === Part 10: Compile ===
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
 	FKismetEditorUtilities::CompileBlueprint(AnimBP);
@@ -2785,9 +2988,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	ResultObj->SetBoolField(TEXT("success"), AnimBP->Status != EBlueprintStatus::BS_Error);
 	ResultObj->SetNumberField(TEXT("compile_status"), (int)AnimBP->Status);
 	ResultObj->SetStringField(TEXT("anim_blueprint"), AnimBPPath);
-	ResultObj->SetNumberField(TEXT("state_count"), bHasRun ? 3 : 2);
-	ResultObj->SetNumberField(TEXT("transition_count"), bHasRun ? 4 : 2);
-	ResultObj->SetStringField(TEXT("message"), TEXT("Locomotion state machine created with speed-based transitions"));
+	int32 JumpTransitionCount = bHasJump ? (3 + (bHasRun ? 1 : 0)) : 0;
+	ResultObj->SetNumberField(TEXT("state_count"), 2 + (bHasRun ? 1 : 0) + (bHasJump ? 1 : 0));
+	ResultObj->SetNumberField(TEXT("transition_count"), 2 + (bHasRun ? 2 : 0) + JumpTransitionCount);
+	ResultObj->SetStringField(TEXT("message"), FString::Printf(TEXT("Locomotion state machine created with speed-based transitions%s%s"),
+		bHasRun ? TEXT(" + run state") : TEXT(""),
+		bHasJump ? TEXT(" + jump state (IsFalling-based)") : TEXT("")));
 	return ResultObj;
 }
 
