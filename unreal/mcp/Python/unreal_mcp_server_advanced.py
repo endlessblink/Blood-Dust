@@ -12,6 +12,8 @@ import math
 import struct
 import time
 import threading
+import base64
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional, List
 from mcp.server.fastmcp import FastMCP
@@ -108,7 +110,9 @@ class UnrealConnection:
         "create_pbr_material",
         "create_landscape_material",
         "scatter_meshes_on_landscape",
-        "scatter_foliage"
+        "scatter_foliage",
+        "create_widget_blueprint",
+        "create_behavior_tree",
     }
 
     # Commands that need a post-execution cooldown to let the engine
@@ -125,6 +129,10 @@ class UnrealConnection:
         "create_landscape_material": 2.0,  # Full material graph + shader compile
         "scatter_meshes_on_landscape": 2.0,  # Multiple spawns + line traces
         "scatter_foliage": 2.0,              # HISM scatter + Poisson disk + line traces
+        "create_anim_montage": 1.0,      # Montage asset creation + save
+        "create_widget_blueprint": 1.5,   # Widget BP creation + compile + save
+        "create_behavior_tree": 1.0,      # BT asset creation + save
+        "create_blackboard": 1.0,         # BB asset creation + save
     }
     
     def __init__(self):
@@ -1320,33 +1328,67 @@ def create_landscape_material(
 
 @mcp.tool()
 def take_screenshot(
-    file_path: str = ""
-) -> Dict[str, Any]:
+    file_path: str = "",
+    width: int = 1920,
+    height: int = 1080
+) -> list:
     """
     Take a screenshot of the active Unreal Editor viewport.
 
-    Captures the current editor viewport and saves it as a PNG file.
-    Useful for visual debugging and verifying scene state.
+    Uses SceneCapture2D to render the scene off-screen — works even when
+    the editor viewport is minimized or has no visible render target.
+    Returns the screenshot as an inline image (visible to Claude) plus metadata.
 
     Parameters:
     - file_path: Where to save the PNG (default: project's Saved/Screenshots/MCP_Screenshot.png)
+    - width: Screenshot width in pixels (default: 1920, range: 320-3840)
+    - height: Screenshot height in pixels (default: 1080, range: 240-2160)
 
     Returns:
-        Dictionary with file_path (absolute), width, height.
+        List of MCP content items: TextContent with metadata + ImageContent with the screenshot.
     """
+    from mcp.types import ImageContent, TextContent
+
     unreal = get_unreal_connection()
     if not unreal:
-        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+        return [TextContent(type="text", text=json.dumps({"success": False, "message": "Failed to connect to Unreal Engine"}))]
 
     try:
-        params = {}
+        params = {"width": width, "height": height}
         if file_path:
             params["file_path"] = file_path
+
         response = unreal.send_command("take_screenshot", params)
-        return response.get("result", response)
+        result = response.get("result", response)
+
+        if not result.get("success"):
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        # Build response with inline image
+        content_items = []
+
+        # Text metadata
+        meta = {
+            "success": True,
+            "file_path": result.get("file_path", ""),
+            "width": result.get("width", 0),
+            "height": result.get("height", 0),
+            "message": result.get("message", ""),
+        }
+        content_items.append(TextContent(type="text", text=json.dumps(meta)))
+
+        # Inline image so Claude can see the screenshot
+        screenshot_path = result.get("file_path", "")
+        if screenshot_path and os.path.isfile(screenshot_path):
+            with open(screenshot_path, "rb") as f:
+                png_bytes = f.read()
+            b64_data = base64.standard_b64encode(png_bytes).decode("ascii")
+            content_items.append(ImageContent(type="image", data=b64_data, mimeType="image/png"))
+
+        return content_items
     except Exception as e:
         logger.error(f"take_screenshot error: {e}")
-        return {"success": False, "message": str(e)}
+        return [TextContent(type="text", text=json.dumps({"success": False, "message": str(e)}))]
 
 
 @mcp.tool()
@@ -5437,6 +5479,7 @@ def scatter_foliage(
     actor_name: str = "HISM_Foliage",
     cull_distance: float = 0.0,
     material_path: str = "",
+    materials: List[str] = None,
     bounds: List[float] = None
 ) -> Dict[str, Any]:
     """
@@ -5460,7 +5503,9 @@ def scatter_foliage(
     - z_offset: Vertical offset from ground in UU (negative = sink into ground)
     - actor_name: Name for the container actor (default: "HISM_Foliage")
     - cull_distance: Instance culling distance in UU (0 = no culling)
-    - material_path: Optional material override path
+    - material_path: Optional material override path (applies to ALL slots)
+    - materials: Optional list of material paths, one per slot index.
+      Empty strings skip that slot (use mesh default). Overrides material_path if provided.
     - bounds: Optional rectangular bounds [min_x, max_x, min_y, max_y]. When provided,
       overrides center+radius for uniform rectangular coverage. Ideal for full-landscape scatter.
 
@@ -5529,7 +5574,9 @@ def scatter_foliage(
     if scale_range is not None:
         params["scale_range"] = scale_range
 
-    if material_path:
+    if materials:
+        params["materials"] = materials
+    elif material_path:
         params["material_path"] = material_path
 
     try:
@@ -5537,6 +5584,432 @@ def scatter_foliage(
         return response.get("result", response)
     except Exception as e:
         logger.error(f"scatter_foliage error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+
+# ============================================================================
+# Gameplay Commands (FEATURE-017, 018, 020, 022, 023)
+# ============================================================================
+
+@mcp.tool()
+def set_game_mode_default_pawn(
+    blueprint_path: str,
+    game_mode_path: str = "",
+    create_player_start: bool = True,
+    player_start_location: List[float] = [0.0, 0.0, 100.0]
+) -> Dict[str, Any]:
+    """
+    Set the default pawn class for the game mode to a character Blueprint.
+
+    Creates a GameMode BP if none exists, sets DefaultPawnClass,
+    and optionally spawns a PlayerStart actor.
+
+    Parameters:
+    - blueprint_path: Content path to the character Blueprint (e.g., "/Game/Characters/Robot/BP_RobotCharacter")
+    - game_mode_path: Optional path to existing GameMode BP (creates new if empty)
+    - create_player_start: Whether to spawn a PlayerStart actor (default: True)
+    - player_start_location: [X, Y, Z] for PlayerStart placement (default: [0, 0, 100])
+    """
+    unreal = get_unreal_connection()
+    params = {"blueprint_path": blueprint_path}
+    if game_mode_path:
+        params["game_mode_path"] = game_mode_path
+    params["create_player_start"] = create_player_start
+    params["player_start_location"] = player_start_location
+    try:
+        response = unreal.send_command("set_game_mode_default_pawn", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def create_anim_montage(
+    animation_path: str,
+    montage_name: str,
+    destination_path: str = "",
+    slot_name: str = "DefaultGroup.DefaultSlot"
+) -> Dict[str, Any]:
+    """
+    Create an AnimMontage asset from an existing AnimSequence.
+
+    Parameters:
+    - animation_path: Content path to source AnimSequence (e.g., "/Game/Characters/Robot/Animations/Anim_Kick")
+    - montage_name: Name for the new montage (e.g., "AM_Kick")
+    - destination_path: Content path for the montage (defaults to same directory as animation)
+    - slot_name: Animation slot name (default: "DefaultGroup.DefaultSlot")
+    """
+    unreal = get_unreal_connection()
+    params = {"animation_path": animation_path, "montage_name": montage_name}
+    if destination_path:
+        params["destination_path"] = destination_path
+    params["slot_name"] = slot_name
+    try:
+        response = unreal.send_command("create_anim_montage", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def play_montage_on_actor(
+    actor_name: str,
+    montage_path: str,
+    play_rate: float = 1.0,
+    start_section: str = ""
+) -> Dict[str, Any]:
+    """
+    Play an AnimMontage on a character actor (requires PIE/Play mode).
+
+    Parameters:
+    - actor_name: Name of the character actor in the level
+    - montage_path: Content path to the AnimMontage asset
+    - play_rate: Playback speed multiplier (default: 1.0)
+    - start_section: Optional montage section to start from
+    """
+    unreal = get_unreal_connection()
+    params = {"actor_name": actor_name, "montage_path": montage_path, "play_rate": play_rate}
+    if start_section:
+        params["start_section"] = start_section
+    try:
+        response = unreal.send_command("play_montage_on_actor", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def apply_impulse(
+    actor_name: str,
+    direction: List[float],
+    magnitude: float,
+    enable_ragdoll: bool = False,
+    component_name: str = ""
+) -> Dict[str, Any]:
+    """
+    Apply a physics impulse to an actor. Works best during PIE/Play mode.
+
+    Parameters:
+    - actor_name: Name of the target actor
+    - direction: [X, Y, Z] direction vector (will be normalized)
+    - magnitude: Force magnitude in Unreal units
+    - enable_ragdoll: If True and actor is a Character, enables ragdoll physics first (default: False)
+    - component_name: Optional specific component to apply impulse to
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "actor_name": actor_name,
+        "direction": direction,
+        "magnitude": magnitude,
+        "enable_ragdoll": enable_ragdoll
+    }
+    if component_name:
+        params["component_name"] = component_name
+    try:
+        response = unreal.send_command("apply_impulse", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def trigger_post_process_effect(
+    effect_type: str,
+    duration: float = 0.5,
+    intensity: float = 1.0,
+    custom_settings: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Trigger a temporary post-process effect (best in PIE/Play mode).
+
+    Parameters:
+    - effect_type: "red_flash" (tint screen red), "slow_mo" (slow motion via time dilation),
+                   "desaturate" (remove color), "custom" (use custom_settings)
+    - duration: How long the effect lasts in seconds (default: 0.5)
+    - intensity: Effect strength 0.0-1.0 (default: 1.0)
+    - custom_settings: For "custom" type - dict of PostProcess settings to override
+    """
+    unreal = get_unreal_connection()
+    params = {"effect_type": effect_type, "duration": duration, "intensity": intensity}
+    if custom_settings:
+        params["custom_settings"] = custom_settings
+    try:
+        response = unreal.send_command("trigger_post_process_effect", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def spawn_niagara_system(
+    actor_name: str,
+    system_path: str,
+    location: List[float] = [0.0, 0.0, 0.0],
+    rotation: List[float] = [0.0, 0.0, 0.0],
+    scale: List[float] = [1.0, 1.0, 1.0],
+    auto_activate: bool = True
+) -> Dict[str, Any]:
+    """
+    Spawn a Niagara particle system actor in the level.
+
+    Parameters:
+    - actor_name: Unique name for the actor
+    - system_path: Content path to the UNiagaraSystem asset (e.g., "/Game/FX/NS_Fire")
+    - location: [X, Y, Z] position
+    - rotation: [Pitch, Yaw, Roll] in degrees
+    - scale: [X, Y, Z] scale factors
+    - auto_activate: Whether particles start automatically (default: True)
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "actor_name": actor_name,
+        "system_path": system_path,
+        "location": location,
+        "rotation": rotation,
+        "scale": scale,
+        "auto_activate": auto_activate
+    }
+    try:
+        response = unreal.send_command("spawn_niagara_system", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ============================================================================
+# Widget Commands (FEATURE-019)
+# ============================================================================
+
+@mcp.tool()
+def create_widget_blueprint(
+    widget_name: str,
+    widget_path: str = "/Game/UI/",
+    elements: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """
+    Create a UMG Widget Blueprint with optional child elements.
+
+    Parameters:
+    - widget_name: Name for the widget BP (e.g., "WBP_HUD")
+    - widget_path: Content browser destination path (default: "/Game/UI/")
+    - elements: Optional list of widget elements to add. Each element:
+        {"type": "ProgressBar"|"Image"|"TextBlock"|"Border",
+         "name": "HealthBar",
+         "position": [x, y],
+         "size": [width, height],
+         "properties": {"Percent": 0.75, "FillColor": [1,0,0,1]}}
+
+    Example:
+        create_widget_blueprint("WBP_HUD", elements=[
+            {"type": "ProgressBar", "name": "HealthBar", "position": [50, 50], "size": [300, 30]},
+            {"type": "TextBlock", "name": "ScoreText", "position": [50, 100], "size": [200, 40]}
+        ])
+    """
+    unreal = get_unreal_connection()
+    params = {"widget_name": widget_name, "widget_path": widget_path}
+    if elements:
+        params["elements"] = elements
+    try:
+        response = unreal.send_command("create_widget_blueprint", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def add_widget_to_viewport(
+    widget_path: str,
+    z_order: int = 0
+) -> Dict[str, Any]:
+    """
+    Add a Widget Blueprint to the viewport. Works during PIE; in editor mode, validates the asset.
+
+    Parameters:
+    - widget_path: Content path to the Widget Blueprint
+    - z_order: Viewport Z-order (higher = on top, default: 0)
+    """
+    unreal = get_unreal_connection()
+    params = {"widget_path": widget_path, "z_order": z_order}
+    try:
+        response = unreal.send_command("add_widget_to_viewport", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def set_widget_property(
+    widget_path: str,
+    widget_name: str,
+    property_name: str,
+    value: Any
+) -> Dict[str, Any]:
+    """
+    Set a property on a named child widget inside a Widget Blueprint.
+
+    Parameters:
+    - widget_path: Content path to the Widget Blueprint
+    - widget_name: Name of the child widget (e.g., "HealthBar")
+    - property_name: Property to set. Common properties:
+        ProgressBar: "Percent" (0-1), "FillColor" ([R,G,B,A])
+        TextBlock: "Text" (string), "FontSize" (int), "ColorAndOpacity" ([R,G,B,A])
+        Image: "ColorAndOpacity" ([R,G,B,A]), "Visibility" ("Visible"|"Hidden"|"Collapsed")
+    - value: The value to set (type depends on property)
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "widget_path": widget_path,
+        "widget_name": widget_name,
+        "property_name": property_name,
+        "value": value
+    }
+    try:
+        response = unreal.send_command("set_widget_property", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ============================================================================
+# AI Commands (FEATURE-021)
+# ============================================================================
+
+@mcp.tool()
+def create_behavior_tree(
+    bt_name: str,
+    bt_path: str = "/Game/AI/",
+    root_type: str = "Selector"
+) -> Dict[str, Any]:
+    """
+    Create a Behavior Tree asset with a root composite node.
+
+    Parameters:
+    - bt_name: Name for the BT (e.g., "BT_EnemyPatrol")
+    - bt_path: Content browser destination path (default: "/Game/AI/")
+    - root_type: Root composite type - "Selector" or "Sequence" (default: "Selector")
+    """
+    unreal = get_unreal_connection()
+    params = {"bt_name": bt_name, "bt_path": bt_path, "root_type": root_type}
+    try:
+        response = unreal.send_command("create_behavior_tree", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def create_blackboard(
+    bb_name: str,
+    bb_path: str = "/Game/AI/",
+    keys: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """
+    Create a Blackboard Data asset with typed keys.
+
+    Parameters:
+    - bb_name: Name for the Blackboard (e.g., "BB_EnemyData")
+    - bb_path: Content browser destination path (default: "/Game/AI/")
+    - keys: List of key definitions, each: {"name": "TargetActor", "type": "Object"|"Bool"|"Int"|"Float"|"Vector"|"String"}
+
+    Example:
+        create_blackboard("BB_EnemyData", keys=[
+            {"name": "TargetActor", "type": "Object"},
+            {"name": "PatrolIndex", "type": "Int"},
+            {"name": "IsAlerted", "type": "Bool"}
+        ])
+    """
+    unreal = get_unreal_connection()
+    params = {"bb_name": bb_name, "bb_path": bb_path}
+    if keys:
+        params["keys"] = keys
+    try:
+        response = unreal.send_command("create_blackboard", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def add_bt_task(
+    bt_path: str,
+    task_type: str,
+    task_params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Add a task node to a Behavior Tree's root composite.
+
+    Parameters:
+    - bt_path: Content path to the Behavior Tree asset
+    - task_type: Task type - "MoveTo", "Wait", "PlayAnimation", "RunEQSQuery"
+    - task_params: Optional task-specific settings:
+        MoveTo: {"acceptable_radius": 100.0}
+        Wait: {"wait_time": 3.0}
+        PlayAnimation: {"animation_path": "/Game/..."}
+    """
+    unreal = get_unreal_connection()
+    params = {"bt_path": bt_path, "task_type": task_type}
+    if task_params:
+        params["task_params"] = task_params
+    try:
+        response = unreal.send_command("add_bt_task", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def add_bt_decorator(
+    bt_path: str,
+    decorator_type: str,
+    child_index: int = 0,
+    decorator_params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Add a decorator to a Behavior Tree child node.
+
+    Parameters:
+    - bt_path: Content path to the Behavior Tree asset
+    - decorator_type: "Blackboard", "Cooldown", "TimeLimit", "IsAtLocation"
+    - child_index: Index of the child node to decorate (default: 0)
+    - decorator_params: Optional decorator settings:
+        Cooldown: {"cooldown_time": 5.0}
+        TimeLimit: {"time_limit": 10.0}
+        Blackboard: {"blackboard_key": "IsAlerted", "key_query": "IsSet"}
+    """
+    unreal = get_unreal_connection()
+    params = {"bt_path": bt_path, "decorator_type": decorator_type, "child_index": child_index}
+    if decorator_params:
+        params["decorator_params"] = decorator_params
+    try:
+        response = unreal.send_command("add_bt_decorator", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def assign_behavior_tree(
+    actor_name: str,
+    bt_path: str,
+    bb_path: str = ""
+) -> Dict[str, Any]:
+    """
+    Assign a Behavior Tree to an AI-controlled actor. Works in PIE; in editor provides guidance.
+
+    Parameters:
+    - actor_name: Name of the NPC actor (must be a Pawn with AIController)
+    - bt_path: Content path to the Behavior Tree asset
+    - bb_path: Optional content path to a Blackboard Data asset
+    """
+    unreal = get_unreal_connection()
+    params = {"actor_name": actor_name, "bt_path": bt_path}
+    if bb_path:
+        params["bb_path"] = bb_path
+    try:
+        response = unreal.send_command("assign_behavior_tree", params)
+        return response.get("result", response)
+    except Exception as e:
         return {"success": False, "message": str(e)}
 
 

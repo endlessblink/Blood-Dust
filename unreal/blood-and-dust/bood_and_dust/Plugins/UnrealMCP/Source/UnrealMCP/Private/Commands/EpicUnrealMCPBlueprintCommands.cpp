@@ -24,6 +24,7 @@
 #include "Engine/Engine.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "UObject/Field.h"
@@ -492,12 +493,69 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCompileBlueprint(
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Compile the blueprint
-    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    // Compile with a results log so we can capture errors
+    FCompilerResultsLog ResultsLog;
+    ResultsLog.bSilentMode = false;
+    ResultsLog.bLogInfoOnly = false;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &ResultsLog);
+
+    // Check compilation status
+    bool bSuccess = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
-    ResultObj->SetBoolField(TEXT("compiled"), true);
+    ResultObj->SetBoolField(TEXT("compiled"), bSuccess);
+
+    // Map status to string
+    FString StatusStr;
+    switch (Blueprint->Status)
+    {
+        case BS_UpToDate: StatusStr = TEXT("UpToDate"); break;
+        case BS_UpToDateWithWarnings: StatusStr = TEXT("UpToDateWithWarnings"); break;
+        case BS_Error: StatusStr = TEXT("Error"); break;
+        case BS_Dirty: StatusStr = TEXT("Dirty"); break;
+        case BS_Unknown: StatusStr = TEXT("Unknown"); break;
+        default: StatusStr = TEXT("Other"); break;
+    }
+    ResultObj->SetStringField(TEXT("status"), StatusStr);
+    ResultObj->SetNumberField(TEXT("num_errors"), ResultsLog.NumErrors);
+    ResultObj->SetNumberField(TEXT("num_warnings"), ResultsLog.NumWarnings);
+
+    // Collect error and warning messages
+    if (ResultsLog.NumErrors > 0 || ResultsLog.NumWarnings > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> ErrorsArray;
+        TArray<TSharedPtr<FJsonValue>> WarningsArray;
+
+        for (const TSharedRef<FTokenizedMessage>& Msg : ResultsLog.Messages)
+        {
+            FString MsgText = Msg->ToText().ToString();
+            if (Msg->GetSeverity() == EMessageSeverity::Error)
+            {
+                ErrorsArray.Add(MakeShared<FJsonValueString>(MsgText));
+            }
+            else if (Msg->GetSeverity() == EMessageSeverity::Warning || Msg->GetSeverity() == EMessageSeverity::PerformanceWarning)
+            {
+                WarningsArray.Add(MakeShared<FJsonValueString>(MsgText));
+            }
+        }
+
+        if (ErrorsArray.Num() > 0)
+        {
+            ResultObj->SetArrayField(TEXT("errors"), ErrorsArray);
+        }
+        if (WarningsArray.Num() > 0)
+        {
+            ResultObj->SetArrayField(TEXT("warnings"), WarningsArray);
+        }
+    }
+
+    // If compilation failed, also return as an error response format for clarity
+    if (!bSuccess)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Blueprint compilation failed for '%s' with %d error(s)"), *BlueprintName, ResultsLog.NumErrors);
+    }
+
     return ResultObj;
 }
 

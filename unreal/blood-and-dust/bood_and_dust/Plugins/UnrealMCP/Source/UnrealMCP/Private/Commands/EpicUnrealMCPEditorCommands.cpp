@@ -8,6 +8,9 @@
 #include "Engine/GameViewportClient.h"
 #include "Slate/SceneViewport.h"
 #include "Widgets/SViewport.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Misc/FileHelper.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
@@ -4416,143 +4419,138 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
         FilePath = FPaths::ProjectSavedDir() / TEXT("Screenshots") / TEXT("MCP_Screenshot.png");
     }
 
+    // Optional resolution (default 1920x1080)
+    int32 Width = 1920;
+    int32 Height = 1080;
+    if (Params->HasField(TEXT("width")))
+    {
+        Width = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("width"))), 320, 3840);
+    }
+    if (Params->HasField(TEXT("height")))
+    {
+        Height = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("height"))), 240, 2160);
+    }
+
     // Ensure directory exists
     IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
     PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
 
-    // Get the level editor viewport (not asset/material editor viewports)
-    FViewport* Viewport = nullptr;
-    FEditorViewportClient* UsedClient = nullptr;
+    // === Step 1: Get viewport camera position, rotation, and FOV ===
+    FVector CameraLocation = FVector::ZeroVector;
+    FRotator CameraRotation = FRotator::ZeroRotator;
+    float CameraFOV = 90.0f;
+    bool bFoundCamera = false;
 
     if (GEditor)
     {
-        // Prefer level editor viewports - these show the actual scene
+        // Prefer perspective level viewport
         const TArray<FLevelEditorViewportClient*>& LevelViewports = GEditor->GetLevelViewportClients();
         for (FLevelEditorViewportClient* ViewportClient : LevelViewports)
         {
-            if (ViewportClient && ViewportClient->Viewport)
+            if (ViewportClient && ViewportClient->IsPerspective())
             {
-                Viewport = ViewportClient->Viewport;
-                UsedClient = ViewportClient;
+                CameraLocation = ViewportClient->GetViewLocation();
+                CameraRotation = ViewportClient->GetViewRotation();
+                CameraFOV = ViewportClient->ViewFOV;
+                bFoundCamera = true;
                 break;
             }
         }
 
-        // Fallback: try active viewport, then any viewport
-        if (!Viewport)
+        // Fallback: any level viewport (including ortho)
+        if (!bFoundCamera)
         {
-            Viewport = GEditor->GetActiveViewport();
-        }
-        if (!Viewport)
-        {
-            for (FEditorViewportClient* ViewportClient : GEditor->GetAllViewportClients())
+            for (FLevelEditorViewportClient* ViewportClient : LevelViewports)
             {
-                if (ViewportClient && ViewportClient->Viewport)
+                if (ViewportClient)
                 {
-                    Viewport = ViewportClient->Viewport;
-                    UsedClient = ViewportClient;
+                    CameraLocation = ViewportClient->GetViewLocation();
+                    CameraRotation = ViewportClient->GetViewRotation();
+                    CameraFOV = ViewportClient->ViewFOV;
+                    bFoundCamera = true;
                     break;
                 }
             }
         }
     }
 
-    if (!Viewport)
+    if (!bFoundCamera)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor viewport found"));
-    }
-
-    // Ensure viewport has a valid size before capturing.
-    // After editor restart, the FViewport render target may be 0x0 even though
-    // the Slate widget is visible. We fix this by getting the size from the
-    // owning SViewport widget and forcing a resize + redraw.
-    int32 Width = Viewport->GetSizeXY().X;
-    int32 Height = Viewport->GetSizeXY().Y;
-
-    if (Width == 0 || Height == 0)
-    {
-        // Attempt 1: Force a Slate tick to process pending layout, then redraw.
-        // After editor restart, the viewport widget exists but Slate hasn't done a
-        // layout pass yet, so FViewport has no RHI render target allocated.
-        // Ticking Slate processes widget layout → SViewport gets proper geometry →
-        // viewport resize callback fires → RHI render target gets allocated.
-        if (FSlateApplication::IsInitialized())
-        {
-            FSlateApplication::Get().Tick();
-        }
-        if (GEditor)
-        {
-            GEditor->RedrawAllViewports();
-        }
-        Width = Viewport->GetSizeXY().X;
-        Height = Viewport->GetSizeXY().Y;
-    }
-
-    if (Width == 0 || Height == 0)
-    {
-        // Attempt 2: Force-resize the viewport RHI from Slate widget cached geometry.
-        // After Slate tick above, the widget should now have valid geometry even if
-        // the viewport RHI resize callback didn't fire.
-        FSceneViewport* SceneVP = static_cast<FSceneViewport*>(Viewport);
-        if (SceneVP)
-        {
-            TSharedPtr<SViewport> ViewportWidget = SceneVP->GetViewportWidget().Pin();
-            if (ViewportWidget.IsValid())
-            {
-                FVector2D WidgetSize = ViewportWidget->GetCachedGeometry().GetLocalSize();
-                int32 W = FMath::TruncToInt(WidgetSize.X);
-                int32 H = FMath::TruncToInt(WidgetSize.Y);
-                if (W > 0 && H > 0)
-                {
-                    SceneVP->UpdateViewportRHI(false, W, H, EWindowMode::Windowed, PF_Unknown);
-                    // Let Slate render a proper frame into the new surface
-                    if (FSlateApplication::IsInitialized())
-                    {
-                        FSlateApplication::Get().Tick();
-                    }
-                    if (GEditor)
-                    {
-                        GEditor->RedrawAllViewports();
-                    }
-                    Width = Viewport->GetSizeXY().X;
-                    Height = Viewport->GetSizeXY().Y;
-
-                    if (Width > 0 && Height > 0)
-                    {
-                        // Viewport initialized but ReadPixels on a freshly-allocated
-                        // Vulkan surface is unsafe. Ask caller to retry.
-                        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-                        Result->SetBoolField(TEXT("success"), false);
-                        Result->SetBoolField(TEXT("viewport_initialized"), true);
-                        Result->SetNumberField(TEXT("width"), Width);
-                        Result->SetNumberField(TEXT("height"), Height);
-                        Result->SetStringField(TEXT("message"),
-                            FString::Printf(TEXT("Viewport initialized to %dx%d. Call take_screenshot again to capture."), Width, Height));
-                        return Result;
-                    }
-                }
-            }
-        }
-
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-            TEXT("Viewport has zero size and could not be recovered. Try clicking in the viewport first."));
+            TEXT("No editor viewport camera found. Is the level editor open?"));
     }
 
-    // Normal path: force redraw for fresh frame (viewport already has valid RHI surface)
-    if (UsedClient)
+    // === Step 2: Get the editor world ===
+    UWorld* World = nullptr;
+    if (GEditor)
     {
-        UsedClient->Invalidate();
-        Viewport->Draw(false);
+        World = GEditor->GetEditorWorldContext().World();
+    }
+    if (!World)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world available"));
     }
 
-    // Read pixels from the viewport
+    // === Step 3: Create off-screen render target ===
+    // SceneCapture2D renders to its own texture — works even when the editor
+    // viewport is minimized or has a zero-size backbuffer.
+    UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
+    RenderTarget->InitCustomFormat(Width, Height, PF_B8G8R8A8, true);
+    RenderTarget->UpdateResourceImmediate(false);
+
+    // === Step 4: Spawn SceneCapture2D actor ===
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+    SpawnParams.ObjectFlags = RF_Transient; // Don't save this actor
+
+    ASceneCapture2D* CaptureActor = World->SpawnActor<ASceneCapture2D>(
+        CameraLocation, CameraRotation, SpawnParams);
+
+    if (!CaptureActor)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn SceneCapture2D actor"));
+    }
+
+    // === Step 5: Configure capture component ===
+    USceneCaptureComponent2D* CaptureComp = CaptureActor->GetCaptureComponent2D();
+    CaptureComp->TextureTarget = RenderTarget;
+    CaptureComp->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+    CaptureComp->bCaptureEveryFrame = false;
+    CaptureComp->bCaptureOnMovement = false;
+    CaptureComp->FOVAngle = CameraFOV;
+    CaptureComp->HiddenActors.Add(CaptureActor);
+
+    // === Step 6: Capture the scene ===
+    // CaptureScene() enqueues render commands. The subsequent ReadPixels()
+    // internally calls FlushRenderingCommands() which blocks until the
+    // capture render completes, giving us a synchronous result.
+    CaptureComp->CaptureScene();
+
+    // === Step 7: Read pixels from render target ===
+    FTextureRenderTargetResource* RTResource = RenderTarget->GameThread_GetRenderTargetResource();
     TArray<FColor> Bitmap;
-    if (!Viewport->ReadPixels(Bitmap))
+    bool bReadOK = false;
+
+    if (RTResource)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to read pixels from viewport"));
+        bReadOK = RTResource->ReadPixels(Bitmap);
     }
 
-    // Encode to PNG via ImageWrapper
+    // === Step 8: Cleanup capture actor ===
+    UEditorActorSubsystem* ActorSub = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+    if (ActorSub)
+    {
+        ActorSub->DestroyActor(CaptureActor);
+    }
+
+    if (!bReadOK)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Failed to read pixels from SceneCapture2D render target"));
+    }
+
+    // === Step 9: Encode to PNG via ImageWrapper ===
     IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
     TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
 
@@ -5157,6 +5155,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     FString MaterialPath;
     Params->TryGetStringField(TEXT("material_path"), MaterialPath);
 
+    TArray<FString> MaterialPaths;
+    const TArray<TSharedPtr<FJsonValue>>* MaterialsArray = nullptr;
+    if (Params->TryGetArrayField(TEXT("materials"), MaterialsArray))
+    {
+        for (const TSharedPtr<FJsonValue>& Val : *MaterialsArray)
+        {
+            MaterialPaths.Add(Val->AsString());
+        }
+    }
+
     // --- Load mesh ---
     UStaticMesh* Mesh = Cast<UStaticMesh>(UEditorAssetLibrary::LoadAsset(MeshPath));
     if (!Mesh)
@@ -5483,10 +5491,27 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleScatterFoliage(const
     HISM->SetMobility(EComponentMobility::Static);
     HISM->AttachToComponent(RootComp, FAttachmentTransformRules::KeepRelativeTransform);
 
-    // Apply material override if specified
-    if (!MaterialPath.IsEmpty())
+    // Apply per-slot materials if provided, otherwise fall back to single material_path
+    if (MaterialPaths.Num() > 0)
     {
-        UMaterialInterface* MatOverride = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+        int32 NumSlots = Mesh->GetStaticMaterials().Num();
+        for (int32 MatIdx = 0; MatIdx < FMath::Min(MaterialPaths.Num(), NumSlots); ++MatIdx)
+        {
+            if (!MaterialPaths[MatIdx].IsEmpty())
+            {
+                UMaterialInterface* Mat = Cast<UMaterialInterface>(
+                    UEditorAssetLibrary::LoadAsset(MaterialPaths[MatIdx]));
+                if (Mat)
+                {
+                    HISM->SetMaterial(MatIdx, Mat);
+                }
+            }
+        }
+    }
+    else if (!MaterialPath.IsEmpty())
+    {
+        UMaterialInterface* MatOverride = Cast<UMaterialInterface>(
+            UEditorAssetLibrary::LoadAsset(MaterialPath));
         if (MatOverride)
         {
             for (int32 MatIdx = 0; MatIdx < Mesh->GetStaticMaterials().Num(); ++MatIdx)

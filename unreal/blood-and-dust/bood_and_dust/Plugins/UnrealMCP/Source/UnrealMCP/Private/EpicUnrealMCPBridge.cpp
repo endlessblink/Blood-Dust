@@ -57,6 +57,9 @@
 #include "Commands/EpicUnrealMCPBlueprintGraphCommands.h"
 #include "Commands/EpicUnrealMCPMaterialGraphCommands.h"
 #include "Commands/EpicUnrealMCPLandscapeCommands.h"
+#include "Commands/EpicUnrealMCPGameplayCommands.h"
+#include "Commands/EpicUnrealMCPWidgetCommands.h"
+#include "Commands/EpicUnrealMCPAICommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 
 // Default settings
@@ -70,6 +73,9 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
     BlueprintGraphCommands = MakeShared<FEpicUnrealMCPBlueprintGraphCommands>();
     MaterialGraphCommands = MakeShared<FEpicUnrealMCPMaterialGraphCommands>();
     LandscapeCommands = MakeShared<FEpicUnrealMCPLandscapeCommands>();
+    GameplayCommands = MakeShared<FEpicUnrealMCPGameplayCommands>();
+    WidgetCommands = MakeShared<FEpicUnrealMCPWidgetCommands>();
+    AICommands = MakeShared<FEpicUnrealMCPAICommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -78,6 +84,9 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
     BlueprintCommands.Reset();
     BlueprintGraphCommands.Reset();
     MaterialGraphCommands.Reset();
+    GameplayCommands.Reset();
+    WidgetCommands.Reset();
+    AICommands.Reset();
 }
 
 // Initialize subsystem
@@ -333,6 +342,32 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("add_layer_to_landscape"))
             {
                 ResultJson = LandscapeCommands->HandleCommand(CommandType, Params);
+            }
+            // Gameplay Commands (game mode, montage, impulse, post-process effects, niagara)
+            else if (CommandType == TEXT("set_game_mode_default_pawn") ||
+                     CommandType == TEXT("create_anim_montage") ||
+                     CommandType == TEXT("play_montage_on_actor") ||
+                     CommandType == TEXT("apply_impulse") ||
+                     CommandType == TEXT("trigger_post_process_effect") ||
+                     CommandType == TEXT("spawn_niagara_system"))
+            {
+                ResultJson = GameplayCommands->HandleCommand(CommandType, Params);
+            }
+            // Widget Commands (UMG widget blueprints, viewport display, properties)
+            else if (CommandType == TEXT("create_widget_blueprint") ||
+                     CommandType == TEXT("add_widget_to_viewport") ||
+                     CommandType == TEXT("set_widget_property"))
+            {
+                ResultJson = WidgetCommands->HandleCommand(CommandType, Params);
+            }
+            // AI Commands (behavior trees, blackboards, tasks, decorators)
+            else if (CommandType == TEXT("create_behavior_tree") ||
+                     CommandType == TEXT("create_blackboard") ||
+                     CommandType == TEXT("add_bt_task") ||
+                     CommandType == TEXT("add_bt_decorator") ||
+                     CommandType == TEXT("assign_behavior_tree"))
+            {
+                ResultJson = AICommands->HandleCommand(CommandType, Params);
             }
             else
             {

@@ -40,6 +40,12 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		return;
 	}
 
+	// If a montage is already playing in the DefaultSlot, ignore the new request
+	if (AnimInst->Montage_IsPlaying(nullptr))
+	{
+		return;
+	}
+
 	// Stop movement during the animation if requested
 	UCharacterMovementComponent* MovementComp = nullptr;
 	float SavedSpeed = 0.0f;

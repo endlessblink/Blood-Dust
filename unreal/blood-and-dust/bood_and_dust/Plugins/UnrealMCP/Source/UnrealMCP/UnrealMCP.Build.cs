@@ -47,7 +47,8 @@ public class UnrealMCP : ModuleRules
 				"KismetCompiler",     // For Blueprint compilation (F15-F22)
 				"CinematicCamera",    // For CineCameraActor
 			"EnhancedInput",      // For UInputAction, Enhanced Input events
-			"AnimGraph"           // For AnimBP state machine graph nodes
+			"AnimGraph",          // For AnimBP state machine graph nodes
+			"Niagara"             // Niagara particle system spawning (F-023)
 			}
 		);
 		
@@ -68,7 +69,11 @@ public class UnrealMCP : ModuleRules
 				"LandscapeEditor",       // For landscape editing tools
 				"Foliage",               // For foliage editing
 			"InputBlueprintNodes",   // For K2Node_EnhancedInputAction
-				"AudioEditor"            // For USoundFactory (sound import)
+				"AudioEditor",           // For USoundFactory (sound import)
+				"UMG",                   // Widget blueprint creation (F-019)
+				"UMGEditor",             // Widget blueprint factory (F-019)
+				"AIModule",              // Behavior trees and AI controllers (F-021)
+				"GameplayTasks"          // BT tasks and decorators (F-021)
 			}
 		);
 		

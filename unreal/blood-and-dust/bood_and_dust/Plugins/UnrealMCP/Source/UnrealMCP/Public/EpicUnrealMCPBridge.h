@@ -13,6 +13,9 @@
 #include "Commands/EpicUnrealMCPBlueprintGraphCommands.h"
 #include "Commands/EpicUnrealMCPMaterialGraphCommands.h"
 #include "Commands/EpicUnrealMCPLandscapeCommands.h"
+#include "Commands/EpicUnrealMCPGameplayCommands.h"
+#include "Commands/EpicUnrealMCPWidgetCommands.h"
+#include "Commands/EpicUnrealMCPAICommands.h"
 #include "EpicUnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -61,4 +64,7 @@ private:
 	TSharedPtr<FEpicUnrealMCPBlueprintGraphCommands> BlueprintGraphCommands;
 	TSharedPtr<FEpicUnrealMCPMaterialGraphCommands> MaterialGraphCommands;
 	TSharedPtr<FEpicUnrealMCPLandscapeCommands> LandscapeCommands;
+	TSharedPtr<FEpicUnrealMCPGameplayCommands> GameplayCommands;
+	TSharedPtr<FEpicUnrealMCPWidgetCommands> WidgetCommands;
+	TSharedPtr<FEpicUnrealMCPAICommands> AICommands;
 }; 

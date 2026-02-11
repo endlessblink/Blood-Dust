@@ -83,6 +83,38 @@
 | TASK-015H | Phase 7: Combat Foundation | P2 | OPEN | TASK-015G |
 | TASK-015I | Phase 8: Sound & Music | P2 | OPEN | - |
 | **FEATURE-016** | **Audio Pipeline: import_sound + AmbientSound + BP AudioComponent** | **P1** | **DONE** (2026-02-11) | - |
+| **FEATURE-017** | **`set_game_mode_default_pawn` — auto-configure game mode** | **P0** | OPEN | - |
+| **FEATURE-018** | **`play_animation_montage` — one-shot attack/block/parry anims** | **P0** | OPEN | - |
+| **FEATURE-019** | **`create_widget_blueprint` — HUD: health bar, crosshair, win screen** | **P1** | OPEN | - |
+| **FEATURE-020** | **`apply_physics_impulse` — knockback, ragdoll, hit feedback** | **P1** | OPEN | - |
+| **FEATURE-021** | **`create_behavior_tree` — NPC patrol, aggro, chase & attack AI** | **P1** | OPEN | - |
+| **FEATURE-022** | **`trigger_post_process_effect` — damage red flash, slow-mo** | **P2** | OPEN | - |
+| **FEATURE-023** | **`spawn_niagara_actor` — place pre-made particle systems (fire, dust, blood)** | **P3** | OPEN | - |
+
+## Demo Vision: "The Escape"
+
+**Core loop**: 2-3 min sprint through a Rembrandt evening battlefield. Fight through patrolling robot enemies. Reach the glowing escape portal.
+
+### Player Experience
+1. Press Play → robot character spawns at PlayerStart (FEATURE-017)
+2. Evening/dusk lighting — low golden sun, warm fog, long shadows (Phase 2/3, existing tools)
+3. Health bar + crosshair HUD on screen (FEATURE-019)
+4. Wind ambient + distant combat music (FEATURE-016, DONE)
+5. Dust particles floating in air, torches with fire FX on ruins (FEATURE-023)
+6. Distant background: castle/ruins silhouettes in fog (existing world building tools)
+7. Distant background: pairs of NPC robots fighting each other in the haze (FEATURE-021)
+8. 3-5 patrol enemies between player and escape point (FEATURE-021)
+9. Melee attack (LMB) + block/parry (RMB) with animations (FEATURE-018)
+10. Getting hit = red screen flash + knockback (FEATURE-020, FEATURE-022)
+11. Kill enemies → blood impact FX (FEATURE-023)
+12. Reach glowing escape portal → "Demo Complete" screen (FEATURE-019)
+
+### Level Layout Concept
+- **Start zone**: Small ruin enclosure, player spawns here
+- **Middle zone**: Open battlefield with patrol enemies, scattered cover (walls, rocks)
+- **Background**: Far structures (castle silhouette), NPC pairs fighting, fog obscures distance
+- **End zone**: Glowing portal/archway, final 1-2 enemies guarding it
+- **Atmosphere**: Evening, volumetric fog, wind sound, distant combat sounds
 
 ## Active Work
 
@@ -579,6 +611,77 @@ Reusable skill for importing any character with the full pipeline:
 - `add_component_to_blueprint` — AudioComponent with sound_asset, volume, looping, auto_activate
 - Python `import_sound` @mcp.tool() + HEAVY dicts (2.0s cooldown)
 - Game designer skill Phase 8: Sound & Music
+
+---
+
+### FEATURE-017: set_game_mode_default_pawn
+
+**Status**: OPEN
+**Priority**: P0
+**Goal**: C++ MCP tool to set the default pawn class in the game mode, so pressing Play spawns the robot character automatically.
+**Scope**: Set `DefaultPawnClass` on the project's GameMode BP (or create one). Also place a `PlayerStart` actor.
+**Estimated effort**: Low (~50 LOC C++, ~30 LOC Python)
+
+---
+
+### FEATURE-018: play_animation_montage
+
+**Status**: OPEN
+**Priority**: P0
+**Goal**: C++ MCP tool to create and trigger animation montages on characters — attack, block, parry, death animations.
+**Scope**: `create_animation_montage` (from AnimSequence + slot), `play_montage_on_actor` (trigger at runtime via Blueprint node wiring).
+**Estimated effort**: Medium (~150 LOC C++, ~60 LOC Python)
+
+---
+
+### FEATURE-019: create_widget_blueprint
+
+**Status**: OPEN
+**Priority**: P1
+**Goal**: C++ MCP tool to create UMG Widget Blueprints — health bars, crosshairs, win/lose screens.
+**Scope**: `create_widget_blueprint` (canvas panel + elements), `add_widget_to_viewport`. Needs to support: ProgressBar (health), Image (crosshair), TextBlock (messages).
+**Estimated effort**: Medium-High (~200 LOC C++, ~80 LOC Python)
+
+---
+
+### FEATURE-020: apply_physics_impulse
+
+**Status**: OPEN
+**Priority**: P1
+**Goal**: C++ MCP tool to apply physics impulse/force to actors — knockback on hit, ragdoll on death.
+**Scope**: `apply_impulse_to_actor` (direction + magnitude), `enable_ragdoll` (switch to physics simulation).
+**Estimated effort**: Low (~60 LOC C++, ~30 LOC Python)
+
+---
+
+### FEATURE-021: create_behavior_tree
+
+**Status**: OPEN
+**Priority**: P1
+**Goal**: C++ MCP tools for NPC AI — patrol routes, player detection, chase & attack behavior.
+**Scope**: `create_behavior_tree` + `create_blackboard`, `add_bt_task` (MoveTo, Wait, Attack), `add_bt_decorator` (IsPlayerInRange). Also `assign_behavior_tree_to_npc`.
+**Estimated effort**: Hard (~300 LOC C++, ~120 LOC Python, complex UE AI framework)
+
+---
+
+### FEATURE-022: trigger_post_process_effect
+
+**Status**: OPEN
+**Priority**: P2
+**Goal**: Blueprint-wirable transient post-process effects — damage red flash, death slow-motion.
+**Scope**: Could be a Blueprint utility function rather than MCP tool. Alternatively, `set_actor_property` on PostProcessVolume with timed reset via Blueprint.
+**Estimated effort**: Low-Medium (~80 LOC C++, ~30 LOC Python)
+
+---
+
+### FEATURE-023: spawn_niagara_actor
+
+**Status**: OPEN
+**Priority**: P3
+**Goal**: C++ MCP tool to spawn pre-made Niagara particle systems in the level — fire on torches, floating dust, blood impacts.
+**Scope**: `spawn_niagara_actor` (place existing UNiagaraSystem asset at location with scale/auto-activate). NOT a Niagara system builder.
+**Requires**: Pre-made particle assets (UE starter content or marketplace packs).
+**Estimated effort**: Low-Medium (~80 LOC C++, ~40 LOC Python)
 
 ---
 
