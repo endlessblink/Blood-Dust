@@ -2676,76 +2676,74 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		}
 
 		// === IsFalling chain (only when jump is enabled) ===
+		// Uses pure functions only: TryGetPawnOwner → GetMovementComponent → IsFalling → SetIsFalling
+		// GetMovementComponent is a UFUNCTION on APawn (returns UPawnMovementComponent*)
+		// IsFalling is a UFUNCTION on UNavMovementComponent (parent of UPawnMovementComponent)
+		// Both are const/pure = no exec pins needed, simple data chain
 		if (bHasJump)
 		{
-			// Cast TryGetPawnOwner result to ACharacter (need ACharacter* for GetCharacterMovement)
-			UK2Node_DynamicCast* CastToCharNode = NewObject<UK2Node_DynamicCast>(EventGraph);
-			CastToCharNode->TargetType = ACharacter::StaticClass();
-			CastToCharNode->NodePosX = 300;
-			CastToCharNode->NodePosY = 600;
-			EventGraph->AddNode(CastToCharNode, true, false);
-			CastToCharNode->CreateNewGuid();
-			CastToCharNode->AllocateDefaultPins();
-
-			// Wire TryGetPawnOwner.ReturnValue -> Cast.Object
-			if (GetPawnNode)
+			// GetMovementComponent (APawn UFUNCTION, pure - no exec pins)
+			UFunction* GetMCFunc = APawn::StaticClass()->FindFunctionByName(FName("GetMovementComponent"));
+			UK2Node_CallFunction* GetMCNode = nullptr;
+			if (GetMCFunc)
 			{
-				UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-				UEdGraphPin* CastInput = CastToCharNode->GetCastSourcePin();
-				if (PawnReturn && CastInput) PawnReturn->MakeLinkTo(CastInput);
+				GetMCNode = NewObject<UK2Node_CallFunction>(EventGraph);
+				GetMCNode->SetFromFunction(GetMCFunc);
+				GetMCNode->NodePosX = 300;
+				GetMCNode->NodePosY = 600;
+				EventGraph->AddNode(GetMCNode, true, false);
+				GetMCNode->CreateNewGuid();
+				GetMCNode->AllocateDefaultPins();
+
+				// Wire TryGetPawnOwner.ReturnValue → GetMovementComponent.self
+				if (GetPawnNode)
+				{
+					UEdGraphPin* PawnReturn = GetPawnNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+					UEdGraphPin* MCSelf = GetMCNode->FindPin(UEdGraphSchema_K2::PN_Self);
+					if (PawnReturn && MCSelf) PawnReturn->MakeLinkTo(MCSelf);
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: GetMovementComponent not found on APawn!"));
 			}
 
-			// GetCharacterMovement (ACharacter member function)
-			UFunction* GetCMCFunc = ACharacter::StaticClass()->FindFunctionByName(FName("GetCharacterMovement"));
-			UK2Node_CallFunction* GetCMCNode = nullptr;
-			if (GetCMCFunc)
-			{
-				GetCMCNode = NewObject<UK2Node_CallFunction>(EventGraph);
-				GetCMCNode->SetFromFunction(GetCMCFunc);
-				GetCMCNode->NodePosX = 600;
-				GetCMCNode->NodePosY = 600;
-				EventGraph->AddNode(GetCMCNode, true, false);
-				GetCMCNode->CreateNewGuid();
-				GetCMCNode->AllocateDefaultPins();
-
-				// Wire Cast.AsCharacter -> GetCharacterMovement.self
-				UEdGraphPin* CastResult = CastToCharNode->GetCastResultPin();
-				UEdGraphPin* CMCSelf = GetCMCNode->FindPin(UEdGraphSchema_K2::PN_Self);
-				if (CastResult && CMCSelf) CastResult->MakeLinkTo(CMCSelf);
-			}
-
-			// IsFalling (UCharacterMovementComponent member function, returns bool)
-			UFunction* IsFallingFunc = UCharacterMovementComponent::StaticClass()->FindFunctionByName(FName("IsFalling"));
+			// IsFalling (UNavMovementComponent UFUNCTION, pure - no exec pins)
+			UFunction* IsFallingFunc = UNavMovementComponent::StaticClass()->FindFunctionByName(FName("IsFalling"));
 			UK2Node_CallFunction* IsFallingNode = nullptr;
 			if (IsFallingFunc)
 			{
 				IsFallingNode = NewObject<UK2Node_CallFunction>(EventGraph);
 				IsFallingNode->SetFromFunction(IsFallingFunc);
-				IsFallingNode->NodePosX = 900;
+				IsFallingNode->NodePosX = 600;
 				IsFallingNode->NodePosY = 600;
 				EventGraph->AddNode(IsFallingNode, true, false);
 				IsFallingNode->CreateNewGuid();
 				IsFallingNode->AllocateDefaultPins();
 
-				// Wire GetCharacterMovement.ReturnValue -> IsFalling.self
-				if (GetCMCNode)
+				// Wire GetMovementComponent.ReturnValue → IsFalling.self
+				if (GetMCNode)
 				{
-					UEdGraphPin* CMCReturn = GetCMCNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+					UEdGraphPin* MCReturn = GetMCNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
 					UEdGraphPin* IsFallingSelf = IsFallingNode->FindPin(UEdGraphSchema_K2::PN_Self);
-					if (CMCReturn && IsFallingSelf) CMCReturn->MakeLinkTo(IsFallingSelf);
+					if (MCReturn && IsFallingSelf) MCReturn->MakeLinkTo(IsFallingSelf);
 				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("setup_locomotion: IsFalling not found on UNavMovementComponent!"));
 			}
 
 			// Set IsFalling variable
 			UK2Node_VariableSet* SetIsFallingNode = NewObject<UK2Node_VariableSet>(EventGraph);
 			SetIsFallingNode->VariableReference.SetSelfMember(FName("IsFalling"));
-			SetIsFallingNode->NodePosX = 1200;
+			SetIsFallingNode->NodePosX = 900;
 			SetIsFallingNode->NodePosY = 600;
 			EventGraph->AddNode(SetIsFallingNode, true, false);
 			SetIsFallingNode->CreateNewGuid();
 			SetIsFallingNode->AllocateDefaultPins();
 
-			// Wire IsFalling.ReturnValue -> SetIsFalling input
+			// Wire IsFalling.ReturnValue → SetIsFalling input
 			if (IsFallingNode)
 			{
 				UEdGraphPin* IsFallingReturn = IsFallingNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue);
@@ -2765,16 +2763,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 				if (IsFallingReturn && SetFallingInput) IsFallingReturn->MakeLinkTo(SetFallingInput);
 			}
 
-			// Wire exec: SetSpeed.Then -> CastToChar.Execute -> CastToChar.Then -> SetIsFalling.Execute
-			// DynamicCast has exec pins that MUST be in the chain or BP compiler errors
+			// Wire exec: SetSpeed.Then → SetIsFalling.Execute
+			// (GetMovementComponent and IsFalling are pure functions with no exec pins)
 			{
 				UEdGraphPin* SetSpeedThen = SetSpeedNode->FindPin(UEdGraphSchema_K2::PN_Then);
-				UEdGraphPin* CastExec = CastToCharNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-				if (SetSpeedThen && CastExec) SetSpeedThen->MakeLinkTo(CastExec);
-
-				UEdGraphPin* CastThen = CastToCharNode->FindPin(UEdGraphSchema_K2::PN_Then);
 				UEdGraphPin* SetFallingExec = SetIsFallingNode->FindPin(UEdGraphSchema_K2::PN_Execute);
-				if (CastThen && SetFallingExec) CastThen->MakeLinkTo(SetFallingExec);
+				if (SetSpeedThen && SetFallingExec) SetSpeedThen->MakeLinkTo(SetFallingExec);
 			}
 		}
 	}
@@ -2993,6 +2987,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	ResultObj->SetBoolField(TEXT("success"), AnimBP->Status != EBlueprintStatus::BS_Error);
 	ResultObj->SetNumberField(TEXT("compile_status"), (int)AnimBP->Status);
 	ResultObj->SetStringField(TEXT("anim_blueprint"), AnimBPPath);
+	if (AnimBP->Status == EBlueprintStatus::BS_Error)
+	{
+		UE_LOG(LogTemp, Error, TEXT("setup_locomotion: AnimBP compile FAILED (status=BS_Error). Open ABP in editor for details."));
+		ResultObj->SetStringField(TEXT("error"), TEXT("AnimBP compilation failed - open ABP in editor to see errors"));
+	}
 	int32 JumpTransitionCount = bHasJump ? (3 + (bHasRun ? 1 : 0)) : 0;
 	ResultObj->SetNumberField(TEXT("state_count"), 2 + (bHasRun ? 1 : 0) + (bHasJump ? 1 : 0));
 	ResultObj->SetNumberField(TEXT("transition_count"), 2 + (bHasRun ? 2 : 0) + JumpTransitionCount);

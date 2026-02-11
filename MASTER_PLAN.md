@@ -69,7 +69,18 @@
 | ~~TASK-012E~~ | ~~Fix tree material slot assignments (per-slot)~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012D |
 | ~~TASK-012F~~ | ~~Create `/vegetation-scatter` skill with all paths~~ | P1 | ~~DONE~~ (2026-02-09) | TASK-012A..E |
 | ~~TASK-012G~~ | ~~Fix AnimBP transition crash (AllocateDefaultPins order)~~ | P1 | ~~DONE~~ (2026-02-09) | - |
-| **BUG-012** | **MCP apply_material_to_actor unreliable** | **P0** | OPEN | - |
+| ~~BUG-012~~ | ~~MCP apply_material_to_actor unreliable~~ | P0 | ~~DONE~~ (2026-02-10) | - |
+| ~~BUG-012b~~ | ~~Robot material UV seams & harsh specular (Meshy AI UV channel 1)~~ | P0 | ~~DONE~~ (2026-02-10) | - |
+| **FEATURE-014** | **Game Designer skill — phased demo builder** | **P1** | **DONE** (2026-02-11) | - |
+| **FEATURE-015** | **Playable Demo — 8-phase pipeline** | **P0** | OPEN | FEATURE-014, FEATURE-010 |
+| TASK-015A | Phase 0: Audit & Interview | P0 | OPEN | FEATURE-014 |
+| TASK-015B | Phase 1: Character Playability (delegates to /unreal-character-input) | P0 | OPEN | TASK-010L |
+| TASK-015C | Phase 2: Rembrandt Lighting & Atmosphere | P1 | OPEN | - |
+| TASK-015D | Phase 3: Post-Processing Color Grade | P1 | OPEN | - |
+| TASK-015E | Phase 4: Backdrop Billboards | P2 | OPEN | - |
+| TASK-015F | Phase 5: World Building (ruins/castle/town) | P2 | OPEN | - |
+| TASK-015G | Phase 6: NPC Spawn & Patrol | P2 | OPEN | TASK-015B |
+| TASK-015H | Phase 7: Combat Foundation | P2 | OPEN | TASK-015G |
 
 ## Active Work
 
@@ -413,17 +424,16 @@ import_animation(
 
 ##### TASK-010I: Create robot PBR material
 
-Use existing `create_pbr_material` + `import_texture` tools:
-```
-# Import textures (max 2, then breathe)
-import_texture(normal map) → /Game/Characters/Robot/Textures/T_Robot_N
-import_texture(metallic)   → /Game/Characters/Robot/Textures/T_Robot_M
-# breathe
-import_texture(roughness)  → /Game/Characters/Robot/Textures/T_Robot_R
+**REVISED (BUG-012b)**: `create_pbr_material` does NOT support UV channel override. Meshy AI skeletal meshes have texture UVs on **UV channel 1** (not UV0). Separate PBR textures (N/R/M) have different UV layout than the embedded diffuse.
 
-# Create material
-create_pbr_material(name="M_Robot", normal=T_Robot_N, ...)
+**Correct approach**: Build material manually with `create_material_asset` + `add_material_expression`:
 ```
+TextureCoordinate(index=1) → TextureSample(T_Robot_D) → BaseColor
+Constant(0.6) → Roughness
+Constant(0.85) → Metallic
+(No normal map - causes tangent space seam artifacts with Meshy AI UV layout)
+```
+See `memory/meshy-robot-material-sop.md` for full SOP.
 
 ##### TASK-010J: Create Character Blueprint
 
@@ -506,6 +516,51 @@ Reusable skill for importing any character with the full pipeline:
 30. Never import skeletal mesh + animation in parallel MCP calls. Always sequential
     with breathing room between each.
 ```
+
+---
+
+### FEATURE-014: Game Designer Skill
+
+**Status**: DONE (2026-02-11)
+**Priority**: P1
+**Result**: Created `.claude/skills/game-designer.md` — a phased orchestration skill that builds the Blood & Dust level into a playable demo.
+
+#### What It Does
+- Phase 0: Audit level state + interactive interview (6 questions with AskUserQuestion)
+- Phase 1: Character playability (delegates to `/unreal-character-input`)
+- Phase 2: Rembrandt golden chiaroscuro lighting via set_actor_property
+- Phase 3: Oil painting post-processing (desaturation, contrast, golden gain, vignette)
+- Phase 4: Backdrop billboards (imported 2D paintings or procedural gradients)
+- Phase 5: World building (ruins, castle, town via procedural tools)
+- Phase 6: NPC spawn and optional patrol
+- Phase 7: Combat foundation (health variable, melee damage)
+
+#### Key Design Decisions
+- Interactive interview between phases — asks preferences upfront, confirms before each phase
+- Biggest visual impact first — Character → Lighting → Post-Process in ~40 min
+- Honest about MCP limitations — documents what needs manual editor work
+- Checkpoint saves — prompts Ctrl+S after each major phase
+
+---
+
+### FEATURE-015: Playable Demo Pipeline
+
+**Status**: OPEN
+**Priority**: P0
+**Goal**: Execute the game-designer skill phases to build a playable demo with Rembrandt visual style.
+**Depends on**: FEATURE-014 (skill created), FEATURE-010 (character pipeline)
+
+#### Phases
+| Phase | Status | MCP Calls | Time Est. |
+|-------|--------|-----------|-----------|
+| 0: Audit & Interview | OPEN | 5-8 | 5 min |
+| 1: Character Controls | OPEN (blocked by TASK-010L) | ~35 | 15 min |
+| 2: Rembrandt Lighting | OPEN | ~25 | 10 min |
+| 3: Post-Processing | OPEN | ~15 | 8 min |
+| 4: Backdrops | OPEN | ~45 | 20 min |
+| 5: World Building | OPEN | 10-50 | 15-30 min |
+| 6: NPCs | OPEN | 20-60 | 10-40 min |
+| 7: Combat | OPEN | 80-120 | 30-60 min |
 
 ---
 
