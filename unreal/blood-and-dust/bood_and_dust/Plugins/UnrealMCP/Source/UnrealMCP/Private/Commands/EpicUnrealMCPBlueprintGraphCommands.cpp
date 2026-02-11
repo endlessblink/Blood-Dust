@@ -700,7 +700,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddInputMapp
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: key"));
     }
 
-    // Load the Input Mapping Context
+    // Load or auto-create the Input Mapping Context
     UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *ContextPath);
     if (!IMC)
     {
@@ -708,7 +708,27 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintGraphCommands::HandleAddInputMapp
     }
     if (!IMC)
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("InputMappingContext not found: %s"), *ContextPath));
+        // Auto-create the IMC if it doesn't exist
+        FString IMCName = FPaths::GetBaseFilename(ContextPath);
+        UPackage* IMCPackage = CreatePackage(*ContextPath);
+        if (IMCPackage)
+        {
+            IMC = NewObject<UInputMappingContext>(IMCPackage, UInputMappingContext::StaticClass(), *IMCName, RF_Public | RF_Standalone);
+            if (IMC)
+            {
+                FAssetRegistryModule::AssetCreated(IMC);
+                IMCPackage->MarkPackageDirty();
+                FString IMCFilename = FPackageName::LongPackageNameToFilename(ContextPath, FPackageName::GetAssetPackageExtension());
+                FSavePackageArgs SaveArgs;
+                SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+                UPackage::SavePackage(IMCPackage, IMC, *IMCFilename, SaveArgs);
+                UE_LOG(LogTemp, Display, TEXT("AddInputMapping: Auto-created InputMappingContext '%s'"), *ContextPath);
+            }
+        }
+        if (!IMC)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("InputMappingContext not found and could not be created: %s"), *ContextPath));
+        }
     }
 
     // Load the Input Action

@@ -58,7 +58,7 @@
 | ~~TASK-010I~~ | ~~Create robot PBR material~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010G |
 | ~~TASK-010J~~ | ~~Create Character Blueprint with camera + movement~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010G |
 | ~~TASK-010K~~ | ~~Create Animation Blueprint (shell)~~ | P0 | ~~DONE~~ (2026-02-09) | TASK-010H, TASK-010J |
-| TASK-010L | Wire Enhanced Input (WASD, mouse look, sprint, attack) | P0 | OPEN | TASK-010J |
+| ~~TASK-010L~~ | ~~Wire Enhanced Input (WASD, mouse look, sprint, attack)~~ | P0 | ~~DONE~~ (2026-02-11) | TASK-010J |
 | TASK-010M | Integration test: fully playable character in level | P0 | OPEN | TASK-010K, TASK-010L |
 | TASK-010N | Create `/unreal-character-import` skill | P1 | OPEN | TASK-010M |
 | ~~**FEATURE-012**~~ | ~~**Vegetation scatter with HISM persistence**~~ | **P1** | ✅ **DONE** (2026-02-09) | - |
@@ -83,13 +83,13 @@
 | TASK-015H | Phase 7: Combat Foundation | P2 | OPEN | TASK-015G |
 | TASK-015I | Phase 8: Sound & Music | P2 | OPEN | - |
 | **FEATURE-016** | **Audio Pipeline: import_sound + AmbientSound + BP AudioComponent** | **P1** | **DONE** (2026-02-11) | - |
-| **FEATURE-017** | **`set_game_mode_default_pawn` — auto-configure game mode** | **P0** | OPEN | - |
-| **FEATURE-018** | **`play_animation_montage` — one-shot attack/block/parry anims** | **P0** | OPEN | - |
-| **FEATURE-019** | **`create_widget_blueprint` — HUD: health bar, crosshair, win screen** | **P1** | OPEN | - |
-| **FEATURE-020** | **`apply_physics_impulse` — knockback, ragdoll, hit feedback** | **P1** | OPEN | - |
-| **FEATURE-021** | **`create_behavior_tree` — NPC patrol, aggro, chase & attack AI** | **P1** | OPEN | - |
-| **FEATURE-022** | **`trigger_post_process_effect` — damage red flash, slow-mo** | **P2** | OPEN | - |
-| **FEATURE-023** | **`spawn_niagara_actor` — place pre-made particle systems (fire, dust, blood)** | **P3** | OPEN | - |
+| ~~**FEATURE-017**~~ | ~~**Gameplay Commands (set_game_mode_default_pawn, create_anim_montage, play_montage, apply_impulse, trigger_post_process, spawn_niagara)**~~ | **P0** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-018**~~ | ~~**Screenshot Tool (SceneCapture2D rewrite for Linux)**~~ | **P1** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-019**~~ | ~~**Widget/HUD Commands (create_widget_blueprint, add_widget_to_viewport, set_widget_property)**~~ | **P1** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-020**~~ | ~~**AI/Behavior Tree Commands (create_behavior_tree, create_blackboard, add_bt_task, add_bt_decorator, assign_behavior_tree)**~~ | **P1** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-021**~~ | ~~**Audio Pipeline (import_sound, AmbientSound, BP AudioComponent)**~~ | **P1** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-022**~~ | ~~**compile_blueprint fix (proper error checking via FCompilerResultsLog)**~~ | **P2** | **DONE** (2026-02-11) | - |
+| ~~**FEATURE-023**~~ | ~~**GameplayHelperLibrary runtime module (SetCharacterWalkSpeed, PlayAnimationOneShot)**~~ | **P3** | **DONE** (2026-02-11) | - |
 
 ## Demo Vision: "The Escape"
 
@@ -171,7 +171,7 @@ set_landscape_material("/Game/Materials/MI_Landscape_Ground_v6")
 
 ### FEATURE-010: Playable Character Pipeline — Import, Rig, Animate, Play
 
-**Status**: IN PROGRESS (010A-010K DONE — assets imported, BP + ABP created; 010L-010N remaining)
+**Status**: IN PROGRESS (010A-010L DONE — assets imported, BP + ABP created, input wired; 010M-010N remaining)
 **Priority**: P0
 **Goal**: Import the Meshy AI robot character into Unreal Engine 5.7 via MCP tools and make it fully playable with third-person camera, movement, sprint, and attack — matching the Godot implementation.
 
@@ -614,74 +614,75 @@ Reusable skill for importing any character with the full pipeline:
 
 ---
 
-### FEATURE-017: set_game_mode_default_pawn
+### FEATURE-017: Gameplay Commands
 
-**Status**: OPEN
+**Status**: DONE (2026-02-11)
 **Priority**: P0
-**Goal**: C++ MCP tool to set the default pawn class in the game mode, so pressing Play spawns the robot character automatically.
-**Scope**: Set `DefaultPawnClass` on the project's GameMode BP (or create one). Also place a `PlayerStart` actor.
-**Estimated effort**: Low (~50 LOC C++, ~30 LOC Python)
+**Delivered**: 6 new MCP tools in `EpicUnrealMCPGameplayCommands` handler class:
+- `set_game_mode_default_pawn` — auto-configure GameMode BP + PlayerStart
+- `create_anim_montage` — create UAnimMontage from AnimSequence
+- `play_montage_on_actor` — trigger montage playback
+- `apply_impulse` — physics impulse on actors
+- `trigger_post_process_effect` — set PostProcess properties with bOverride flags
+- `spawn_niagara_system` — place Niagara particle systems
 
 ---
 
-### FEATURE-018: play_animation_montage
+### FEATURE-018: Screenshot Tool
 
-**Status**: OPEN
-**Priority**: P0
-**Goal**: C++ MCP tool to create and trigger animation montages on characters — attack, block, parry, death animations.
-**Scope**: `create_animation_montage` (from AnimSequence + slot), `play_montage_on_actor` (trigger at runtime via Blueprint node wiring).
-**Estimated effort**: Medium (~150 LOC C++, ~60 LOC Python)
-
----
-
-### FEATURE-019: create_widget_blueprint
-
-**Status**: OPEN
+**Status**: DONE (2026-02-11)
 **Priority**: P1
-**Goal**: C++ MCP tool to create UMG Widget Blueprints — health bars, crosshairs, win/lose screens.
-**Scope**: `create_widget_blueprint` (canvas panel + elements), `add_widget_to_viewport`. Needs to support: ProgressBar (health), Image (crosshair), TextBlock (messages).
-**Estimated effort**: Medium-High (~200 LOC C++, ~80 LOC Python)
+**Delivered**: Rewrote `take_screenshot` using SceneCapture2D + UTextureRenderTarget2D (old ReadPixels approach returned 0x0 on Linux). Returns `[TextContent, ImageContent]` inline.
 
 ---
 
-### FEATURE-020: apply_physics_impulse
+### FEATURE-019: Widget/HUD Commands
 
-**Status**: OPEN
+**Status**: DONE (2026-02-11)
 **Priority**: P1
-**Goal**: C++ MCP tool to apply physics impulse/force to actors — knockback on hit, ragdoll on death.
-**Scope**: `apply_impulse_to_actor` (direction + magnitude), `enable_ragdoll` (switch to physics simulation).
-**Estimated effort**: Low (~60 LOC C++, ~30 LOC Python)
+**Delivered**: 3 new MCP tools in `EpicUnrealMCPWidgetCommands` handler class:
+- `create_widget_blueprint` — UMG widget BP with canvas panel
+- `add_widget_to_viewport` — display widget on screen
+- `set_widget_property` — modify widget element properties
 
 ---
 
-### FEATURE-021: create_behavior_tree
+### FEATURE-020: AI/Behavior Tree Commands
 
-**Status**: OPEN
+**Status**: DONE (2026-02-11)
 **Priority**: P1
-**Goal**: C++ MCP tools for NPC AI — patrol routes, player detection, chase & attack behavior.
-**Scope**: `create_behavior_tree` + `create_blackboard`, `add_bt_task` (MoveTo, Wait, Attack), `add_bt_decorator` (IsPlayerInRange). Also `assign_behavior_tree_to_npc`.
-**Estimated effort**: Hard (~300 LOC C++, ~120 LOC Python, complex UE AI framework)
+**Delivered**: 5 new MCP tools in `EpicUnrealMCPAICommands` handler class:
+- `create_behavior_tree` — BT asset creation
+- `create_blackboard` — blackboard data asset
+- `add_bt_task` — add task nodes (MoveTo, Wait, PlayAnimation)
+- `add_bt_decorator` — add decorator nodes (Blackboard-based)
+- `assign_behavior_tree` — assign BT to AI controller
+**Note**: BT task/decorator property setting limited by protected UE members — use BT editor for detailed config.
 
 ---
 
-### FEATURE-022: trigger_post_process_effect
+### FEATURE-021: Audio Pipeline
 
-**Status**: OPEN
+**Status**: DONE (2026-02-11) — see FEATURE-016 above for details.
+
+---
+
+### FEATURE-022: compile_blueprint Fix
+
+**Status**: DONE (2026-02-11)
 **Priority**: P2
-**Goal**: Blueprint-wirable transient post-process effects — damage red flash, death slow-motion.
-**Scope**: Could be a Blueprint utility function rather than MCP tool. Alternatively, `set_actor_property` on PostProcessVolume with timed reset via Blueprint.
-**Estimated effort**: Low-Medium (~80 LOC C++, ~30 LOC Python)
+**Delivered**: Fixed `compile_blueprint` to use `FCompilerResultsLog` and check `Blueprint->Status` for `BS_Error`. Now returns: `compiled` (bool), `status`, `num_errors`, `num_warnings`, `errors[]`, `warnings[]`.
 
 ---
 
-### FEATURE-023: spawn_niagara_actor
+### FEATURE-023: GameplayHelperLibrary Runtime Module
 
-**Status**: OPEN
+**Status**: DONE (2026-02-11)
 **Priority**: P3
-**Goal**: C++ MCP tool to spawn pre-made Niagara particle systems in the level — fire on torches, floating dust, blood impacts.
-**Scope**: `spawn_niagara_actor` (place existing UNiagaraSystem asset at location with scale/auto-activate). NOT a Niagara system builder.
-**Requires**: Pre-made particle assets (UE starter content or marketplace packs).
-**Estimated effort**: Low-Medium (~80 LOC C++, ~40 LOC Python)
+**Delivered**: Runtime `GameplayHelpers` plugin with `UGameplayHelperLibrary` (BlueprintCallable):
+- `SetCharacterWalkSpeed` — change MaxWalkSpeed at runtime
+- `PlayAnimationOneShot` — play AnimSequence via montage with blend params
+**Note**: MCPHelperLibrary is editor-only (UnrealMCP module) — GameplayHelperLibrary is the runtime alternative for Blueprint use.
 
 ---
 
