@@ -238,7 +238,7 @@ IA_Sprint.Completed → SetCharacterWalkSpeed(Self, 500.0)
 ### Attack (Long)
 
 ```
-IA_Attack_Long.Started → PlayAnimationOneShot(Self, AnimSequence, BlendIn=0.15, BlendOut=0.15, PlayRate=1.0)
+IA_Attack_Long.Started → PlayAnimationOneShot(Self, AnimSequence, BlendIn=0.15, BlendOut=0.15, PlayRate=1.0, bStopMovement=true)
 ```
 
 #### MCP Calls
@@ -247,10 +247,20 @@ IA_Attack_Long.Started → PlayAnimationOneShot(Self, AnimSequence, BlendIn=0.15
 2. `add_node` CallFunction "PlayAnimationOneShot", target_class="/Script/GameplayHelpers.GameplayHelperLibrary" → capture `Attack_ID`
 3. `connect_nodes` IA_Attack_Long.Started → Attack.execute
 4. Wire Self → Character pin, set AnimSequence to kick/attack anim asset path
+5. **Set bStopMovement to true** (blocks movement during animation):
+```
+set_node_property(
+    blueprint_name="/Game/Characters/Robot/BP_RobotCharacter",
+    node_id="<Attack_ID>",
+    action="set_pin_default",
+    pin_name="bStopMovement",
+    default_value="true"
+)
+```
 
 ### Kick
 
-Same pattern as Attack but with different IA and animation asset.
+Same pattern as Attack but with different IA and animation asset. **Always set `bStopMovement=true`** on the `PlayAnimationOneShot` node via `set_node_property` (action=`set_pin_default`, pin_name=`bStopMovement`, default_value=`true`).
 
 ### Template for Adding More Actions
 
