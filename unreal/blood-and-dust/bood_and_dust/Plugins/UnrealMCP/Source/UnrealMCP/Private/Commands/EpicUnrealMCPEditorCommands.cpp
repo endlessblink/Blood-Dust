@@ -4440,6 +4440,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
     FRotator CameraRotation = FRotator::ZeroRotator;
     float CameraFOV = 90.0f;
     bool bFoundCamera = false;
+    FLevelEditorViewportClient* UsedClient = nullptr;
 
     if (GEditor)
     {
@@ -4452,6 +4453,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
                 CameraLocation = ViewportClient->GetViewLocation();
                 CameraRotation = ViewportClient->GetViewRotation();
                 CameraFOV = ViewportClient->ViewFOV;
+                UsedClient = ViewportClient;
                 bFoundCamera = true;
                 break;
             }
@@ -4467,6 +4469,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
                     CameraLocation = ViewportClient->GetViewLocation();
                     CameraRotation = ViewportClient->GetViewRotation();
                     CameraFOV = ViewportClient->ViewFOV;
+                    UsedClient = ViewportClient;
                     bFoundCamera = true;
                     break;
                 }
@@ -4518,8 +4521,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const
     CaptureComp->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
     CaptureComp->bCaptureEveryFrame = false;
     CaptureComp->bCaptureOnMovement = false;
+    CaptureComp->bAlwaysPersistRenderingState = true;
     CaptureComp->FOVAngle = CameraFOV;
     CaptureComp->HiddenActors.Add(CaptureActor);
+
+    // Match the editor viewport's exposure so brightness matches what the user sees.
+    // We do NOT copy the full EngineShowFlags because editor-specific flags
+    // (grid, selection, widgets) break SceneCapture2D rendering.
+    if (UsedClient)
+    {
+        FExposureSettings ExpSettings = UsedClient->ExposureSettings;
+        if (ExpSettings.bFixed)
+        {
+            CaptureComp->PostProcessBlendWeight = 1.0f;
+            CaptureComp->PostProcessSettings.bOverride_AutoExposureMethod = true;
+            CaptureComp->PostProcessSettings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+            CaptureComp->PostProcessSettings.bOverride_AutoExposureBias = true;
+            CaptureComp->PostProcessSettings.AutoExposureBias = ExpSettings.FixedEV100;
+        }
+    }
 
     // === Step 6: Capture the scene ===
     // CaptureScene() enqueues render commands. The subsequent ReadPixels()
