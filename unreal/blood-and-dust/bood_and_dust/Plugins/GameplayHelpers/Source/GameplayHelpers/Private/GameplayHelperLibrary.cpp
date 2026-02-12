@@ -1,9 +1,12 @@
 #include "GameplayHelperLibrary.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
 #include "TimerManager.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputMappingContext.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -93,4 +96,26 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 			false // Don't loop
 		);
 	}
+}
+
+void UGameplayHelperLibrary::AddInputMappingContextToCharacter(ACharacter* Character, UInputMappingContext* MappingContext, int32 Priority)
+{
+	if (!Character || !MappingContext)
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(Character->GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer());
+	if (!Subsystem)
+	{
+		return;
+	}
+
+	Subsystem->AddMappingContext(MappingContext, Priority);
 }

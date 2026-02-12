@@ -8,6 +8,7 @@
 
 class ACharacter;
 class UAnimSequence;
+class UInputMappingContext;
 
 /**
  * Static helper functions for common gameplay operations.
@@ -33,4 +34,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|Animation", meta=(DefaultToSelf="Character"))
 	static void PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate = 1.0f, float BlendIn = 0.25f, float BlendOut = 0.25f, bool bStopMovement = false);
+
+	/**
+	 * Add an Input Mapping Context to the character's player controller.
+	 * Call from BeginPlay to ensure Enhanced Input actions work.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Input")
+	static void AddInputMappingContextToCharacter(ACharacter* Character, UInputMappingContext* MappingContext, int32 Priority = 0);
 };

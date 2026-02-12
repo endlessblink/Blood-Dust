@@ -245,7 +245,16 @@
       "Bash(uv run:*)",
       "WebFetch(domain:lxjk.github.io)",
       "WebFetch(domain:gist.github.com)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: 3 new MCP handler classes \\(Gameplay, Widget, AI\\), plugin updates\n\nNew: EpicUnrealMCPGameplayCommands, EpicUnrealMCPWidgetCommands,\nEpicUnrealMCPAICommands \\(6+3+5 tools\\). Updated Bridge, Build.cs,\nBlueprintCommands, EditorCommands, MCPHelperLibrary, GameplayHelperLibrary,\nPython server. Robot ABP/BP updates, level actor changes.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: 3 new MCP handler classes \\(Gameplay, Widget, AI\\), plugin updates\n\nNew: EpicUnrealMCPGameplayCommands, EpicUnrealMCPWidgetCommands,\nEpicUnrealMCPAICommands \\(6+3+5 tools\\). Updated Bridge, Build.cs,\nBlueprintCommands, EditorCommands, MCPHelperLibrary, GameplayHelperLibrary,\nPython server. Robot ABP/BP updates, level actor changes.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "mcp__unrealMCP__set_game_mode_default_pawn",
+      "WebFetch(domain:ultidigi.com)",
+      "mcp__unrealMCP__get_blueprint_variable_details",
+      "WebFetch(domain:adamrehn.com)",
+      "Bash(nvcc:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(bash:*)",
+      "Bash(unzip:*)",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: IMC self-contained character, GameplayHelpers updates, rembrandt-lighting skill\n\nUpdated BP_RobotCharacter IMC wiring, GameMode, PlayerController.\nGameplayHelpers: AddInputMappingContextToCharacter. New rembrandt-lighting\nskill. EditorCommands update. Level actor changes.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

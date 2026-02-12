@@ -11,7 +11,8 @@ public class GameplayHelpers : ModuleRules
 			{
 				"Core",
 				"CoreUObject",
-				"Engine"
+				"Engine",
+				"EnhancedInput"
 			}
 		);
 	}

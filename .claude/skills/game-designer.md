@@ -94,59 +94,42 @@ Map answers to phase configuration. Store choices for later phases.
 ## Phase 1: Character Playability (~15 min, ~35 MCP calls)
 
 ### Goal
-WASD movement, mouse camera look, and jump working on BP_RobotCharacter.
+WASD movement, mouse camera look, jump, sprint, and attack working on BP_RobotCharacter.
 
 ### Approach
-**Delegate to `/unreal-character-input` skill, Phase 2** (Enhanced Input wiring).
+**Delegate to `/unreal-character-input` skill** (full pipeline: IMC setup, jump, camera, movement, sprint/attack).
 
 Pre-check: read BP to see if input is already wired:
 ```
 read_blueprint_content(blueprint_path="/Game/Characters/Robot/BP_RobotCharacter")
 ```
 
-If IA_Move/IA_Look/IA_Jump enhanced input action nodes exist but are NOT connected to movement functions, wire them. If already wired, skip.
+If BeginPlay → AddInputMappingContextToCharacter chain exists AND movement nodes are wired, skip to GameMode setup. Otherwise, run the full skill.
 
-### Wiring Sequence (if needed)
+### Key Corrections from Previous Versions
 
-#### Jump (5 calls)
-1. `add_node` CallFunction "Jump" → capture node_id
-2. `connect_nodes` IA_Jump.Started → Jump.execute
-3. `add_node` CallFunction "StopJumping" → capture node_id
-4. `connect_nodes` IA_Jump.Completed → StopJumping.execute
-5. `compile_blueprint` — verify before continuing
+1. **IMC MUST be set up in BeginPlay on the Character** — NOT on PlayerController. `set_game_mode_default_pawn` can reset PlayerController CDO, breaking IMC.
+2. **Axis mapping: ActionValue_X → ForwardVector, ActionValue_Y → RightVector** when IMC_Default maps W/S to X axis and A/D to Y axis. Verify your IMC_Default configuration.
+3. **NO pitch negation in Blueprint** — handle camera inversion via IMC modifier (Negate Y).
+4. **Sprint/Attack use GameplayHelperLibrary** (runtime module): `SetCharacterWalkSpeed`, `PlayAnimationOneShot` with target_class `/Script/GameplayHelpers.GameplayHelperLibrary`.
 
-#### Camera Look (14 calls for IA_Look + IA_MouseLook)
-For each look action:
-1. `add_node` CallFunction "AddControllerYawInput"
-2. `connect_nodes` EnhancedInput.Triggered → Yaw.execute
-3. `connect_nodes` EnhancedInput.ActionValue_X → Yaw.Val
-4. `add_node` CallFunction "AddControllerPitchInput"
-5. `connect_nodes` Yaw.then → Pitch.execute
-6. `connect_nodes` EnhancedInput.ActionValue_Y → Pitch.Val
-7. `compile_blueprint`
+### GameMode Setup (after input wiring)
+```
+set_game_mode_default_pawn(
+    game_mode_path="/Game/ThirdPerson/Blueprints/BP_ThirdPersonGameMode",
+    pawn_class_path="/Game/Characters/Robot/BP_RobotCharacter"
+)
+```
 
-#### Movement (13 calls)
-1. `add_node` CallFunction "GetControlRotation"
-2. `add_node` CallFunction "GetRightVector"
-3. `connect_nodes` GetControlRotation.ReturnValue → GetRightVector.InRot
-4. `add_node` CallFunction "GetForwardVector"
-5. `connect_nodes` GetControlRotation.ReturnValue → GetForwardVector.InRot
-6. `add_node` CallFunction "AddMovementInput" (right strafe)
-7. `connect_nodes` IA_Move.Triggered → AddMovementInput_Right.execute
-8. `connect_nodes` GetRightVector.ReturnValue → AddMovementInput_Right.WorldDirection
-9. `connect_nodes` IA_Move.ActionValue_X → AddMovementInput_Right.ScaleValue
-10. `add_node` CallFunction "AddMovementInput" (forward)
-11. `connect_nodes` AddMovementInput_Right.then → AddMovementInput_Forward.execute
-12. `connect_nodes` GetForwardVector.ReturnValue → AddMovementInput_Forward.WorldDirection
-13. `connect_nodes` IA_Move.ActionValue_Y → AddMovementInput_Forward.ScaleValue
-
-#### Final Compile
+### Verification
 ```
 compile_blueprint(blueprint_name="/Game/Characters/Robot/BP_RobotCharacter")
+analyze_blueprint_graph(blueprint_path="/Game/Characters/Robot/BP_RobotCharacter")
 ```
+Verify: 0 compile errors, each input pin has exactly 1 connection, no duplicate connections.
 
 ### Checkpoint
-> "Phase 1 complete. Character input wired. Press **Play (Alt+P)** to test WASD movement, mouse look, and jump. Press **Ctrl+S** to save. Ready for Phase 2?"
+> "Phase 1 complete. Character input wired with self-contained IMC setup. Press **Play (Alt+P)** to test WASD movement, mouse look, jump, sprint (Shift), and attack (LMB). Press **Ctrl+S** to save. Ready for Phase 2?"
 
 ---
 
@@ -666,16 +649,13 @@ Always use `get_height_at_location` before placing. Add capsule half-height offs
 
 | Feature | Why | Workaround |
 |---------|-----|-----------|
-| Niagara FX (fire, smoke) | No Niagara MCP tools | Place torch meshes, add FX manually |
-| Health Bar HUD | No UMG/Widget tools | Create Widget BP manually, bind to Health var |
-| AI behavior trees | No BT MCP tools | Simple Blueprint patrol (Phase 6b) |
-| Animation montages | No montage playback API | State machine transitions only |
-| Physics-based combat | No physics impulse tools | Overlap-based damage only |
+| Complex Niagara FX (custom modules) | spawn_niagara_system only places existing systems | Create system in Niagara Editor, then place via MCP |
+| Detailed BT task configuration | BT task/decorator properties are protected in UE5.7 C++ | Use BT editor for property tuning after MCP creates structure |
+| Widget visual layout | set_widget_property has limited styling control | Fine-tune widget layout in UMG editor |
 
-## Future C++ Tools Wishlist (Would Unlock More Phases)
+## Future C++ Tools Wishlist
 
-- `create_niagara_system` — particle effects for torches, dust, blood
-- `create_widget_blueprint` — HUD elements (health bar, crosshair)
-- `play_animation_montage` — one-shot attack animations
-- `create_behavior_tree` — AI patrol and combat behavior
-- `set_game_mode_default_pawn` — auto-configure game mode
+- Niagara system CREATION (not just placement) — custom particle effects
+- BT task property editing — bypass protected member limitations
+- Widget data binding — connect HUD elements to Blueprint variables
+- Landscape painting — programmatic landscape layer painting
