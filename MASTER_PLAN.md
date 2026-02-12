@@ -75,8 +75,8 @@
 | **FEATURE-015** | **Playable Demo — 8-phase pipeline** | **P0** | OPEN | FEATURE-014, FEATURE-010 |
 | TASK-015A | Phase 0: Audit & Interview | P0 | OPEN | FEATURE-014 |
 | TASK-015B | Phase 1: Character Playability (delegates to /unreal-character-input) | P0 | OPEN | TASK-010L |
-| TASK-015C | Phase 2: Rembrandt Lighting & Atmosphere | P1 | OPEN | - |
-| TASK-015D | Phase 3: Post-Processing Color Grade | P1 | OPEN | - |
+| ~~**TASK-015C**~~ | ~~Phase 2: Rembrandt Lighting & Atmosphere~~ | **P1** | ~~**DONE**~~ (2026-02-12) | - |
+| ~~**TASK-015D**~~ | ~~Phase 3: Post-Processing Color Grade~~ | **P1** | ~~**DONE**~~ (2026-02-12) | - |
 | TASK-015E | Phase 4: Backdrop Billboards | P2 | OPEN | - |
 | TASK-015F | Phase 5: World Building (ruins/castle/town) | P2 | OPEN | - |
 | TASK-015G | Phase 6: NPC Spawn & Patrol | P2 | OPEN | TASK-015B |
@@ -90,6 +90,37 @@
 | ~~**FEATURE-021**~~ | ~~**Audio Pipeline (import_sound, AmbientSound, BP AudioComponent)**~~ | **P1** | **DONE** (2026-02-11) | - |
 | ~~**FEATURE-022**~~ | ~~**compile_blueprint fix (proper error checking via FCompilerResultsLog)**~~ | **P2** | **DONE** (2026-02-11) | - |
 | ~~**FEATURE-023**~~ | ~~**GameplayHelperLibrary runtime module (SetCharacterWalkSpeed, PlayAnimationOneShot)**~~ | **P3** | **DONE** (2026-02-11) | - |
+| ~~**BUG-024**~~ | ~~**Character moves during attack/kick animations (bStopMovement=false)**~~ | **P1** | **DONE** (2026-02-12) | FEATURE-023 |
+| **IDEA-025** | **Mixamo character/animation pipeline — import Mixamo FBX, retarget to existing skeleton, wire actions** | **P3** | OPEN | FEATURE-010 |
+| **FEATURE-026** | **Enemy AI & Combat System** | **P0** | OPEN | FEATURE-010, FEATURE-020 |
+| TASK-026A | Import/create enemy character (reuse robot mesh with different material/scale) | P1 | OPEN | FEATURE-010 |
+| TASK-026B | Health system: add Health variable to player + enemy BPs, damage on overlap | P0 | OPEN | FEATURE-010 |
+| TASK-026C | Hit detection: melee attack collision box, damage application | P0 | OPEN | TASK-026B |
+| TASK-026D | Hit feedback: red screen flash (PostProcess), knockback impulse | P1 | OPEN | TASK-026C |
+| TASK-026E | Block/parry mechanic (RMB input + animation + damage reduction) | P1 | OPEN | TASK-026C |
+| TASK-026F | Blood/impact VFX (Niagara particle on hit) | P2 | OPEN | TASK-026C, FEATURE-017 |
+| TASK-026G | Enemy death (ragdoll or death animation, remove from play) | P1 | OPEN | TASK-026B |
+| TASK-026H | Player death + respawn at PlayerStart | P1 | OPEN | TASK-026B |
+| TASK-026I | Enemy patrol AI (behavior tree: waypoints → detect player → chase → attack) | P0 | OPEN | TASK-026A, FEATURE-020 |
+| TASK-026J | Background NPC combatants (ambient pairs fighting in distance, no player interaction) | P2 | OPEN | TASK-026I |
+| **FEATURE-027** | **World Building & Structures** | **P1** | OPEN | - |
+| TASK-027A | Ruins/start zone enclosure (spawn point with walls/arches) | P1 | OPEN | - |
+| TASK-027B | Middle zone: scattered cover (walls, broken pillars, rubble) | P1 | OPEN | - |
+| TASK-027C | Background structures: castle/ruins silhouettes in fog | P2 | OPEN | - |
+| TASK-027D | Escape portal/archway with glow effect (end zone) | P1 | OPEN | - |
+| TASK-027E | Torch props with fire VFX on ruins (Niagara) | P2 | OPEN | FEATURE-017 |
+| TASK-027F | Dust/wind particles floating in air (Niagara ambient) | P2 | OPEN | FEATURE-017 |
+| **FEATURE-028** | **HUD & UI** | **P1** | OPEN | FEATURE-019 |
+| TASK-028A | Create health bar widget (player HP, update on damage) | P1 | OPEN | TASK-026B, FEATURE-019 |
+| TASK-028B | Create crosshair/reticle widget | P2 | OPEN | FEATURE-019 |
+| TASK-028C | "Demo Complete" win screen (triggered on portal overlap) | P1 | OPEN | TASK-027D, FEATURE-019 |
+| TASK-028D | "You Died" screen + restart prompt | P1 | OPEN | TASK-026H, FEATURE-019 |
+| TASK-028E | Main menu / pause menu (Esc key) | P3 | OPEN | FEATURE-019 |
+| **FEATURE-029** | **Ambient Audio** | **P2** | OPEN | FEATURE-016 |
+| TASK-029A | Place wind ambient sound (looping, 3D spatialized) | P2 | OPEN | FEATURE-016 |
+| TASK-029B | Place distant combat sounds (background atmosphere) | P2 | OPEN | FEATURE-016 |
+| TASK-029C | Background music track (2D, looping) | P2 | OPEN | FEATURE-016 |
+| TASK-029D | Combat music trigger (switch tracks on enemy detection) | P3 | OPEN | TASK-029C, TASK-026I |
 
 ## Demo Vision: "The Escape"
 
@@ -589,8 +620,8 @@ Reusable skill for importing any character with the full pipeline:
 |-------|--------|-----------|-----------|
 | 0: Audit & Interview | OPEN | 5-8 | 5 min |
 | 1: Character Controls | OPEN (blocked by TASK-010L) | ~35 | 15 min |
-| 2: Rembrandt Lighting | OPEN | ~25 | 10 min |
-| 3: Post-Processing | OPEN | ~15 | 8 min |
+| 2: Rembrandt Lighting | **DONE** (2026-02-12) | ~25 | 10 min |
+| 3: Post-Processing | **DONE** (2026-02-12) | ~15 | 8 min |
 | 4: Backdrops | OPEN | ~45 | 20 min |
 | 5: World Building | OPEN | 10-50 | 15-30 min |
 | 6: NPCs | OPEN | 20-60 | 10-40 min |
@@ -683,6 +714,129 @@ Reusable skill for importing any character with the full pipeline:
 - `SetCharacterWalkSpeed` — change MaxWalkSpeed at runtime
 - `PlayAnimationOneShot` — play AnimSequence via montage with blend params
 **Note**: MCPHelperLibrary is editor-only (UnrealMCP module) — GameplayHelperLibrary is the runtime alternative for Blueprint use.
+
+---
+
+### BUG-024: Character Moves During Attack/Kick Animations
+
+**Status**: DONE (2026-02-12)
+**Priority**: P1
+**Root Cause**: `PlayAnimationOneShot` nodes in BP_RobotCharacter had `bStopMovement` pin defaulting to `false`. The function already supports stopping movement — it saves `MaxWalkSpeed`, sets it to 0, calls `StopMovementImmediately()`, and restores speed via timer during blend-out.
+**Fix**: Set `bStopMovement=true` via `set_node_property(action="set_pin_default")` on both nodes:
+- `K2Node_CallFunction_18` (Attack / IA_Attack_Long)
+- `K2Node_CallFunction_19` (Kick / IA_Kick)
+**Also updated**: `.claude/skills/unreal-character-input.md` Phase 5 now includes `bStopMovement=true` step.
+
+---
+
+### IDEA-025: Mixamo Character/Animation Pipeline
+
+**Status**: OPEN (optional, future)
+**Priority**: P3
+**Goal**: Enable importing Mixamo characters and animations for rapid prototyping.
+
+#### Two Approaches
+
+**Option A: Full Mixamo character** (easiest)
+- Download character + animations from Mixamo as FBX
+- `import_skeletal_mesh` → `import_animation` (all share same skeleton)
+- Wire actions via existing `/unreal-character-input` skill pattern
+- Thousands of free animations, instantly compatible
+
+**Option B: Mixamo animations on existing robot** (needs retargeting)
+- Download animations-only from Mixamo
+- Import with Mixamo skeleton
+- Set up **IK Retargeter** in UE5 editor (one-time manual step, ~10 min):
+  - Create IK Rig for Mixamo skeleton
+  - Create IK Rig for Robot skeleton
+  - Create IK Retargeter mapping bones between them
+- Once retarget asset exists, any future Mixamo animation auto-retargets
+- **No MCP tools for IK retargeting currently** — editor UI only
+
+#### MCP Calls Per New Animation (after setup)
+1. `import_animation` (with correct skeleton)
+2. `add_enhanced_input_action_event` (new IA)
+3. `add_node` CallFunction "PlayAnimationOneShot"
+4. `connect_nodes` (exec + data pins)
+5. `set_node_property` (AnimSequence path, bStopMovement=true)
+
+---
+
+### FEATURE-026: Enemy AI & Combat System
+
+**Status**: OPEN
+**Priority**: P0
+**Goal**: Full combat loop — player attacks enemies, enemies fight back, health/damage/death for both sides.
+
+#### Sub-systems
+- **Health**: Float variable on both player and enemy BPs. Start at 100. Damage reduces. At 0 → death.
+- **Melee hit detection**: Collision box on character during attack animation frames. Overlap → apply damage.
+- **Hit feedback**: Flash red PostProcess for 0.2s + knockback impulse on damage target.
+- **Block/parry**: RMB holds block pose. Incoming damage reduced by 80% (or 100% with timing window).
+- **Enemy AI**: BehaviorTree — idle patrol between waypoints → detect player in radius → chase → melee attack → back off → repeat.
+- **Death**: Enemy → ragdoll physics or death anim, despawn after 5s. Player → "You Died" screen + respawn.
+- **VFX**: Niagara blood splash on hit, dust kick on death.
+
+---
+
+### FEATURE-027: World Building & Structures
+
+**Status**: OPEN
+**Priority**: P1
+**Goal**: Build the level layout for "The Escape" — start zone, middle battlefield, background, end zone.
+
+#### Level Zones
+- **Start zone**: Small ruin enclosure. Player spawns inside. Tutorial-feeling safe area.
+- **Middle zone**: Open battlefield. 3-5 patrol enemies. Scattered cover (broken walls, pillars, rocks).
+- **Background**: Castle/fortress silhouettes in fog. Ambient NPC pairs fighting. Not interactable.
+- **End zone**: Glowing portal/archway. 1-2 final enemies guarding it. Overlap triggers win.
+
+#### Tools Available
+- `construct_house`, `construct_mansion`, `create_castle_fortress` — procedural structures
+- `create_arch`, `create_wall`, `create_tower`, `create_staircase` — individual elements
+- `spawn_niagara_system` — fire/torch VFX, dust particles
+- `scatter_meshes_on_landscape` — rubble, debris
+
+---
+
+### FEATURE-028: HUD & UI
+
+**Status**: OPEN
+**Priority**: P1
+**Goal**: On-screen UI for gameplay feedback — health, crosshair, win/lose screens, menus.
+
+#### Widgets Needed
+| Widget | Type | Trigger |
+|--------|------|---------|
+| Health bar | ProgressBar + Text | Updates on damage event |
+| Crosshair | Image (center screen) | Always visible during gameplay |
+| "Demo Complete" | Full-screen overlay | Player overlaps escape portal |
+| "You Died" | Full-screen overlay + restart button | Player health reaches 0 |
+| Pause menu | Overlay with Resume/Quit | Esc key toggle |
+
+#### Tools Available
+- `create_widget_blueprint` — creates UMG widget with canvas
+- `add_widget_to_viewport` — displays widget
+- `set_widget_property` — configure elements
+
+---
+
+### FEATURE-029: Ambient Audio
+
+**Status**: OPEN
+**Priority**: P2
+**Goal**: Atmospheric sound design — wind, distant combat, music.
+
+#### Audio Layers
+- **Wind**: Looping ambient, 3D spatialized, placed at multiple points
+- **Distant combat**: Looping metal clashing sounds, low volume, placed far from player
+- **Music**: 2D background track (is_ui_sound=true), looping, low volume
+- **Combat music**: Triggered when enemies detect player, crossfade from ambient track
+
+#### Tools Available
+- `import_sound` — import WAV/OGG assets
+- `spawn_actor(type="AmbientSound")` — place 3D/2D sounds in level
+- `add_component_to_blueprint` with AudioComponent — attach sounds to BPs
 
 ---
 

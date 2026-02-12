@@ -947,6 +947,61 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorProperty(con
     // Special handling for PostProcessVolume settings
     if (APostProcessVolume* PPVolume = Cast<APostProcessVolume>(TargetActor))
     {
+        // Handle actor-level properties on PostProcessVolume (not in Settings struct)
+        if (PropertyName == TEXT("bUnbound"))
+        {
+            PPVolume->bUnbound = PropertyValue->AsBool();
+            PPVolume->Modify();
+            PPVolume->MarkPackageDirty();
+
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), true);
+            Result->SetStringField(TEXT("actor"), ActorName);
+            Result->SetStringField(TEXT("property"), PropertyName);
+            Result->SetBoolField(TEXT("value"), PPVolume->bUnbound);
+            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+            return Result;
+        }
+        else if (PropertyName == TEXT("Priority"))
+        {
+            PPVolume->Priority = static_cast<float>(PropertyValue->AsNumber());
+            PPVolume->Modify();
+            PPVolume->MarkPackageDirty();
+
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), true);
+            Result->SetStringField(TEXT("actor"), ActorName);
+            Result->SetStringField(TEXT("property"), PropertyName);
+            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+            return Result;
+        }
+        else if (PropertyName == TEXT("BlendRadius"))
+        {
+            PPVolume->BlendRadius = static_cast<float>(PropertyValue->AsNumber());
+            PPVolume->Modify();
+            PPVolume->MarkPackageDirty();
+
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), true);
+            Result->SetStringField(TEXT("actor"), ActorName);
+            Result->SetStringField(TEXT("property"), PropertyName);
+            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+            return Result;
+        }
+        else if (PropertyName == TEXT("BlendWeight"))
+        {
+            PPVolume->BlendWeight = static_cast<float>(PropertyValue->AsNumber());
+            PPVolume->Modify();
+            PPVolume->MarkPackageDirty();
+
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), true);
+            Result->SetStringField(TEXT("actor"), ActorName);
+            Result->SetStringField(TEXT("property"), PropertyName);
+            Result->SetStringField(TEXT("message"), TEXT("Property set successfully"));
+            return Result;
+        }
+
         if (PropertyPath.Num() > 0 && PropertyPath[0] == TEXT("Settings"))
         {
             // Access the Settings struct directly

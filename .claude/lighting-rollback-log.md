@@ -10,7 +10,8 @@
 |---|----------|-------|--------|--------------|
 | 1 | Settings.VignetteIntensity | 0.7 | APPROVED | 0.0 (default) |
 | 2 | Settings.ColorSaturation | (0.9,0.9,0.9,1) | REVERTED | (1,1,1,1) |
-| 3 | Settings.ColorContrast | (1.08,1.08,1.05,1) | PENDING | (1,1,1,1) |
-| 4 | FogDensity | 0.005 | PENDING | (previous) |
-| 5 | Settings.BloomIntensity | 0.5 | PENDING | (default) |
-| 6 | Settings.BloomThreshold | 1.0 | PENDING | (default) |
+| 3 | Settings.ColorContrast | (1.08,1.08,1.05,1) | APPROVED | (1,1,1,1) |
+| 4 | FogDensity | 0.05 | APPROVED | (previous) |
+| 5 | Settings.BloomIntensity | 0.5 | APPROVED | (default) |
+| 6 | Settings.BloomThreshold | 1.0 | APPROVED | (default) |
+| 7 | bEnableVolumetricFog | true | APPROVED | false |
