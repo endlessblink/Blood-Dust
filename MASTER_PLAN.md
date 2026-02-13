@@ -92,6 +92,14 @@
 | ~~**FEATURE-023**~~ | ~~**GameplayHelperLibrary runtime module (SetCharacterWalkSpeed, PlayAnimationOneShot)**~~ | **P3** | **DONE** (2026-02-11) | - |
 | ~~**BUG-024**~~ | ~~**Character moves during attack/kick animations (bStopMovement=false)**~~ | **P1** | **DONE** (2026-02-12) | FEATURE-023 |
 | ~~**FEATURE-030**~~ | ~~**SetPropertyValue expansion: ByteProperty, EnumProperty, ClassProperty, ObjectProperty, SoftObjectProperty, SoftClassProperty, NameProperty, TextProperty + struct dot-notation navigation + snap_actor_to_ground capsule height fix**~~ | **P0** | ✅ **DONE** (2026-02-13) | - |
+| **FEATURE-032** | **Pixel Streaming — Claude Plays the Game (PixelStreaming2 + Playwright MCP)** | **P1** | IN PROGRESS | - |
+| TASK-032A | Enable PixelStreaming2 plugin in .uproject | P1 | DONE (2026-02-12) | - |
+| TASK-032B | Fix signalling server config for Linux (port 8080, relative http_root) | P1 | DONE (2026-02-12) | - |
+| TASK-032C | Build signalling server (Common → Signalling → SignallingWebServer) | P1 | DONE (2026-02-12) | 032B |
+| TASK-032D | Create `scripts/start-pixel-streaming.sh` launch script | P1 | DONE (2026-02-12) | 032C |
+| TASK-032E | Fix screenshot deadlock (2-phase FTSTicker, reduce default to 960x540) | P0 | DONE (2026-02-13) | - |
+| TASK-032F | Test full pipeline: signalling → game → browser → Playwright screenshot | P1 | OPEN | 032D, 032E |
+| TASK-032G | Create `/play-game` skill (screenshot → decide → input loop) | P2 | OPEN | 032F |
 | **FEATURE-031** | **Enemy Animation & AI Pipeline (Full Battlefield)** | **P0** | IN PROGRESS | FEATURE-026 |
 | TASK-031A | Fix enemy materials (all 3 types: dark patches, UVs, glossy, missing) | P0 | OPEN | - |
 | TASK-031B | Fix enemy ground positioning (all 19 enemies) | P0 | OPEN | - |
@@ -150,6 +158,8 @@
 10. Getting hit = red screen flash + knockback (FEATURE-020, FEATURE-022)
 11. Kill enemies → blood impact FX (FEATURE-023)
 12. Reach glowing escape portal → "Demo Complete" screen (FEATURE-019)
+
+**Progress (2026-02-13) — TASK-015J Game Flow:** Portal beacon (500K PointLight at tower), start zone light, 2 breadcrumb path lights, BP_PortalTrigger (Tick distance check → PrintString + SetGamePaused), "REACH THE LIGHT" on BeginPlay, WBP_Objective + WBP_DemoComplete widgets. Goal = Ruin_BG_Tower_02. IN PROGRESS.
 
 ### Level Layout Concept
 - **Start zone**: Small ruin enclosure, player spawns here
