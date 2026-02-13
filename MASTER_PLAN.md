@@ -860,6 +860,38 @@ Create `.claude/skills/enemy-ai.md` documenting the full pipeline.
 
 ---
 
+### FEATURE-032: Pixel Streaming — Claude Plays the Game
+
+**Status**: IN PROGRESS
+**Priority**: P1
+**Goal**: Enable Claude Code to see and interact with the running Blood & Dust game through Pixel Streaming 2 + Playwright MCP. Claude sees the game via browser screenshots and sends keyboard/mouse input through the browser's WebRTC data channel.
+
+#### Architecture
+```
+Unreal Game (standalone) → NVENC H.264 → WebRTC → Signalling Server → Browser
+Playwright MCP → Browser → screenshot (Claude sees) + keyboard/mouse (Claude acts)
+```
+
+#### Completed
+- **TASK-032A**: PixelStreaming2 plugin enabled in `.uproject`
+- **TASK-032B**: Signalling server config fixed for Linux — `player_port=8080` (no sudo), `http_root=./www`
+- **TASK-032C**: Built Common → Signalling → SignallingWebServer (Node v20 works despite wanting v22)
+- **TASK-032D**: Created `scripts/start-pixel-streaming.sh` — launches signalling + standalone game, cleanup on exit
+- **TASK-032E**: Fixed screenshot deadlock — 2-phase FTSTicker (CaptureScene tick 1, ReadPixels tick 2+3), reduced default resolution to 960x540, added to LARGE_OPERATION_COMMANDS (300s timeout) and HEAVY_COMMANDS_COOLDOWN (1s)
+
+#### Remaining
+- **TASK-032F**: Test full pipeline end-to-end (signalling → game → browser → Playwright screenshot + input)
+- **TASK-032G**: Create `/play-game` skill — automated game loop (screenshot → Claude decides action → Playwright sends input → repeat)
+
+#### Key Details
+- Game runs as standalone process (`-game` flag), not PIE in editor
+- Editor can stay open simultaneously for MCP level editing tools
+- RTX 4070 Ti dual NVENC encoders — 1280x720 H.264 is trivial
+- Player URL: `http://127.0.0.1:8080`
+- Ports: player=8080, streamer=8888, SFU=8889
+
+---
+
 ### FEATURE-031: Enemy Animation & AI Pipeline (Full Battlefield)
 
 **Status**: IN PROGRESS
