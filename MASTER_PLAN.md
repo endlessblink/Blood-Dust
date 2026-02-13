@@ -102,16 +102,16 @@
 | TASK-031G | Import Mixamo-rigged animations + assign to all 19 enemies | P1 | OPEN | 031F |
 | TASK-031H | Clean up distorted generic Mixamo animation assets | P2 | OPEN | 031G |
 | **IDEA-025** | **Mixamo character/animation pipeline — import Mixamo FBX, retarget to existing skeleton, wire actions** | **P3** | OPEN | FEATURE-010 |
-| **FEATURE-026** | **Enemy AI & Combat System** | **P0** | IN PROGRESS | FEATURE-010, FEATURE-020 |
-| TASK-026A | Import/create enemy character (reuse robot mesh with different material/scale) | P1 | OPEN | FEATURE-010 |
-| TASK-026B | Health system: add Health variable to player + enemy BPs, damage on overlap | P0 | OPEN | FEATURE-010 |
-| TASK-026C | Hit detection: melee attack collision box, damage application | P0 | OPEN | TASK-026B |
+| **FEATURE-026** | **Enemy AI & Combat System** | **P0** | **IN PROGRESS** | FEATURE-010, FEATURE-020 |
+| ~~TASK-026A~~ | ~~Player melee damage (ApplyMeleeDamage C++ function)~~ | P0 | ~~DONE~~ (2026-02-12) | FEATURE-010 |
+| ~~TASK-026B~~ | ~~Enemy Health variables (KingBot=100, Giganto=150, Bell=75)~~ | P0 | ~~DONE~~ (2026-02-12) | FEATURE-010 |
+| ~~TASK-026C~~ | ~~Player BP wiring (ApplyMeleeDamage after attacks)~~ | P0 | ~~DONE~~ (2026-02-12) | TASK-026B |
 | TASK-026D | Hit feedback: red screen flash (PostProcess), knockback impulse | P1 | OPEN | TASK-026C |
 | TASK-026E | Block/parry mechanic (RMB input + animation + damage reduction) | P1 | OPEN | TASK-026C |
 | TASK-026F | Blood/impact VFX (Niagara particle on hit) | P2 | OPEN | TASK-026C, FEATURE-017 |
-| TASK-026G | Enemy death (ragdoll or death animation, remove from play) | P1 | OPEN | TASK-026B |
-| TASK-026H | Player death + respawn at PlayerStart | P1 | OPEN | TASK-026B |
-| TASK-026I | Enemy patrol AI (behavior tree: waypoints → detect player → chase → attack) | P0 | OPEN | TASK-026A, FEATURE-020 |
+| ~~TASK-026G~~ | ~~Enemy death (ragdoll + knockback + delayed destroy)~~ | P1 | ~~DONE~~ (2026-02-12) | TASK-026B |
+| ~~TASK-026H~~ | ~~Player death + "YOU DIED" screen + level restart~~ | P1 | ~~DONE~~ (2026-02-13) | TASK-026B |
+| ~~TASK-026I~~ | ~~Enemy AI: chase/attack/leash C++ state machine (UpdateEnemyAI)~~ | P0 | ~~DONE~~ (2026-02-13) | TASK-026A |
 | TASK-026J | Background NPC combatants (ambient pairs fighting in distance, no player interaction) | P2 | OPEN | TASK-026I |
 | **FEATURE-027** | **World Building & Structures** | **P1** | OPEN | - |
 | TASK-027A | Ruins/start zone enclosure (spawn point with walls/arches) | P1 | OPEN | - |
@@ -121,10 +121,10 @@
 | TASK-027E | Torch props with fire VFX on ruins (Niagara) | P2 | OPEN | FEATURE-017 |
 | TASK-027F | Dust/wind particles floating in air (Niagara ambient) | P2 | OPEN | FEATURE-017 |
 | **FEATURE-028** | **HUD & UI** | **P1** | OPEN | FEATURE-019 |
-| TASK-028A | Create health bar widget (player HP, update on damage) | P1 | OPEN | TASK-026B, FEATURE-019 |
+| ~~TASK-028A~~ | ~~Create health bar widget (player HP, update on damage)~~ | P1 | ~~DONE~~ (2026-02-13) | TASK-026B |
 | TASK-028B | Create crosshair/reticle widget | P2 | OPEN | FEATURE-019 |
 | TASK-028C | "Demo Complete" win screen (triggered on portal overlap) | P1 | OPEN | TASK-027D, FEATURE-019 |
-| TASK-028D | "You Died" screen + restart prompt | P1 | OPEN | TASK-026H, FEATURE-019 |
+| ~~TASK-028D~~ | ~~"You Died" screen + restart prompt~~ | P1 | ~~DONE~~ (2026-02-13) | TASK-026H |
 | TASK-028E | Main menu / pause menu (Esc key) | P3 | OPEN | FEATURE-019 |
 | **FEATURE-029** | **Ambient Audio** | **P2** | OPEN | FEATURE-016 |
 | TASK-029A | Place wind ambient sound (looping, 3D spatialized) | P2 | OPEN | FEATURE-016 |
