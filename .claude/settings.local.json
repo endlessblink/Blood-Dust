@@ -267,7 +267,8 @@
       "mcp__unrealMCP__set_blueprint_variable_properties",
       "mcp__unrealMCP__set_skeletal_animation",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: combat system, enemy BPs, montages, pixel streaming, skills\n\nNew: enemy characters \\(Bell, Giganto, KingBot\\), combat montages\n\\(AM_Robot_Kick, AM_Robot_Hit\\), PixelStreaming2 plugin enabled,\nenemy-battlefield/unreal-combat/game-flow-escape skills,\nstart-pixel-streaming script. Updated game-designer skill,\nEditorCommands \\(ByteProperty/EnumProperty fix\\), Python server.\n584 files changed including level actor updates.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(git ls-files:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

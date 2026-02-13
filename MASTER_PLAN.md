@@ -114,9 +114,10 @@
 | ~~TASK-026I~~ | ~~Enemy AI: chase/attack/leash C++ state machine (UpdateEnemyAI)~~ | P0 | ~~DONE~~ (2026-02-13) | TASK-026A |
 | TASK-026J | Background NPC combatants (ambient pairs fighting in distance, no player interaction) | P2 | OPEN | TASK-026I |
 | **FEATURE-027** | **World Building & Structures** | **P1** | OPEN | - |
-| TASK-027A | Ruins/start zone enclosure (spawn point with walls/arches) | P1 | OPEN | - |
-| TASK-027B | Middle zone: scattered cover (walls, broken pillars, rubble) | P1 | OPEN | - |
-| TASK-027C | Background structures: castle/ruins silhouettes in fog | P2 | OPEN | - |
+| ~~TASK-027A~~ | ~~Ruins/start zone enclosure (spawn point with walls/arches)~~ | P1 | ~~DONE~~ (2026-02-12) | - |
+| ~~TASK-027B~~ | ~~Middle zone: scattered cover (walls, broken pillars, rubble)~~ | P1 | ~~DONE~~ (2026-02-12) | - |
+| ~~TASK-027C~~ | ~~Background structures: castle/ruins silhouettes in fog~~ | P2 | ~~DONE~~ (2026-02-12) | - |
+| TASK-027G | Ruin decay effects: moss overlay, edge wear, cracks on M_Ruin_Wall | P2 | OPEN | TASK-027A |
 | TASK-027D | Escape portal/archway with glow effect (end zone) | P1 | OPEN | - |
 | TASK-027E | Torch props with fire VFX on ruins (Niagara) | P2 | OPEN | FEATURE-017 |
 | TASK-027F | Dust/wind particles floating in air (Niagara ambient) | P2 | OPEN | FEATURE-017 |
