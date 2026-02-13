@@ -41,4 +41,39 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|Input")
 	static void AddInputMappingContextToCharacter(ACharacter* Character, UInputMappingContext* MappingContext, int32 Priority = 0);
+
+	/**
+	 * Melee damage sweep: sphere overlap around attacker, damage Characters
+	 * with a "Health" float variable, ragdoll + knockback + delayed destroy on death.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Combat", meta=(DefaultToSelf="Attacker"))
+	static void ApplyMeleeDamage(ACharacter* Attacker, float Damage = 15.0f, float Radius = 200.0f, float KnockbackImpulse = 50000.0f);
+
+	/**
+	 * Tick-based enemy AI: chase player, attack in range, return when leashed.
+	 * Controls animations directly (no AnimBP slot needed).
+	 * State stored internally (static TMap). Call from Event Tick on each enemy.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|AI", meta=(DefaultToSelf="Enemy"))
+	static void UpdateEnemyAI(
+		ACharacter* Enemy,
+		float AggroRange = 1500.0f,
+		float AttackRange = 200.0f,
+		float LeashDistance = 3000.0f,
+		float MoveSpeed = 400.0f,
+		float AttackCooldown = 2.0f,
+		float AttackDamage = 10.0f,
+		float AttackRadius = 150.0f,
+		UAnimSequence* AttackAnim = nullptr,
+		UAnimSequence* IdleAnim = nullptr,
+		UAnimSequence* WalkAnim = nullptr
+	);
+
+	/**
+	 * Manage player health bar HUD + death screen.
+	 * Call from EventTick on the player character.
+	 * Auto-creates health bar on first call. Handles death: ragdoll + death screen + level restart.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|HUD", meta=(DefaultToSelf="Player"))
+	static void ManagePlayerHUD(ACharacter* Player);
 };

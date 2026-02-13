@@ -113,6 +113,7 @@ class UnrealConnection:
         "scatter_foliage",
         "create_widget_blueprint",
         "create_behavior_tree",
+        "take_screenshot",
     }
 
     # Commands that need a post-execution cooldown to let the engine
@@ -133,6 +134,7 @@ class UnrealConnection:
         "create_widget_blueprint": 1.5,   # Widget BP creation + compile + save
         "create_behavior_tree": 1.0,      # BT asset creation + save
         "create_blackboard": 1.0,         # BB asset creation + save
+        "take_screenshot": 1.0,          # SceneCapture2D render + ReadPixels + PNG encode
     }
     
     def __init__(self):
@@ -1329,8 +1331,8 @@ def create_landscape_material(
 @mcp.tool()
 def take_screenshot(
     file_path: str = "",
-    width: int = 1920,
-    height: int = 1080
+    width: int = 960,
+    height: int = 540
 ) -> list:
     """
     Take a screenshot of the active Unreal Editor viewport.
@@ -1341,8 +1343,8 @@ def take_screenshot(
 
     Parameters:
     - file_path: Where to save the PNG (default: project's Saved/Screenshots/MCP_Screenshot.png)
-    - width: Screenshot width in pixels (default: 1920, range: 320-3840)
-    - height: Screenshot height in pixels (default: 1080, range: 240-2160)
+    - width: Screenshot width in pixels (default: 960, range: 320-3840)
+    - height: Screenshot height in pixels (default: 540, range: 240-2160)
 
     Returns:
         List of MCP content items: TextContent with metadata + ImageContent with the screenshot.
@@ -5772,6 +5774,48 @@ def spawn_niagara_system(
     }
     try:
         response = unreal.send_command("spawn_niagara_system", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ============================================================================
+# Skeletal Animation on Placed Actors
+# ============================================================================
+
+@mcp.tool()
+def set_skeletal_animation(
+    actor_name: str,
+    animation_path: str,
+    looping: bool = True,
+    play_rate: float = 1.0,
+    component_name: str = ""
+) -> Dict[str, Any]:
+    """
+    Set a looping animation on a placed actor's SkeletalMeshComponent.
+
+    Uses AnimationSingleNode mode with OverrideAnimationData() — no AnimBP needed.
+    Works on ACharacter subclasses (auto-finds CharacterMesh0) and any actor
+    with a SkeletalMeshComponent.
+
+    Parameters:
+    - actor_name: The name of the actor in the level
+    - animation_path: Content path to AnimSequence (e.g., "/Game/Characters/Enemies/Bell/SK_Bell_Anim")
+    - looping: Whether the animation loops (default: True)
+    - play_rate: Playback speed multiplier (default: 1.0)
+    - component_name: Optional specific SkeletalMeshComponent name (default: auto-detect)
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "actor_name": actor_name,
+        "animation_path": animation_path,
+        "looping": looping,
+        "play_rate": play_rate,
+    }
+    if component_name:
+        params["component_name"] = component_name
+    try:
+        response = unreal.send_command("set_skeletal_animation", params)
         return response.get("result", response)
     except Exception as e:
         return {"success": False, "message": str(e)}

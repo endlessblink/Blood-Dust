@@ -32,4 +32,7 @@ private:
 
 	// Niagara particle system spawning
 	TSharedPtr<FJsonObject> HandleSpawnNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
+
+	// Set animation on a placed actor's skeletal mesh (SingleNode mode)
+	TSharedPtr<FJsonObject> HandleSetSkeletalAnimation(const TSharedPtr<FJsonObject>& Params);
 };

@@ -172,12 +172,27 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCreateBlueprint(c
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Check if blueprint already exists
+    // Check if blueprint already exists (asset registry + in-memory objects)
     FString PackagePath = TEXT("/Game/Blueprints/");
     FString AssetName = BlueprintName;
-    if (UEditorAssetLibrary::DoesAssetExist(PackagePath + AssetName))
+    FString FullBPPath = PackagePath + AssetName;
+    if (UEditorAssetLibrary::DoesAssetExist(FullBPPath))
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
+        TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+        Response->SetStringField(TEXT("name"), AssetName);
+        Response->SetStringField(TEXT("path"), FullBPPath);
+        Response->SetStringField(TEXT("status"), TEXT("already_exists"));
+        return Response;
+    }
+    // Also check via FindObject (catches in-memory objects the asset registry may miss)
+    UPackage* ExistingPkg = FindPackage(nullptr, *FullBPPath);
+    if (ExistingPkg && FindObject<UBlueprint>(ExistingPkg, *AssetName))
+    {
+        TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+        Response->SetStringField(TEXT("name"), AssetName);
+        Response->SetStringField(TEXT("path"), FullBPPath);
+        Response->SetStringField(TEXT("status"), TEXT("already_exists"));
+        return Response;
     }
 
     // Create the blueprint factory
@@ -2283,11 +2298,35 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCreateAnimBluepri
 
     FString FullPath = BlueprintPath + BlueprintName;
 
-    // Check if already exists
+    // Check if already exists — check both asset registry AND loaded objects in memory
+    // FindObject catches cases where package is loaded but asset registry is stale
     if (UEditorAssetLibrary::DoesAssetExist(FullPath))
     {
-        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("AnimBlueprint already exists: %s"), *FullPath));
+        // Asset exists — load and return it instead of crashing
+        UAnimBlueprint* ExistingBP = LoadObject<UAnimBlueprint>(nullptr, *FullPath);
+        if (ExistingBP)
+        {
+            TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+            Response->SetStringField(TEXT("blueprint_path"), FullPath);
+            Response->SetStringField(TEXT("blueprint_name"), BlueprintName);
+            Response->SetStringField(TEXT("status"), TEXT("already_exists"));
+            return Response;
+        }
+    }
+
+    // Also check via FindObject (catches in-memory objects the asset registry may miss)
+    UPackage* ExistingPackage = FindPackage(nullptr, *FullPath);
+    if (ExistingPackage)
+    {
+        UBlueprint* ExistingBP = FindObject<UBlueprint>(ExistingPackage, *BlueprintName);
+        if (ExistingBP)
+        {
+            TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+            Response->SetStringField(TEXT("blueprint_path"), FullPath);
+            Response->SetStringField(TEXT("blueprint_name"), BlueprintName);
+            Response->SetStringField(TEXT("status"), TEXT("already_exists"));
+            return Response;
+        }
     }
 
     // Optional: preview mesh for the anim editor
@@ -2300,6 +2339,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCreateAnimBluepri
     Factory->ParentClass = UAnimInstance::StaticClass();
 
     UPackage* Package = CreatePackage(*FullPath);
+
+    // Final safety: check if the name is taken in the newly created/found package
+    if (FindObject<UBlueprint>(Package, *BlueprintName))
+    {
+        TSharedPtr<FJsonObject> Response = MakeShareable(new FJsonObject());
+        Response->SetStringField(TEXT("blueprint_path"), FullPath);
+        Response->SetStringField(TEXT("blueprint_name"), BlueprintName);
+        Response->SetStringField(TEXT("status"), TEXT("already_exists"));
+        return Response;
+    }
+
     UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(
         Factory->FactoryCreateNew(UAnimBlueprint::StaticClass(), Package, *BlueprintName,
             RF_Standalone | RF_Public, nullptr, GWarn));
@@ -3147,19 +3197,29 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 
 	TArray<FString> ChangesApplied;
 
-	// Set AnimBlueprint if provided
+	// Set AnimBlueprint if provided (pass "None" to clear)
 	FString AnimBPPath;
 	if (Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath) && !AnimBPPath.IsEmpty())
 	{
-		UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
-		if (AnimBP && AnimBP->GeneratedClass)
+		if (AnimBPPath.Equals(TEXT("None"), ESearchCase::IgnoreCase) || AnimBPPath.Equals(TEXT("null"), ESearchCase::IgnoreCase))
 		{
-			MeshComp->SetAnimInstanceClass(AnimBP->GeneratedClass);
-			ChangesApplied.Add(FString::Printf(TEXT("AnimBP set to %s"), *AnimBPPath));
+			// Clear AnimBP — switch to no animation blueprint
+			MeshComp->SetAnimInstanceClass(nullptr);
+			MeshComp->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			ChangesApplied.Add(TEXT("AnimBP cleared (set to None), mode set to AnimationSingleNode"));
 		}
 		else
 		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+			UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+			if (AnimBP && AnimBP->GeneratedClass)
+			{
+				MeshComp->SetAnimInstanceClass(AnimBP->GeneratedClass);
+				ChangesApplied.Add(FString::Printf(TEXT("AnimBP set to %s"), *AnimBPPath));
+			}
+			else
+			{
+				return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+			}
 		}
 	}
 

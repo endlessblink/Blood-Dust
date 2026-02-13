@@ -5,6 +5,7 @@
 #include "Subsystems/EditorActorSubsystem.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
+#include "EngineUtils.h"
 
 // GameMode / PlayerStart / Blueprint
 #include "GameFramework/GameModeBase.h"
@@ -14,6 +15,8 @@
 #include "Factories/BlueprintFactory.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "EngineUtils.h"
 
 // Animation Montage
 #include "Animation/AnimMontage.h"
@@ -64,6 +67,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleCommand(const FStr
 	else if (CommandType == TEXT("spawn_niagara_system"))
 	{
 		return HandleSpawnNiagaraSystem(Params);
+	}
+	else if (CommandType == TEXT("set_skeletal_animation"))
+	{
+		return HandleSetSkeletalAnimation(Params);
 	}
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown gameplay command: %s"), *CommandType));
@@ -1006,6 +1013,157 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleSpawnNiagaraSystem
 	ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Y));
 	ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Z));
 	ResultObj->SetArrayField(TEXT("scale"), ScaleArray);
+
+	return ResultObj;
+}
+
+// ============================================================================
+// 7. HandleSetSkeletalAnimation
+// ============================================================================
+TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleSetSkeletalAnimation(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName = Params->GetStringField(TEXT("actor_name"));
+	FString AnimationPath = Params->GetStringField(TEXT("animation_path"));
+	bool bLooping = true;
+	if (Params->HasField(TEXT("looping")))
+	{
+		bLooping = Params->GetBoolField(TEXT("looping"));
+	}
+	float PlayRate = 1.0f;
+	if (Params->HasField(TEXT("play_rate")))
+	{
+		PlayRate = Params->GetNumberField(TEXT("play_rate"));
+	}
+	FString ComponentName = TEXT("");
+	if (Params->HasField(TEXT("component_name")))
+	{
+		ComponentName = Params->GetStringField(TEXT("component_name"));
+	}
+
+	if (ActorName.IsEmpty() || AnimationPath.IsEmpty())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("actor_name and animation_path are required"));
+	}
+
+	// Find the actor
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world found"));
+	}
+
+	AActor* TargetActor = nullptr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->GetName() == ActorName || It->GetActorLabel() == ActorName)
+		{
+			TargetActor = *It;
+			break;
+		}
+	}
+
+	if (!TargetActor)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	// Find the SkeletalMeshComponent
+	USkeletalMeshComponent* SkelMeshComp = nullptr;
+
+	if (!ComponentName.IsEmpty())
+	{
+		// Find by name
+		for (UActorComponent* Comp : TargetActor->GetComponents())
+		{
+			if (Comp && Comp->GetName() == ComponentName)
+			{
+				SkelMeshComp = Cast<USkeletalMeshComponent>(Comp);
+				break;
+			}
+		}
+	}
+	else
+	{
+		// Try ACharacter first (CDO mesh = CharacterMesh0)
+		ACharacter* Character = Cast<ACharacter>(TargetActor);
+		if (Character)
+		{
+			SkelMeshComp = Character->GetMesh();
+		}
+		else
+		{
+			// Find first SkeletalMeshComponent on the actor
+			SkelMeshComp = TargetActor->FindComponentByClass<USkeletalMeshComponent>();
+		}
+	}
+
+	if (!SkelMeshComp)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No SkeletalMeshComponent found on actor"));
+	}
+
+	// Load the animation asset
+	UAnimSequenceBase* AnimSequence = Cast<UAnimSequenceBase>(
+		StaticLoadObject(UAnimSequenceBase::StaticClass(), nullptr, *AnimationPath));
+
+	if (!AnimSequence)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Animation not found: %s"), *AnimationPath));
+	}
+
+	// Clear any AnimBP class so it doesn't override SingleNode mode in PIE
+	SkelMeshComp->SetAnimInstanceClass(nullptr);
+
+	// Also clear AnimBP on the Blueprint CDO so PIE doesn't re-apply it
+	// (PIE reconstructs actors from their Blueprint class — CDO AnimClass overrides per-instance settings)
+	UBlueprint* OwnerBP = nullptr;
+	if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(TargetActor->GetClass()))
+	{
+		OwnerBP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+		if (OwnerBP && OwnerBP->GeneratedClass)
+		{
+			ACharacter* CDO = Cast<ACharacter>(OwnerBP->GeneratedClass->GetDefaultObject());
+			if (CDO)
+			{
+				USkeletalMeshComponent* CDOMesh = CDO->GetMesh();
+				if (CDOMesh)
+				{
+					CDOMesh->SetAnimInstanceClass(nullptr);
+					CDOMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+				}
+			}
+		}
+	}
+
+	// Switch to AnimationSingleNode mode and set the animation
+	SkelMeshComp->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+	SkelMeshComp->OverrideAnimationData(AnimSequence, bLooping, /*bIsPlaying=*/true, /*Position=*/0.0f, PlayRate);
+
+	// Enable animation in editor for preview (transient, resets on load)
+	SkelMeshComp->SetUpdateAnimationInEditor(true);
+
+	// Mark dirty for save
+	TargetActor->Modify();
+	TargetActor->MarkPackageDirty();
+
+	// Also mark the Blueprint package dirty if we modified the CDO
+	if (OwnerBP)
+	{
+		OwnerBP->GetPackage()->MarkPackageDirty();
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(OwnerBP);
+		FKismetEditorUtilities::CompileBlueprint(OwnerBP);
+	}
+
+	// Build result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+	ResultObj->SetStringField(TEXT("animation"), AnimationPath);
+	ResultObj->SetBoolField(TEXT("looping"), bLooping);
+	ResultObj->SetNumberField(TEXT("play_rate"), PlayRate);
+	ResultObj->SetStringField(TEXT("animation_mode"), TEXT("AnimationSingleNode"));
+	ResultObj->SetStringField(TEXT("message"), FString::Printf(TEXT("Animation '%s' set on actor '%s' (looping=%s, rate=%.2f)"),
+		*AnimationPath, *ActorName, bLooping ? TEXT("true") : TEXT("false"), PlayRate));
 
 	return ResultObj;
 }

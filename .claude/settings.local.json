@@ -254,7 +254,18 @@
       "Bash(nvidia-smi:*)",
       "Bash(bash:*)",
       "Bash(unzip:*)",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: IMC self-contained character, GameplayHelpers updates, rembrandt-lighting skill\n\nUpdated BP_RobotCharacter IMC wiring, GameMode, PlayerController.\nGameplayHelpers: AddInputMappingContextToCharacter. New rembrandt-lighting\nskill. EditorCommands update. Level actor changes.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture commit -m \"$\\(cat <<''EOF''\nSnapshot: IMC self-contained character, GameplayHelpers updates, rembrandt-lighting skill\n\nUpdated BP_RobotCharacter IMC wiring, GameMode, PlayerController.\nGameplayHelpers: AddInputMappingContextToCharacter. New rembrandt-lighting\nskill. EditorCommands update. Level actor changes.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "mcp__unrealMCP__create_blueprint",
+      "Bash(npm:*)",
+      "mcp__unrealMCP__add_component_to_blueprint",
+      "mcp__unrealMCP__create_anim_montage",
+      "Bash(__NEW_LINE_9664947b8f0158de__ for file in /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/2d-to-backdrop.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/blender-dev/SKILL.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/blender-to-unreal.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/game-designer.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/rembrandt-lighting.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/seamless-ground-material.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-character-input.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-landscape-enhance.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-landscape-material.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-material-builder.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-materials/SKILL.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/unreal-terrain-scatter.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/skills/vegetation-scatter.md do echo \"=== FILE: $file ===\" wc -l \"$file\")",
+      "Bash(__NEW_LINE_28c8eda7b9f74075__ for file in /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/commands/grass-scatter.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/commands/rock-scatter.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/commands/seamless-ground-material.md /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/.claude/commands/vegetation-scatter.md do echo \"=== FILE: $file ===\" wc -l \"$file\")",
+      "Bash(echo:*)",
+      "mcp__unrealMCP__create_variable",
+      "mcp__unrealMCP__create_widget_blueprint",
+      "mcp__unrealMCP__set_blueprint_variable_properties",
+      "mcp__unrealMCP__set_skeletal_animation"
     ]
   },
   "enableAllProjectMcpServers": true,

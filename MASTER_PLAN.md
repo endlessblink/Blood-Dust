@@ -764,18 +764,78 @@ Reusable skill for importing any character with the full pipeline:
 
 ### FEATURE-026: Enemy AI & Combat System
 
-**Status**: OPEN
+**Status**: IN PROGRESS
 **Priority**: P0
-**Goal**: Full combat loop — player attacks enemies, enemies fight back, health/damage/death for both sides.
+**Goal**: Full combat loop — player attacks enemies, enemies fight back with chase AI, health/damage/death for both sides.
 
-#### Sub-systems
-- **Health**: Float variable on both player and enemy BPs. Start at 100. Damage reduces. At 0 → death.
-- **Melee hit detection**: Collision box on character during attack animation frames. Overlap → apply damage.
-- **Hit feedback**: Flash red PostProcess for 0.2s + knockback impulse on damage target.
-- **Block/parry**: RMB holds block pose. Incoming damage reduced by 80% (or 100% with timing window).
-- **Enemy AI**: BehaviorTree — idle patrol between waypoints → detect player in radius → chase → melee attack → back off → repeat.
-- **Death**: Enemy → ragdoll physics or death anim, despawn after 5s. Player → "You Died" screen + respawn.
-- **VFX**: Niagara blood splash on hit, dust kick on death.
+#### Architecture: C++ Helper Functions (No NavMesh, No BT, No AIController)
+
+Research (2026-02-12) confirmed: NavMesh + BehaviorTree + AIController is overkill for open-terrain melee combat. Direct `AddMovementInput()` works on landscape without pathfinding. All AI logic lives in a single C++ tick function in GameplayHelperLibrary.
+
+#### Completed Sub-tasks
+- **TASK-026A: Player Melee Damage** — DONE (2026-02-12). `ApplyMeleeDamage()` in GameplayHelperLibrary: sphere overlap, Health reflection, ragdoll + knockback + delayed destroy. Kick=15dmg/200r, Heavy=35dmg/250r/75k knockback.
+- **TASK-026B: Enemy Health Variables** — DONE (2026-02-12). KingBot=100HP, Giganto=150HP, Bell=75HP via `create_variable`.
+- **TASK-026C: Player BP Wiring** — DONE (2026-02-12). ApplyMeleeDamage chained after PlayAnimOneShot for both attacks.
+- **TASK-026D: `/unreal-combat` Skill Update** — DONE (2026-02-12). Replaced Tier 3-5 with C++ ApplyMeleeDamage approach.
+
+#### Open Sub-tasks
+
+**TASK-026E: `UpdateEnemyAI` C++ Function** — OPEN
+Add to GameplayHelperLibrary. Tick-based state machine:
+```
+States: Idle → Chase → Attack → Return
+- Idle: player beyond AggroRange → do nothing (play idle anim)
+- Chase: player within AggroRange → AddMovementInput toward player, face player
+- Attack: player within AttackRange → PlayAnimationOneShot + ApplyMeleeDamage
+- Return: enemy beyond LeashDistance from spawn → move back to spawn point
+```
+Signature:
+```cpp
+static void UpdateEnemyAI(ACharacter* Enemy, float AggroRange=1500, float AttackRange=200,
+    float LeashDistance=3000, float MoveSpeed=400, float AttackCooldown=2.0,
+    float AttackDamage=10, float AttackRadius=150, UAnimSequence* AttackAnim=nullptr);
+```
+State stored in `static TMap<TWeakObjectPtr<AActor>, FEnemyAIState>` (no extra BP variables needed).
+Internal: reuses `PlayAnimationOneShot` + `ApplyMeleeDamage` for enemy attacks.
+Rotation: direct `SetActorRotation(FRotator(0, LookYaw, 0))` — no AIController needed.
+
+**TASK-026F: Rebuild Plugin** — OPEN (blocked by 026E)
+Build GameplayHelpers .so, restart editor.
+
+**TASK-026G: Wire Enemy BPs** — OPEN (blocked by 026F)
+For each enemy BP (KingBot, Giganto, Bell):
+1. `add_node` Event Tick (if not existing)
+2. `add_node` CallFunction `UpdateEnemyAI`
+3. `connect_nodes` Tick.then → UpdateEnemyAI.execute
+4. `set_node_property` per-enemy tuning:
+   | Enemy | AggroRange | AttackRange | MoveSpeed | AttackCooldown | AttackDamage |
+   |-------|-----------|-------------|-----------|----------------|--------------|
+   | KingBot | 1500 | 200 | 400 | 2.0 | 10 |
+   | Giganto | 1200 | 250 | 250 | 3.0 | 25 |
+   | Bell | 2000 | 180 | 500 | 1.5 | 8 |
+5. `set_node_property` AttackAnim per-enemy (reuse their existing anims)
+6. `compile_blueprint` each → 0 errors
+~10 MCP calls per enemy, ~30 total.
+
+**TASK-026H: `/enemy-ai` Skill** — OPEN
+Create `.claude/skills/enemy-ai.md` documenting the full pipeline.
+
+**TASK-026I: Hit Feedback (Optional)** — OPEN
+- Flash red PostProcess for 0.2s on player damage
+- Screen shake on heavy enemy hits
+- Sound effect on hit (requires `import_sound`)
+
+**TASK-026J: Player Death (Optional)** — OPEN
+- Add Health variable to player BP
+- Enemy attacks reduce player health via ApplyMeleeDamage
+- At 0: "You Died" overlay widget + respawn
+
+#### Key Design Decisions
+- **No NavMesh**: Open terrain, direct movement. Add NavMesh later if obstacles needed.
+- **No BehaviorTree**: BT BlackboardKey is protected in UE5.7, can't wire via MCP. C++ state machine is simpler.
+- **No AIController**: `AddMovementInput()` works directly on ACharacter without controller.
+- **Static state storage**: `TMap<TWeakObjectPtr<AActor>, FEnemyAIState>` avoids needing extra BP variables.
+- **Reuses existing functions**: `PlayAnimationOneShot` for attack anims, `ApplyMeleeDamage` for damage.
 
 ---
 

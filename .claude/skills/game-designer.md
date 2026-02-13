@@ -487,43 +487,31 @@ This requires ~40-60 sequential MCP calls per NPC. Only create 1-2 patrolling NP
 
 ---
 
-## Phase 7: Combat Foundation (~30-60 min, 80-120 MCP calls)
+## Phase 7: Combat Foundation (~30-60 min, 30-60 MCP calls)
 
 ### Goal
-Basic melee combat: player punch deals damage to NPCs, NPCs with health that can "die" (be destroyed).
+Basic melee combat: LMB/RMB plays attack animations, enemies have health, attacks deal damage, enemies die at 0 HP.
 
-**WARNING**: This is the most complex phase. Blueprint graph wiring is fragile via MCP.
+### Approach
+**Delegate to `/unreal-combat` skill** (full 5-tier pipeline: visual combat, montages, enemy health, damage system, death effects).
 
-### Step 1: Add Health Variable to NPC Blueprint
-
-If using BP_RobotCharacter for NPCs:
+Pre-check: read BP to see if combat is already wired:
 ```
-create_variable(
-    blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
-    variable_name="Health",
-    variable_type="float",
-    default_value="100.0"
-)
+read_blueprint_content(blueprint_path="/Game/Characters/Robot/BP_RobotCharacter")
 ```
 
-Or create a separate BP_NPC_Robot blueprint with Health.
+If IA_Kick and IA_Attack_Long nodes exist with PlayAnimationOneShot wired and AnimSequence pin defaults set, skip to Tier 3+ (enemy health/damage). Otherwise, run full skill from Tier 1.
 
-### Step 2: Damage System Concept
+### Tier Selection Based on User Phase 0 Choice
 
-**Simplest approach**: Box collision on player's hand bone socket → OnOverlap → reduce NPC health
-
-1. Add BoxCollision component to BP_RobotCharacter (attack hitbox)
-2. On attack input → enable collision briefly
-3. OnComponentBeginOverlap → if overlapping actor has Health variable → reduce it
-4. If Health <= 0 → DestroyActor on NPC
-
-**CAVEAT**: Full damage system requires ~80+ Blueprint nodes. Consider implementing via C++ for reliability.
-
-### Alternative: Visual-Only Combat
-Skip damage calculation. Just play attack animation when LMB pressed. NPCs stand still. This is the safe option for a demo.
+| User Choice | Skill Tiers to Run |
+|-------------|-------------------|
+| "Visual only" | Tier 1-2 (attack anims + montages) |
+| "Simple melee" | Tier 1-4 (attack + health + damage) |
+| "Full combat" | Tier 1-5 (all tiers including death effects) |
 
 ### Checkpoint
-> "Phase 7 complete. Basic combat system in place. Press **Ctrl+S** to save. Ready for Phase 8?"
+> "Phase 7 complete. Combat system in place. Press **Ctrl+S** to save. Ready for Phase 8?"
 
 ---
 

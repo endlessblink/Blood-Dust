@@ -13,6 +13,8 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Misc/FileHelper.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
@@ -707,15 +709,15 @@ static FVector4 GetVector4FromJson(const TSharedPtr<FJsonObject>& JsonObject)
 }
 
 // Helper function to set a property value using Unreal's reflection system
-static bool SetPropertyValue(UObject* TargetObject, FProperty* Property, const TSharedPtr<FJsonValue>& Value, FString& OutError)
+static bool SetPropertyValue(UObject* TargetObject, FProperty* Property, const TSharedPtr<FJsonValue>& Value, FString& OutError, void* OverrideAddress = nullptr)
 {
-    if (!TargetObject || !Property)
+    if (!Property || (!TargetObject && !OverrideAddress))
     {
         OutError = TEXT("Invalid target object or property");
         return false;
     }
 
-    void* PropertyAddr = Property->ContainerPtrToValuePtr<void>(TargetObject);
+    void* PropertyAddr = OverrideAddress ? OverrideAddress : Property->ContainerPtrToValuePtr<void>(TargetObject);
 
     // Handle bool property
     if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
@@ -826,6 +828,304 @@ static bool SetPropertyValue(UObject* TargetObject, FProperty* Property, const T
 
         OutError = FString::Printf(TEXT("Unsupported struct type: %s"), *StructName);
         return false;
+    }
+    // Handle byte/enum-as-byte properties (e.g., AnimationMode, CollisionEnabled)
+    else if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+    {
+        UEnum* EnumDef = ByteProp->GetIntPropertyEnum();
+
+        // If this is a TEnumAsByte property (has associated enum)
+        if (EnumDef)
+        {
+            // Handle numeric value
+            if (Value->Type == EJson::Number)
+            {
+                uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
+                ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+
+                UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %d"),
+                      *Property->GetName(), ByteValue);
+                return true;
+            }
+            // Handle string enum value
+            else if (Value->Type == EJson::String)
+            {
+                FString EnumValueName = Value->AsString();
+
+                // Try to convert numeric string to number first
+                if (EnumValueName.IsNumeric())
+                {
+                    uint8 ByteValue = FCString::Atoi(*EnumValueName);
+                    ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %d"),
+                          *Property->GetName(), *EnumValueName, ByteValue);
+                    return true;
+                }
+
+                // Handle qualified enum names (e.g., "EAnimationMode::AnimationSingleNode")
+                if (EnumValueName.Contains(TEXT("::")))
+                {
+                    EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
+                }
+
+                int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
+                if (EnumValue == INDEX_NONE)
+                {
+                    // Try with full name as fallback
+                    EnumValue = EnumDef->GetValueByNameString(Value->AsString());
+                }
+
+                if (EnumValue != INDEX_NONE)
+                {
+                    ByteProp->SetPropertyValue(PropertyAddr, static_cast<uint8>(EnumValue));
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"),
+                          *Property->GetName(), *EnumValueName, EnumValue);
+                    return true;
+                }
+                else
+                {
+                    // Log all possible enum values for debugging
+                    UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
+                    for (int32 i = 0; i < EnumDef->NumEnums(); i++)
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"),
+                               *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
+                    }
+
+                    OutError = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            // Regular byte property (no enum)
+            uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
+            ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+            return true;
+        }
+    }
+    // Handle native enum properties (C++ enum class)
+    else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
+    {
+        UEnum* EnumDef = EnumProp->GetEnum();
+        FNumericProperty* UnderlyingNumericProp = EnumProp->GetUnderlyingProperty();
+
+        if (EnumDef && UnderlyingNumericProp)
+        {
+            // Handle numeric value
+            if (Value->Type == EJson::Number)
+            {
+                int64 EnumValue = static_cast<int64>(Value->AsNumber());
+                UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %lld"),
+                      *Property->GetName(), EnumValue);
+                return true;
+            }
+            // Handle string enum value
+            else if (Value->Type == EJson::String)
+            {
+                FString EnumValueName = Value->AsString();
+
+                // Try to convert numeric string to number first
+                if (EnumValueName.IsNumeric())
+                {
+                    int64 EnumValue = FCString::Atoi64(*EnumValueName);
+                    UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %lld"),
+                          *Property->GetName(), *EnumValueName, EnumValue);
+                    return true;
+                }
+
+                // Handle qualified enum names
+                if (EnumValueName.Contains(TEXT("::")))
+                {
+                    EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
+                }
+
+                int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
+                if (EnumValue == INDEX_NONE)
+                {
+                    // Try with full name as fallback
+                    EnumValue = EnumDef->GetValueByNameString(Value->AsString());
+                }
+
+                if (EnumValue != INDEX_NONE)
+                {
+                    UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"),
+                          *Property->GetName(), *EnumValueName, EnumValue);
+                    return true;
+                }
+                else
+                {
+                    // Log all possible enum values for debugging
+                    UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
+                    for (int32 i = 0; i < EnumDef->NumEnums(); i++)
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"),
+                               *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
+                    }
+
+                    OutError = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
+                    return false;
+                }
+            }
+        }
+    }
+    // Handle class properties BEFORE object properties (FClassProperty inherits from FObjectProperty)
+    else if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FString ClassPath = Value->AsString();
+            UClass* LoadedClass = nullptr;
+
+            // First try direct class loading (for C++ classes and _C suffix paths)
+            LoadedClass = StaticLoadClass(ClassProp->MetaClass, nullptr, *ClassPath);
+
+            // If direct loading failed, try loading as a Blueprint asset and getting its GeneratedClass
+            if (!LoadedClass)
+            {
+                UObject* LoadedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *ClassPath);
+                if (UBlueprint* Blueprint = Cast<UBlueprint>(LoadedObject))
+                {
+                    LoadedClass = Blueprint->GeneratedClass;
+                    UE_LOG(LogTemp, Display, TEXT("Loaded Blueprint %s, GeneratedClass: %s"),
+                          *ClassPath, LoadedClass ? *LoadedClass->GetName() : TEXT("null"));
+                }
+                // Also try with _C suffix appended
+                if (!LoadedClass && !ClassPath.EndsWith(TEXT("_C")))
+                {
+                    FString ClassPathWithSuffix = ClassPath;
+                    // Extract package and asset name for _C path: /Game/Path/Asset -> /Game/Path/Asset.Asset_C
+                    FString PackagePath, AssetName;
+                    if (ClassPath.Split(TEXT("/"), &PackagePath, &AssetName, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+                    {
+                        FString FullClassPath = FString::Printf(TEXT("%s/%s.%s_C"), *PackagePath, *AssetName, *AssetName);
+                        LoadedClass = StaticLoadClass(ClassProp->MetaClass, nullptr, *FullClassPath);
+                    }
+                }
+            }
+
+            if (LoadedClass)
+            {
+                ClassProp->SetObjectPropertyValue(PropertyAddr, LoadedClass);
+                UE_LOG(LogTemp, Display, TEXT("Setting class property %s to: %s (resolved: %s)"),
+                      *Property->GetName(), *ClassPath, *LoadedClass->GetName());
+                return true;
+            }
+            else
+            {
+                OutError = FString::Printf(TEXT("Failed to load class at path: %s (expected meta class: %s). Try: /Game/Path/AssetName or /Game/Path/AssetName.AssetName_C"),
+                    *ClassPath, *ClassProp->MetaClass->GetName());
+                return false;
+            }
+        }
+        else if (Value->Type == EJson::Null)
+        {
+            ClassProp->SetObjectPropertyValue(PropertyAddr, nullptr);
+            UE_LOG(LogTemp, Display, TEXT("Clearing class property %s"), *Property->GetName());
+            return true;
+        }
+    }
+    // Handle object properties (asset references: UTexture, UMaterial, UAnimationAsset, etc.)
+    // NOTE: Must come AFTER FClassProperty check since FClassProperty inherits from FObjectProperty
+    else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FString AssetPath = Value->AsString();
+            UObject* LoadedObject = StaticLoadObject(ObjProp->PropertyClass, nullptr, *AssetPath);
+            if (LoadedObject)
+            {
+                ObjProp->SetObjectPropertyValue(PropertyAddr, LoadedObject);
+                UE_LOG(LogTemp, Display, TEXT("Setting object property %s to: %s (class: %s)"),
+                      *Property->GetName(), *AssetPath, *LoadedObject->GetClass()->GetName());
+                return true;
+            }
+            else
+            {
+                OutError = FString::Printf(TEXT("Failed to load object at path: %s (expected class: %s)"),
+                    *AssetPath, *ObjProp->PropertyClass->GetName());
+                return false;
+            }
+        }
+        else if (Value->Type == EJson::Null)
+        {
+            ObjProp->SetObjectPropertyValue(PropertyAddr, nullptr);
+            UE_LOG(LogTemp, Display, TEXT("Clearing object property %s"), *Property->GetName());
+            return true;
+        }
+    }
+    // Handle soft object properties (TSoftObjectPtr<>)
+    else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FString AssetPath = Value->AsString();
+            FSoftObjectPath SoftPath{AssetPath};
+            FSoftObjectPtr SoftRef{SoftPath};
+            SoftObjProp->SetPropertyValue(PropertyAddr, SoftRef);
+            UE_LOG(LogTemp, Display, TEXT("Setting soft object property %s to: %s"),
+                  *Property->GetName(), *AssetPath);
+            return true;
+        }
+        else if (Value->Type == EJson::Null)
+        {
+            FSoftObjectPtr EmptyRef;
+            SoftObjProp->SetPropertyValue(PropertyAddr, EmptyRef);
+            return true;
+        }
+    }
+    // Handle soft class properties (TSoftClassPtr<>)
+    else if (FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FString ClassPath = Value->AsString();
+            FSoftObjectPath SoftPath{ClassPath};
+            FSoftObjectPtr SoftRef{SoftPath};
+            SoftClassProp->SetPropertyValue(PropertyAddr, SoftRef);
+            UE_LOG(LogTemp, Display, TEXT("Setting soft class property %s to: %s"),
+                  *Property->GetName(), *ClassPath);
+            return true;
+        }
+        else if (Value->Type == EJson::Null)
+        {
+            FSoftObjectPtr EmptyRef;
+            SoftClassProp->SetPropertyValue(PropertyAddr, EmptyRef);
+            return true;
+        }
+    }
+    // Handle name properties (FName)
+    else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FName NameValue = FName(*Value->AsString());
+            NameProp->SetPropertyValue(PropertyAddr, NameValue);
+            UE_LOG(LogTemp, Display, TEXT("Setting name property %s to: %s"),
+                  *Property->GetName(), *Value->AsString());
+            return true;
+        }
+    }
+    // Handle text properties (FText)
+    else if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
+    {
+        if (Value->Type == EJson::String)
+        {
+            FText TextValue = FText::FromString(Value->AsString());
+            TextProp->SetPropertyValue(PropertyAddr, TextValue);
+            UE_LOG(LogTemp, Display, TEXT("Setting text property %s to: %s"),
+                  *Property->GetName(), *Value->AsString());
+            return true;
+        }
     }
 
     OutError = FString::Printf(TEXT("Unsupported property type: %s"), *Property->GetClass()->GetName());
@@ -1172,9 +1472,43 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorProperty(con
         CurrentObject = Component;
     }
 
+    // Navigate through struct properties for dot-notation paths (e.g., "AnimationData.AnimToPlay")
+    void* ResolvedAddress = nullptr;
+    if (PropertyPath.Num() > 1)
+    {
+        void* CurrentAddr = Property->ContainerPtrToValuePtr<void>(CurrentObject);
+
+        for (int32 i = 1; i < PropertyPath.Num(); ++i)
+        {
+            FStructProperty* StructProp = CastField<FStructProperty>(Property);
+            if (!StructProp)
+            {
+                return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                    FString::Printf(TEXT("Property '%s' is not a struct, cannot navigate into it with dot notation"),
+                        *Property->GetName()));
+            }
+
+            UScriptStruct* Struct = StructProp->Struct;
+            FProperty* InnerProperty = Struct->FindPropertyByName(*PropertyPath[i]);
+            if (!InnerProperty)
+            {
+                return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                    FString::Printf(TEXT("Property '%s' not found in struct '%s'"),
+                        *PropertyPath[i], *Struct->GetName()));
+            }
+
+            CurrentAddr = InnerProperty->ContainerPtrToValuePtr<void>(CurrentAddr);
+            Property = InnerProperty;
+        }
+
+        ResolvedAddress = CurrentAddr;
+        UE_LOG(LogTemp, Display, TEXT("Navigated struct path: %s -> leaf property: %s"),
+              *PropertyName, *Property->GetName());
+    }
+
     // Set the property value
     FString ErrorMessage;
-    if (!SetPropertyValue(CurrentObject, Property, PropertyValue, ErrorMessage))
+    if (!SetPropertyValue(CurrentObject, Property, PropertyValue, ErrorMessage, ResolvedAddress))
     {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("Failed to set property: %s"), *ErrorMessage));
@@ -4216,6 +4550,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSnapActorToGround(co
         // Place actor so its bottom sits on the surface
         FVector NewLocation = ActorLocation;
         NewLocation.Z = HitResult.Location.Z;
+
+        // For ACharacter, the actor origin is at the capsule CENTER.
+        // We need to offset by the scaled capsule half-height so feet touch the ground.
+        ACharacter* Character = Cast<ACharacter>(TargetActor);
+        if (Character && Character->GetCapsuleComponent())
+        {
+            NewLocation.Z += Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+        }
 
         TargetActor->SetActorLocation(NewLocation);
 

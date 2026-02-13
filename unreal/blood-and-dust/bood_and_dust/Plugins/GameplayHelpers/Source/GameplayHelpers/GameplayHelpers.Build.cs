@@ -12,7 +12,10 @@ public class GameplayHelpers : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"EnhancedInput"
+				"EnhancedInput",
+				"Slate",
+				"SlateCore",
+				"InputCore"
 			}
 		);
 	}

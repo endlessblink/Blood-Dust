@@ -51,6 +51,15 @@
 #include "GameFramework/InputSettings.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+// Screenshot 2-phase capture includes
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "LevelEditorViewport.h"
+#include "IImageWrapperModule.h"
+#include "IImageWrapper.h"
+#include "Misc/FileHelper.h"
+#include "HAL/PlatformFileManager.h"
 // Include our new command handler classes
 #include "Commands/EpicUnrealMCPEditorCommands.h"
 #include "Commands/EpicUnrealMCPBlueprintCommands.h"
@@ -218,6 +227,281 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
     TSharedPtr<TPromise<FString>> Promise = MakeShared<TPromise<FString>>();
     TFuture<FString> Future = Promise->GetFuture();
 
+    // === Special handling for take_screenshot ===
+    // Screenshot uses a 2-phase ticker to avoid a deadlock:
+    //   Phase 0: Spawn SceneCapture2D + CaptureScene() (enqueues render commands)
+    //   Phase 1: ReadPixels() + PNG encode + save (requires render commands to be complete)
+    // Doing both in the same tick can deadlock because ReadPixels() internally calls
+    // FlushRenderingCommands() while the CaptureScene render commands are still pending.
+    if (CommandType == TEXT("take_screenshot"))
+    {
+        struct FScreenshotState
+        {
+            int32 Phase = 0;
+            int32 FrameCount = 0;
+            ASceneCapture2D* CaptureActor = nullptr;
+            UTextureRenderTarget2D* RenderTarget = nullptr;
+            FString FilePath;
+            int32 Width = 0;
+            int32 Height = 0;
+        };
+        auto State = MakeShared<FScreenshotState>();
+
+        FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda([this, Params, Promise, State](float DeltaTime) -> bool
+        {
+            if (State->Phase == 0)
+            {
+                // === Phase 0: Setup + CaptureScene ===
+                UE_LOG(LogTemp, Display, TEXT("Screenshot Phase 0: Setting up SceneCapture2D"));
+
+                if (!Params->TryGetStringField(TEXT("file_path"), State->FilePath))
+                {
+                    State->FilePath = FPaths::ProjectSavedDir() / TEXT("Screenshots") / TEXT("MCP_Screenshot.png");
+                }
+
+                State->Width = 960;
+                State->Height = 540;
+                if (Params->HasField(TEXT("width")))
+                {
+                    State->Width = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("width"))), 320, 3840);
+                }
+                if (Params->HasField(TEXT("height")))
+                {
+                    State->Height = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("height"))), 240, 2160);
+                }
+
+                IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+                PlatformFile.CreateDirectoryTree(*FPaths::GetPath(State->FilePath));
+
+                // Get viewport camera
+                FVector CameraLocation = FVector::ZeroVector;
+                FRotator CameraRotation = FRotator::ZeroRotator;
+                float CameraFOV = 90.0f;
+                bool bFoundCamera = false;
+                FLevelEditorViewportClient* UsedClient = nullptr;
+
+                if (GEditor)
+                {
+                    const TArray<FLevelEditorViewportClient*>& LevelViewports = GEditor->GetLevelViewportClients();
+                    for (FLevelEditorViewportClient* VC : LevelViewports)
+                    {
+                        if (VC && VC->IsPerspective())
+                        {
+                            CameraLocation = VC->GetViewLocation();
+                            CameraRotation = VC->GetViewRotation();
+                            CameraFOV = VC->ViewFOV;
+                            UsedClient = VC;
+                            bFoundCamera = true;
+                            break;
+                        }
+                    }
+                    if (!bFoundCamera)
+                    {
+                        for (FLevelEditorViewportClient* VC : LevelViewports)
+                        {
+                            if (VC)
+                            {
+                                CameraLocation = VC->GetViewLocation();
+                                CameraRotation = VC->GetViewRotation();
+                                CameraFOV = VC->ViewFOV;
+                                UsedClient = VC;
+                                bFoundCamera = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!bFoundCamera)
+                {
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), TEXT("No editor viewport camera found"));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+                if (!World)
+                {
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), TEXT("No editor world available"));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                // Create render target
+                State->RenderTarget = NewObject<UTextureRenderTarget2D>();
+                State->RenderTarget->AddToRoot(); // Prevent GC between ticks
+                State->RenderTarget->InitCustomFormat(State->Width, State->Height, PF_B8G8R8A8, true);
+                State->RenderTarget->UpdateResourceImmediate(false);
+
+                // Spawn capture actor
+                FActorSpawnParameters SpawnParams;
+                SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+                SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+                SpawnParams.ObjectFlags = RF_Transient;
+
+                State->CaptureActor = World->SpawnActor<ASceneCapture2D>(
+                    CameraLocation, CameraRotation, SpawnParams);
+
+                if (!State->CaptureActor)
+                {
+                    State->RenderTarget->RemoveFromRoot();
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), TEXT("Failed to spawn SceneCapture2D actor"));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                // Configure capture
+                USceneCaptureComponent2D* CC = State->CaptureActor->GetCaptureComponent2D();
+                CC->TextureTarget = State->RenderTarget;
+                CC->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+                CC->bCaptureEveryFrame = false;
+                CC->bCaptureOnMovement = false;
+                CC->bAlwaysPersistRenderingState = true;
+                CC->FOVAngle = CameraFOV;
+                CC->HiddenActors.Add(State->CaptureActor);
+
+                if (UsedClient)
+                {
+                    FExposureSettings ExpSettings = UsedClient->ExposureSettings;
+                    if (ExpSettings.bFixed)
+                    {
+                        CC->PostProcessBlendWeight = 1.0f;
+                        CC->PostProcessSettings.bOverride_AutoExposureMethod = true;
+                        CC->PostProcessSettings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+                        CC->PostProcessSettings.bOverride_AutoExposureBias = true;
+                        CC->PostProcessSettings.AutoExposureBias = ExpSettings.FixedEV100;
+                    }
+                }
+
+                // Enqueue capture render commands — these will be processed by
+                // the render thread BETWEEN this tick and the next tick.
+                CC->CaptureScene();
+
+                UE_LOG(LogTemp, Display, TEXT("Screenshot Phase 0 complete: CaptureScene enqueued, waiting for render"));
+                State->Phase = 1;
+                State->FrameCount = 0;
+                return true; // Come back next tick
+            }
+            else if (State->Phase == 1)
+            {
+                // Wait 2 extra frames to ensure render thread has fully
+                // processed the CaptureScene commands.
+                State->FrameCount++;
+                if (State->FrameCount < 3)
+                {
+                    return true; // Wait more frames
+                }
+
+                // === Phase 1: ReadPixels + encode + save + cleanup ===
+                UE_LOG(LogTemp, Display, TEXT("Screenshot Phase 1: ReadPixels after %d frames"), State->FrameCount);
+
+                TArray<FColor> Bitmap;
+                bool bReadOK = false;
+
+                FTextureRenderTargetResource* RTResource = State->RenderTarget->GameThread_GetRenderTargetResource();
+                if (RTResource)
+                {
+                    bReadOK = RTResource->ReadPixels(Bitmap);
+                }
+
+                // Cleanup capture actor
+                UEditorActorSubsystem* ActorSub = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+                if (ActorSub && State->CaptureActor)
+                {
+                    ActorSub->DestroyActor(State->CaptureActor);
+                }
+                State->CaptureActor = nullptr;
+
+                // Remove GC root from render target
+                State->RenderTarget->RemoveFromRoot();
+
+                if (!bReadOK)
+                {
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), TEXT("Failed to read pixels from render target"));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                // Encode to PNG
+                IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+                TSharedPtr<IImageWrapper> ImgWrap = IWM.CreateImageWrapper(EImageFormat::PNG);
+                if (!ImgWrap.IsValid() ||
+                    !ImgWrap->SetRaw(Bitmap.GetData(), Bitmap.Num() * sizeof(FColor),
+                                     State->Width, State->Height, ERGBFormat::BGRA, 8))
+                {
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), TEXT("PNG encoding failed"));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                TArray64<uint8> PNGData = ImgWrap->GetCompressed();
+                if (PNGData.Num() == 0 || !FFileHelper::SaveArrayToFile(PNGData, *State->FilePath))
+                {
+                    TSharedPtr<FJsonObject> Err = MakeShareable(new FJsonObject);
+                    Err->SetStringField(TEXT("status"), TEXT("error"));
+                    Err->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to save screenshot to: %s"), *State->FilePath));
+                    FString ErrStr;
+                    TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&ErrStr);
+                    FJsonSerializer::Serialize(Err.ToSharedRef(), W);
+                    Promise->SetValue(ErrStr);
+                    return false;
+                }
+
+                FString AbsPath = FPaths::ConvertRelativePathToFull(State->FilePath);
+
+                TSharedPtr<FJsonObject> Resp = MakeShareable(new FJsonObject);
+                Resp->SetStringField(TEXT("status"), TEXT("success"));
+                TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject);
+                Result->SetBoolField(TEXT("success"), true);
+                Result->SetStringField(TEXT("file_path"), AbsPath);
+                Result->SetNumberField(TEXT("width"), State->Width);
+                Result->SetNumberField(TEXT("height"), State->Height);
+                Result->SetStringField(TEXT("message"), FString::Printf(
+                    TEXT("Screenshot saved: %dx%d to %s"), State->Width, State->Height, *AbsPath));
+                Resp->SetObjectField(TEXT("result"), Result);
+
+                FString ResultString;
+                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
+                FJsonSerializer::Serialize(Resp.ToSharedRef(), Writer);
+                Promise->SetValue(ResultString);
+
+                UE_LOG(LogTemp, Display, TEXT("Screenshot Phase 1 complete: saved %dx%d to %s"),
+                    State->Width, State->Height, *AbsPath);
+                return false; // Done
+            }
+
+            return false;
+        }));
+
+        return Future.Get();
+    }
+
     // Schedule execution during the next engine tick via FTSTicker.
     // This runs on the game thread during the normal tick loop, NOT inside the task graph's
     // ProcessTasksUntilIdle. This is critical for heavy commands like import_mesh that
@@ -349,7 +633,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("play_montage_on_actor") ||
                      CommandType == TEXT("apply_impulse") ||
                      CommandType == TEXT("trigger_post_process_effect") ||
-                     CommandType == TEXT("spawn_niagara_system"))
+                     CommandType == TEXT("spawn_niagara_system") ||
+                     CommandType == TEXT("set_skeletal_animation"))
             {
                 ResultJson = GameplayCommands->HandleCommand(CommandType, Params);
             }
