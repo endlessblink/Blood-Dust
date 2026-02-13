@@ -91,8 +91,18 @@
 | ~~**FEATURE-022**~~ | ~~**compile_blueprint fix (proper error checking via FCompilerResultsLog)**~~ | **P2** | **DONE** (2026-02-11) | - |
 | ~~**FEATURE-023**~~ | ~~**GameplayHelperLibrary runtime module (SetCharacterWalkSpeed, PlayAnimationOneShot)**~~ | **P3** | **DONE** (2026-02-11) | - |
 | ~~**BUG-024**~~ | ~~**Character moves during attack/kick animations (bStopMovement=false)**~~ | **P1** | **DONE** (2026-02-12) | FEATURE-023 |
+| ~~**FEATURE-030**~~ | ~~**SetPropertyValue expansion: ByteProperty, EnumProperty, ClassProperty, ObjectProperty, SoftObjectProperty, SoftClassProperty, NameProperty, TextProperty + struct dot-notation navigation + snap_actor_to_ground capsule height fix**~~ | **P0** | ✅ **DONE** (2026-02-13) | - |
+| **FEATURE-031** | **Enemy Animation & AI Pipeline (Full Battlefield)** | **P0** | IN PROGRESS | FEATURE-026 |
+| TASK-031A | Fix enemy materials (all 3 types: dark patches, UVs, glossy, missing) | P0 | OPEN | - |
+| TASK-031B | Fix enemy ground positioning (all 19 enemies) | P0 | OPEN | - |
+| TASK-031C | Verify SingleNode animation works in PIE (CDO clearing test) | P0 | OPEN | - |
+| TASK-031D | Build KingBot AI: patrol → detect → chase → attack | P0 | OPEN | 031A, 031C, 026E |
+| TASK-031E | Build combat loop: health, damage, death (KingBot proof of concept) | P0 | OPEN | 031D |
+| TASK-031F | User rigs Bell + Giganto on Mixamo, downloads animation sets | P1 | OPEN | 031E (gate) |
+| TASK-031G | Import Mixamo-rigged animations + assign to all 19 enemies | P1 | OPEN | 031F |
+| TASK-031H | Clean up distorted generic Mixamo animation assets | P2 | OPEN | 031G |
 | **IDEA-025** | **Mixamo character/animation pipeline — import Mixamo FBX, retarget to existing skeleton, wire actions** | **P3** | OPEN | FEATURE-010 |
-| **FEATURE-026** | **Enemy AI & Combat System** | **P0** | OPEN | FEATURE-010, FEATURE-020 |
+| **FEATURE-026** | **Enemy AI & Combat System** | **P0** | IN PROGRESS | FEATURE-010, FEATURE-020 |
 | TASK-026A | Import/create enemy character (reuse robot mesh with different material/scale) | P1 | OPEN | FEATURE-010 |
 | TASK-026B | Health system: add Health variable to player + enemy BPs, damage on overlap | P0 | OPEN | FEATURE-010 |
 | TASK-026C | Hit detection: melee attack collision box, damage application | P0 | OPEN | TASK-026B |
