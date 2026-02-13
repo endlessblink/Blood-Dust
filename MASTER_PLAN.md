@@ -849,6 +849,74 @@ Create `.claude/skills/enemy-ai.md` documenting the full pipeline.
 
 ---
 
+### FEATURE-031: Enemy Animation & AI Pipeline (Full Battlefield)
+
+**Status**: IN PROGRESS
+**Priority**: P0
+**Goal**: Fix all enemy issues and build a living battlefield. One KingBot demonstrates full patrol→chase→attack→death loop as proof of concept, then scale to all 19 enemies.
+**PRD**: `.omc/prd.json`
+
+#### Current State (2026-02-13)
+- **19 enemies placed**: 8 Bell, 6 KingBot, 5 Giganto
+- **Mixamo-rigged**: KingBot only (Bell/Giganto NOT rigged)
+- **Animations**: KingBot has 2 Mixamo-rigged (Walking, TurningRight) + 1 original Meshy (boxing). Bell/Giganto have 1 original Meshy each. Generic Mixamo anims imported but DISTORT all 3 types.
+- **C++ fixes deployed**: `set_skeletal_animation` clears CDO AnimClass + recompiles BP. `set_character_properties` accepts "None" to clear AnimBP. **Untested in PIE.**
+
+#### Known Issues
+1. **Enemy materials broken** — dark patches, wrong UV mapping (UV1 not UV0), too glossy, missing textures on all 3 types
+2. **Enemies sunk into ground** — snap_actor_to_ground doesn't compensate for mesh pivot offset
+3. **AnimBP overrides SingleNode in PIE** — CDO clearing fix deployed but untested
+4. **No AI behavior** — enemies are static placed actors, need patrol→chase→attack
+5. **No combat damage loop** — player attacks exist but don't deal damage to enemies yet
+6. **Only KingBot Mixamo-rigged** — Bell/Giganto need Mixamo rigging for diverse animations
+
+#### Sub-tasks
+
+**TASK-031A: Fix enemy materials (all 3 types)**
+- Audit M_KingBot, M_Bell, M_Giganto — identify dark patches, UV issues, glossy artifacts
+- Fix: TextureCoordinate(index=1) for all samplers, disconnect AO, scalar roughness ~0.7
+- Rebuild materials if needed using manual material creation (not create_pbr_material)
+
+**TASK-031B: Fix enemy ground positioning**
+- Determine mesh pivot offset per type (center vs feet)
+- snap_actor_to_ground + manual Z offset for all 19 enemies
+- Account for different scales (some at 2.5x-3x)
+
+**TASK-031C: Verify SingleNode animation in PIE**
+- Apply KingBot_Walking_Mixamo to one KingBot, enter PIE, confirm it plays
+- CRITICAL GATE — determines animation architecture
+
+**TASK-031D: Build KingBot AI (patrol → detect → chase → attack)**
+- Depends on FEATURE-026 TASK-026E (`UpdateEnemyAI` C++ function)
+- Needs 2 animations: walk + attack (use Mixamo walking + original Meshy boxing if needed)
+- Wire EventTick → UpdateEnemyAI in KingBot BP
+
+**TASK-031E: Combat loop (health, damage, death)**
+- Wire ApplyMeleeDamage to player attacks → KingBot
+- KingBot attacks deal damage to player
+- Death: ragdoll or death anim + delayed destroy
+
+**TASK-031F: User rigs Bell + Giganto on Mixamo** (USER task)
+- Blocked until 031E proves the pipeline on KingBot
+- Upload Character_output.fbx for each to Mixamo
+- Download 4+ animations per type: walk, idle, attack, stagger
+
+**TASK-031G: Import + assign animations to all 19 enemies**
+- Import Mixamo-rigged animations for Bell + Giganto
+- Assign diverse animations: near enemies get AI, distant get looping SingleNode
+
+**TASK-031H: Clean up distorted generic Mixamo animations**
+- Delete Anim_Idle/Running/BodyBlock/ZombieStandUp/Walking from all enemy folders
+
+#### Success Gate
+One KingBot: patrol → detect player → chase (walk anim) → reach player → attack (attack anim) → deal damage → take damage from player → die. If this works → user rigs Bell + Giganto on Mixamo → scale to all 19.
+
+#### Battlefield Vision
+- **Near enemies** (~5000 units): Real AI with patrol/chase/attack
+- **Distant enemies**: Atmospheric background fighters — looping animations, silhouettes in fog
+
+---
+
 ### FEATURE-027: World Building & Structures
 
 **Status**: OPEN
