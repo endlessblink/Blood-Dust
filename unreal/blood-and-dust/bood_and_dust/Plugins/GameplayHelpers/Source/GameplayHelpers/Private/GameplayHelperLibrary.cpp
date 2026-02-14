@@ -18,6 +18,8 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Engine/GameViewportClient.h"
 #include "Styling/CoreStyle.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -131,6 +133,27 @@ void UGameplayHelperLibrary::AddInputMappingContextToCharacter(ACharacter* Chara
 	Subsystem->AddMappingContext(MappingContext, Priority);
 }
 
+// --- Blocking State ---
+static TSet<TWeakObjectPtr<AActor>> BlockingActors;
+
+// --- Player Health HUD ---
+
+struct FPlayerHUDState
+{
+	TWeakObjectPtr<UWorld> OwnerWorld;
+	TSharedPtr<SWidget> RootWidget;
+	TSharedPtr<SBox> HealthFillBox;
+	TSharedPtr<SBorder> HealthFillBorder;
+	TSharedPtr<STextBlock> HealthText;
+	TSharedPtr<SWidget> DeathOverlay;
+	TSharedPtr<SBorder> DamageFlashBorder;
+	float MaxHealth = 100.0f;
+	double DamageFlashStartTime = 0.0;
+	bool bCreated = false;
+	bool bDead = false;
+};
+static FPlayerHUDState PlayerHUD;
+
 void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage, float Radius, float KnockbackImpulse)
 {
 	if (!Attacker)
@@ -208,7 +231,15 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 		}
 
 		// Apply damage
-		CurrentHealth -= Damage;
+		// Check blocking (75% damage reduction)
+		float EffectiveDamage = Damage;
+		if (BlockingActors.Contains(TWeakObjectPtr<AActor>(Victim)))
+		{
+			EffectiveDamage = Damage * 0.25f;
+			UE_LOG(LogTemp, Log, TEXT("ApplyMeleeDamage: %s blocked! %.0f -> %.0f"),
+				*Victim->GetName(), Damage, EffectiveDamage);
+		}
+		CurrentHealth -= EffectiveDamage;
 
 		// Write back
 		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(HealthProp))
@@ -221,6 +252,32 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 		}
 
 		UE_LOG(LogTemp, Log, TEXT("ApplyMeleeDamage: %s took %.0f damage, health now %.0f"), *Victim->GetName(), Damage, CurrentHealth);
+
+		// Trigger red flash if victim is player
+		ACharacter* PlayerCharFlash = UGameplayStatics::GetPlayerCharacter(World, 0);
+		if (Victim == PlayerCharFlash && CurrentHealth > 0.f)
+		{
+			PlayerHUD.DamageFlashStartTime = World->GetTimeSeconds();
+		}
+
+		// Blood VFX (graceful null if asset missing)
+		static UNiagaraSystem* BloodFX = nullptr;
+		static bool bBloodLoadAttempted = false;
+		if (!bBloodLoadAttempted)
+		{
+			bBloodLoadAttempted = true;
+			BloodFX = Cast<UNiagaraSystem>(StaticLoadObject(
+				UNiagaraSystem::StaticClass(), nullptr,
+				TEXT("/Game/FX/NS_BloodBurst.NS_BloodBurst")));
+		}
+		if (BloodFX)
+		{
+			FVector HitLoc = Victim->GetActorLocation();
+			HitLoc.Z += 80.f;
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				World, BloodFX, HitLoc, FRotator::ZeroRotator,
+				FVector(1.f), true, true, ENCPoolMethod::None, true);
+		}
 
 		if (CurrentHealth <= 0.0f)
 		{
@@ -300,7 +357,7 @@ struct FEnemyAIStateData
 	FVector SpawnLocation;
 	double LastAttackTime = 0.0;
 	EEnemyAIState CurrentState = EEnemyAIState::Idle;
-	EEnemyAIState PrevAnimState = EEnemyAIState::Idle;
+	EEnemyAIState PrevAnimState = EEnemyAIState::Return; // Sentinel: differs from initial Idle to trigger first-frame anim
 	bool bInitialized = false;
 	bool bHealthInitialized = false;
 };
@@ -322,6 +379,26 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 		State.SpawnLocation = Enemy->GetActorLocation();
 		State.bInitialized = true;
+
+		// Ensure movement works without an AI Controller
+		UCharacterMovementComponent* InitMoveComp = Enemy->GetCharacterMovement();
+		if (InitMoveComp)
+		{
+			InitMoveComp->bRunPhysicsWithNoController = true;
+		}
+
+		// Clear any AnimBP and switch to SingleNode mode so we control animations directly
+		USkeletalMeshComponent* InitMesh = Enemy->GetMesh();
+		if (InitMesh)
+		{
+			InitMesh->SetAnimInstanceClass(nullptr);
+			InitMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+			if (IdleAnim)
+			{
+				InitMesh->SetAnimation(IdleAnim);
+				InitMesh->Play(true);
+			}
+		}
 	}
 
 	// Clean up dead entries periodically (every 100th call)
@@ -413,7 +490,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 	case EEnemyAIState::Return:
 	{
-		FVector DirToSpawn = (State.SpawnLocation - Enemy->GetActorLocation()).GetSafeNormal();
+		FVector DirToSpawn = State.SpawnLocation - Enemy->GetActorLocation();
+		DirToSpawn.Z = 0.0f; // Horizontal only — let gravity handle vertical
+		DirToSpawn = DirToSpawn.GetSafeNormal();
 		Enemy->AddMovementInput(DirToSpawn, 1.0f);
 		FRotator TargetRot = FRotator(0.f, DirToSpawn.Rotation().Yaw, 0.f);
 		FRotator CurrentRot = Enemy->GetActorRotation();
@@ -423,8 +502,10 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 	case EEnemyAIState::Attack:
 	{
-		// Face player
-		FVector DirToPlayer = (Player->GetActorLocation() - Enemy->GetActorLocation()).GetSafeNormal();
+		// Face player (horizontal only)
+		FVector DirToPlayer = Player->GetActorLocation() - Enemy->GetActorLocation();
+		DirToPlayer.Z = 0.0f;
+		DirToPlayer = DirToPlayer.GetSafeNormal();
 		FRotator TargetRot = FRotator(0.f, DirToPlayer.Rotation().Yaw, 0.f);
 		FRotator CurrentRot = Enemy->GetActorRotation();
 		Enemy->SetActorRotation(FMath::RInterpTo(CurrentRot, TargetRot, DeltaTime, 10.0f));
@@ -448,7 +529,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 	case EEnemyAIState::Chase:
 	{
-		FVector DirToPlayer = (Player->GetActorLocation() - Enemy->GetActorLocation()).GetSafeNormal();
+		FVector DirToPlayer = Player->GetActorLocation() - Enemy->GetActorLocation();
+		DirToPlayer.Z = 0.0f; // Horizontal only — let gravity handle vertical
+		DirToPlayer = DirToPlayer.GetSafeNormal();
 		Enemy->AddMovementInput(DirToPlayer, 1.0f);
 		FRotator TargetRot = FRotator(0.f, DirToPlayer.Rotation().Yaw, 0.f);
 		FRotator CurrentRot = Enemy->GetActorRotation();
@@ -521,22 +604,6 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		State.PrevAnimState = State.CurrentState;
 	}
 }
-
-// --- Player Health HUD ---
-
-struct FPlayerHUDState
-{
-	TWeakObjectPtr<UWorld> OwnerWorld;
-	TSharedPtr<SWidget> RootWidget;
-	TSharedPtr<SBox> HealthFillBox;
-	TSharedPtr<SBorder> HealthFillBorder;
-	TSharedPtr<STextBlock> HealthText;
-	TSharedPtr<SWidget> DeathOverlay;
-	float MaxHealth = 100.0f;
-	bool bCreated = false;
-	bool bDead = false;
-};
-static FPlayerHUDState PlayerHUD;
 
 void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 {
@@ -678,6 +745,18 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 						.ColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.6f, 0.45f)))
 					]
 				]
+			]
+
+			// Damage flash (fullscreen red flash on hit)
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			[
+				SAssignNew(PlayerHUD.DamageFlashBorder, SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+				.BorderBackgroundColor(FLinearColor(0.8f, 0.05f, 0.02f, 0.0f))
+				.Padding(0)
+				.Visibility(EVisibility::HitTestInvisible)
 			];
 
 		PlayerHUD.RootWidget = Root;
@@ -725,6 +804,23 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			FString::Printf(TEXT("HEALTH  %d / %d"), FMath::Max((int32)HP, 0), (int32)PlayerHUD.MaxHealth)));
 	}
 
+	// Damage flash fade (0.3s)
+	if (PlayerHUD.DamageFlashBorder.IsValid() && PlayerHUD.DamageFlashStartTime > 0.0)
+	{
+		float Elapsed = (float)(World->GetTimeSeconds() - PlayerHUD.DamageFlashStartTime);
+		if (Elapsed < 0.3f)
+		{
+			PlayerHUD.DamageFlashBorder->SetBorderBackgroundColor(
+				FLinearColor(0.8f, 0.05f, 0.02f, FMath::Lerp(0.45f, 0.0f, Elapsed / 0.3f)));
+		}
+		else
+		{
+			PlayerHUD.DamageFlashBorder->SetBorderBackgroundColor(
+				FLinearColor(0.8f, 0.05f, 0.02f, 0.0f));
+			PlayerHUD.DamageFlashStartTime = 0.0;
+		}
+	}
+
 	// Handle death
 	if (HP <= 0.0f)
 	{
@@ -756,4 +852,27 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			false
 		);
 	}
+}
+
+void UGameplayHelperLibrary::SetPlayerBlocking(ACharacter* Character, bool bBlocking)
+{
+	if (!Character) return;
+
+	TWeakObjectPtr<AActor> Key(Character);
+	if (bBlocking)
+	{
+		BlockingActors.Add(Key);
+		UE_LOG(LogTemp, Log, TEXT("SetPlayerBlocking: %s is now BLOCKING"), *Character->GetName());
+	}
+	else
+	{
+		BlockingActors.Remove(Key);
+		UE_LOG(LogTemp, Log, TEXT("SetPlayerBlocking: %s stopped blocking"), *Character->GetName());
+	}
+}
+
+bool UGameplayHelperLibrary::IsPlayerBlocking(ACharacter* Character)
+{
+	if (!Character) return false;
+	return BlockingActors.Contains(TWeakObjectPtr<AActor>(Character));
 }

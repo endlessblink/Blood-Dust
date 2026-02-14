@@ -9,6 +9,7 @@
 class ACharacter;
 class UAnimSequence;
 class UInputMappingContext;
+class UNiagaraSystem;
 
 /**
  * Static helper functions for common gameplay operations.
@@ -76,4 +77,17 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|HUD", meta=(DefaultToSelf="Player"))
 	static void ManagePlayerHUD(ACharacter* Player);
+
+	/**
+	 * Set whether the player character is currently blocking (Q key).
+	 * While blocking, incoming damage is reduced by 75%.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Combat", meta=(DefaultToSelf="Character"))
+	static void SetPlayerBlocking(ACharacter* Character, bool bBlocking);
+
+	/**
+	 * Check if the player character is currently blocking.
+	 */
+	UFUNCTION(BlueprintPure, Category="Gameplay|Combat", meta=(DefaultToSelf="Character"))
+	static bool IsPlayerBlocking(ACharacter* Character);
 };

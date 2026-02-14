@@ -15,7 +15,8 @@ public class GameplayHelpers : ModuleRules
 				"EnhancedInput",
 				"Slate",
 				"SlateCore",
-				"InputCore"
+				"InputCore",
+				"Niagara"
 			}
 		);
 	}
