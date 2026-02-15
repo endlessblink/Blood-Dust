@@ -66,6 +66,9 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_DynamicCast.h"
 #include "Kismet/KismetMathLibrary.h"
+// BlendSpace1D locomotion includes
+#include "Animation/BlendSpace1D.h"
+#include "AnimGraphNode_BlendSpacePlayer.h"
 
 FEpicUnrealMCPBlueprintCommands::FEpicUnrealMCPBlueprintCommands()
 {
@@ -154,6 +157,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("setup_locomotion_state_machine"))
     {
         return HandleSetupLocomotionStateMachine(Params);
+    }
+    else if (CommandType == TEXT("setup_blendspace_locomotion"))
+    {
+        return HandleSetupBlendspaceLocomotion(Params);
     }
     else if (CommandType == TEXT("set_character_properties"))
     {
@@ -3206,6 +3213,330 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	ResultObj->SetStringField(TEXT("message"), FString::Printf(TEXT("Locomotion state machine created with speed-based transitions%s%s"),
 		bHasRun ? TEXT(" + run state") : TEXT(""),
 		bHasJump ? TEXT(" + jump state (IsFalling-based)") : TEXT("")));
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLocomotion(const TSharedPtr<FJsonObject>& Params)
+{
+	// === Part 0: Parse parameters ===
+	FString AnimBPPath;
+	if (!Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_blueprint_path'"));
+	}
+
+	FString IdleAnimPath, WalkAnimPath;
+	if (!Params->TryGetStringField(TEXT("idle_animation"), IdleAnimPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'idle_animation'"));
+	}
+	if (!Params->TryGetStringField(TEXT("walk_animation"), WalkAnimPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'walk_animation'"));
+	}
+
+	double MaxWalkSpeed = 300.0;
+	Params->TryGetNumberField(TEXT("max_walk_speed"), MaxWalkSpeed);
+
+	FString BlendSpacePath;
+	Params->TryGetStringField(TEXT("blendspace_path"), BlendSpacePath);
+
+	// === Part 1: Load assets ===
+	UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+	if (!AnimBP)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+	}
+
+	UAnimSequence* IdleAnim = LoadObject<UAnimSequence>(nullptr, *IdleAnimPath);
+	UAnimSequence* WalkAnim = LoadObject<UAnimSequence>(nullptr, *WalkAnimPath);
+	if (!IdleAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load idle animation: %s"), *IdleAnimPath));
+	}
+	if (!WalkAnim)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load walk animation: %s"), *WalkAnimPath));
+	}
+
+	USkeleton* Skeleton = AnimBP->TargetSkeleton.Get();
+	if (!Skeleton)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimBlueprint has no target skeleton"));
+	}
+
+	// === Part 2: Reparent AnimBP to UEnemyAnimInstance ===
+	// Load the C++ AnimInstance class from GameplayHelpers module at runtime (no compile-time dependency)
+	UClass* EnemyAnimClass = LoadClass<UAnimInstance>(nullptr, TEXT("/Script/GameplayHelpers.EnemyAnimInstance"));
+	bool bReparented = false;
+	if (EnemyAnimClass)
+	{
+		if (AnimBP->ParentClass != EnemyAnimClass)
+		{
+			AnimBP->ParentClass = EnemyAnimClass;
+			bReparented = true;
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Reparented AnimBP to UEnemyAnimInstance"));
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: UEnemyAnimInstance not found — AnimBP parent unchanged. Speed must be set via EventGraph."));
+	}
+
+	// Compile to regenerate generated class (needed for VariableGet to resolve Speed property)
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+	FKismetEditorUtilities::CompileBlueprint(AnimBP);
+
+	// === Part 3: Create BlendSpace1D asset ===
+	// Derive save path from AnimBP location if not provided
+	if (BlendSpacePath.IsEmpty())
+	{
+		FString ABPDir = FPaths::GetPath(AnimBPPath);
+		FString ABPName = FPaths::GetBaseFilename(AnimBPPath);
+		FString BSName = ABPName;
+		if (BSName.StartsWith(TEXT("ABP_")))
+		{
+			BSName = BSName.RightChop(4);
+		}
+		BlendSpacePath = ABPDir / (TEXT("BS_") + BSName + TEXT("_Locomotion"));
+	}
+
+	FString BSAssetName = FPaths::GetBaseFilename(BlendSpacePath);
+
+	// Check if BlendSpace already exists — reuse it
+	UBlendSpace1D* BS = LoadObject<UBlendSpace1D>(nullptr, *BlendSpacePath);
+	if (BS)
+	{
+		// Clear existing samples so we rebuild from scratch
+		while (BS->GetNumberOfBlendSamples() > 0)
+		{
+			BS->DeleteSample(0);
+		}
+		UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Reusing existing BlendSpace1D: %s"), *BlendSpacePath);
+	}
+	else
+	{
+		UPackage* BSPackage = CreatePackage(*BlendSpacePath);
+		BS = NewObject<UBlendSpace1D>(BSPackage, *BSAssetName, RF_Public | RF_Standalone);
+		FAssetRegistryModule::AssetCreated(BS);
+		UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Created new BlendSpace1D: %s"), *BlendSpacePath);
+	}
+
+	BS->SetSkeleton(Skeleton);
+
+	// Add samples — AddSample auto-expands axis range via ExpandRangeForSample
+	int32 IdleIdx = BS->AddSample(IdleAnim, FVector(0, 0, 0));
+	int32 WalkIdx = BS->AddSample(WalkAnim, FVector(MaxWalkSpeed, 0, 0));
+
+	if (IdleIdx == INDEX_NONE || WalkIdx == INDEX_NONE)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to add samples to BlendSpace (idle=%d, walk=%d). Check skeleton compatibility."),
+			IdleIdx, WalkIdx));
+	}
+
+	BS->ValidateSampleData();
+	BS->GetPackage()->MarkPackageDirty();
+
+	// Save BlendSpace asset
+	FString BSFilename = FPackageName::LongPackageNameToFilename(BlendSpacePath, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs BSSaveArgs;
+	BSSaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(BS->GetPackage(), BS, *BSFilename, BSSaveArgs);
+
+	// === Part 4: Find AnimGraph and clean up ===
+	UEdGraph* AnimGraph = nullptr;
+	for (UEdGraph* Graph : AnimBP->FunctionGraphs)
+	{
+		if (Graph->GetFName() == FName("AnimGraph"))
+		{
+			AnimGraph = Graph;
+			break;
+		}
+	}
+	if (!AnimGraph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimGraph not found in AnimBlueprint"));
+	}
+
+	UAnimGraphNode_Root* RootNode = nullptr;
+	for (UEdGraphNode* Node : AnimGraph->Nodes)
+	{
+		if (UAnimGraphNode_Root* Root = Cast<UAnimGraphNode_Root>(Node))
+		{
+			RootNode = Root;
+			break;
+		}
+	}
+	if (!RootNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimGraph Root node not found"));
+	}
+
+	// Remove all AnimGraph nodes except Root (idempotent — safe to call repeatedly)
+	{
+		TArray<UEdGraphNode*> NodesToRemove;
+		for (UEdGraphNode* Node : AnimGraph->Nodes)
+		{
+			if (Node != RootNode)
+			{
+				NodesToRemove.Add(Node);
+			}
+		}
+		for (UEdGraphNode* Node : NodesToRemove)
+		{
+			Node->BreakAllNodeLinks();
+			AnimGraph->RemoveNode(Node);
+		}
+		for (UEdGraphPin* Pin : RootNode->Pins)
+		{
+			Pin->BreakAllPinLinks();
+		}
+	}
+
+	// Clean EventGraph — remove ALL nodes (C++ UEnemyAnimInstance handles Speed via NativeUpdateAnimation)
+	if (AnimBP->UbergraphPages.Num() > 0)
+	{
+		UEdGraph* EG = AnimBP->UbergraphPages[0];
+		TArray<UEdGraphNode*> EGNodesToRemove;
+		for (UEdGraphNode* Node : EG->Nodes)
+		{
+			EGNodesToRemove.Add(Node);
+		}
+		for (UEdGraphNode* Node : EGNodesToRemove)
+		{
+			Node->BreakAllNodeLinks();
+			EG->RemoveNode(Node);
+		}
+	}
+
+	// === Part 5: Create AnimGraph: BlendSpacePlayer → Slot(DefaultSlot) → Root ===
+	// BlendSpacePlayer node
+	UAnimGraphNode_BlendSpacePlayer* BSNode = NewObject<UAnimGraphNode_BlendSpacePlayer>(AnimGraph);
+	BSNode->SetAnimationAsset(BS);
+	BSNode->NodePosX = RootNode->NodePosX - 600;
+	BSNode->NodePosY = RootNode->NodePosY;
+	AnimGraph->AddNode(BSNode, true, false);
+	BSNode->CreateNewGuid();
+	BSNode->AllocateDefaultPins();
+
+	// Slot node (montage overlay for attacks, hit-react, death)
+	UAnimGraphNode_Slot* SlotNode = NewObject<UAnimGraphNode_Slot>(AnimGraph);
+	SlotNode->Node.SlotName = FName("DefaultSlot");
+	SlotNode->NodePosX = RootNode->NodePosX - 200;
+	SlotNode->NodePosY = RootNode->NodePosY;
+	AnimGraph->AddNode(SlotNode, true, false);
+	SlotNode->CreateNewGuid();
+	SlotNode->AllocateDefaultPins();
+
+	// Find pins
+	UEdGraphPin* BSOutputPin = nullptr;
+	for (UEdGraphPin* Pin : BSNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Output)
+		{
+			BSOutputPin = Pin;
+			break;
+		}
+	}
+
+	UEdGraphPin* SlotInputPin = nullptr;
+	UEdGraphPin* SlotOutputPin = nullptr;
+	for (UEdGraphPin* Pin : SlotNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Input) SlotInputPin = Pin;
+		if (Pin->Direction == EGPD_Output) SlotOutputPin = Pin;
+	}
+
+	UEdGraphPin* RootInputPin = nullptr;
+	for (UEdGraphPin* Pin : RootNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Input)
+		{
+			RootInputPin = Pin;
+			break;
+		}
+	}
+
+	// Wire: BlendSpacePlayer → Slot → Root
+	if (BSOutputPin && SlotInputPin) BSOutputPin->MakeLinkTo(SlotInputPin);
+	if (SlotOutputPin && RootInputPin) SlotOutputPin->MakeLinkTo(RootInputPin);
+
+	// === Part 6: Wire Speed to BlendSpacePlayer X pin ===
+	bool bSpeedWired = false;
+	if (EnemyAnimClass)
+	{
+		// K2Node_VariableGet for Speed (from UEnemyAnimInstance C++ UPROPERTY)
+		UK2Node_VariableGet* SpeedGetNode = NewObject<UK2Node_VariableGet>(AnimGraph);
+		SpeedGetNode->VariableReference.SetSelfMember(FName("Speed"));
+		SpeedGetNode->NodePosX = BSNode->NodePosX - 200;
+		SpeedGetNode->NodePosY = BSNode->NodePosY + 100;
+		AnimGraph->AddNode(SpeedGetNode, true, false);
+		SpeedGetNode->CreateNewGuid();
+		SpeedGetNode->AllocateDefaultPins();
+
+		// Find X pin on BlendSpacePlayer
+		UEdGraphPin* BSXPin = BSNode->FindPin(TEXT("X"));
+		if (!BSXPin)
+		{
+			// Fallback: search for float input pin by type
+			for (UEdGraphPin* Pin : BSNode->Pins)
+			{
+				if (Pin->Direction == EGPD_Input &&
+					(Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real ||
+					 Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Float))
+				{
+					BSXPin = Pin;
+					UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Found X pin via fallback: %s"), *Pin->PinName.ToString());
+					break;
+				}
+			}
+		}
+
+		UEdGraphPin* SpeedOut = SpeedGetNode->GetValuePin();
+		if (SpeedOut && BSXPin)
+		{
+			SpeedOut->MakeLinkTo(BSXPin);
+			bSpeedWired = true;
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Speed → BS.X wired successfully"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: Failed to wire Speed→BS.X (SpeedOut=%d, BSXPin=%d)"),
+				SpeedOut != nullptr, BSXPin != nullptr);
+			// Log all BS pins for debugging
+			for (UEdGraphPin* Pin : BSNode->Pins)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("  BSNode pin: %s, category=%s, subcategory=%s, dir=%d"),
+					*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(),
+					*Pin->PinType.PinSubCategory.ToString(), (int)Pin->Direction);
+			}
+		}
+	}
+
+	// === Part 7: Compile ===
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+	FKismetEditorUtilities::CompileBlueprint(AnimBP);
+
+	bool bCompileSucceeded = (AnimBP->Status != EBlueprintStatus::BS_Error);
+	UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Final compile status=%d (0=UpToDate, 1=Dirty, 2=Error)"), (int)AnimBP->Status);
+
+	// Build result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), bCompileSucceeded);
+	ResultObj->SetNumberField(TEXT("compile_status"), (int)AnimBP->Status);
+	ResultObj->SetStringField(TEXT("anim_blueprint"), AnimBPPath);
+	ResultObj->SetStringField(TEXT("blendspace_path"), BlendSpacePath);
+	ResultObj->SetBoolField(TEXT("reparented"), bReparented);
+	ResultObj->SetBoolField(TEXT("speed_wired"), bSpeedWired);
+	ResultObj->SetStringField(TEXT("parent_class"), EnemyAnimClass ? TEXT("UEnemyAnimInstance") : TEXT("UAnimInstance"));
+	if (!bCompileSucceeded)
+	{
+		ResultObj->SetStringField(TEXT("error"), TEXT("AnimBP compilation failed — open ABP in editor to see errors"));
+	}
+	ResultObj->SetStringField(TEXT("message"), FString::Printf(
+		TEXT("BlendSpace1D locomotion: [BS(%s) Speed:0=Idle,%.0f=Walk] → Slot(DefaultSlot) → Output. Speed driven by C++ UEnemyAnimInstance."),
+		*BSAssetName, MaxWalkSpeed));
 	return ResultObj;
 }
 

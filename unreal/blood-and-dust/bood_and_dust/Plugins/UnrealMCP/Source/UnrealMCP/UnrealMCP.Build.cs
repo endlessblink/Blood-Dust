@@ -48,6 +48,7 @@ public class UnrealMCP : ModuleRules
 				"CinematicCamera",    // For CineCameraActor
 			"EnhancedInput",      // For UInputAction, Enhanced Input events
 			"AnimGraph",          // For AnimBP state machine graph nodes
+			"AnimGraphRuntime",   // For FAnimNode_BlendSpacePlayer (BlendSpace1D locomotion)
 			"Niagara"             // Niagara particle system spawning (F-023)
 			}
 		);

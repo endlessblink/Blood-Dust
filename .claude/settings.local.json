@@ -280,7 +280,21 @@
       "WebFetch(domain:jesshiderue4.wordpress.com)",
       "WebFetch(domain:developer.nvidia.com)",
       "WebFetch(domain:victorialartwork.wixsite.com)",
-      "WebFetch(domain:www.arnaudvanderveken.com)"
+      "WebFetch(domain:www.arnaudvanderveken.com)",
+      "Bash(for search in \"desert+wind+howling+ambient\" \"sword+metal+impact+hit\" \"footsteps+stone+walk\" \"robot+destruction+death\" \"magic+chime+collect+pickup\" \"orchestral+triumph+fanfare+short\" \"dark+ambient+orchestral+loop\")",
+      "Bash(do)",
+      "Bash(for search in \"chime+collect+pickup+game\" \"victory+fanfare+short\" \"robot+death+explosion\" \"punch+impact+body+hit\" \"dark+ambient+drone+loop\")",
+      "Bash(for f in wind_ambient combat_hit footsteps enemy_death checkpoint victory dark_ambient)",
+      "Bash(for search in \"dark+orchestral+cinematic+loop\" \"dark+strings+ambient+music\" \"medieval+dark+music+loop\" \"epic+dark+ambient+soundtrack\")",
+      "Bash(ffprobe:*)",
+      "Bash(for f in Bell/Bell_Hit_1.mp3 Bell/Bell_Getting_Hit_1.mp3 Kingbot/king_bot_punch_1.mp3)",
+      "Bash(for f in Bell/Bell_Getting_Hit_1.mp3 Bell/Bell_Hit_1.mp3 Bell/Bell_steps_1.mp3 Gigantus/Gigantus_Getting_Hit_1.mp3 Gigantus/Gigantus_Hit_1.mp3 Gigantus/Gigantus_steps_1.mp3 Kingbot/kingbot_Getting_Hit_1.mp3 Kingbot/king_bot_punch_1.mp3 Kingbot/kingbot_steps_1.mp3)",
+      "Bash(wav=\"$f%.mp3_trimmed.wav\")",
+      "WebFetch(domain:www.aaronkemner.com)",
+      "mcp__unrealMCP__create_niagara_system",
+      "mcp__unrealMCP__spawn_niagara_system",
+      "WebFetch(domain:abovenoisestudios.com)",
+      "mcp__unrealMCP__set_niagara_parameter"
     ]
   },
   "enableAllProjectMcpServers": true,

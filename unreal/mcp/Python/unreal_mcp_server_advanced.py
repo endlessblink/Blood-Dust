@@ -1854,6 +1854,65 @@ def setup_locomotion_state_machine(
         return {"success": False, "message": str(e)}
 
 @mcp.tool()
+def setup_blendspace_locomotion(
+    anim_blueprint_path: str,
+    idle_animation: str,
+    walk_animation: str,
+    max_walk_speed: float = 300.0,
+    blendspace_path: str = ""
+) -> Dict[str, Any]:
+    """
+    Set up BlendSpace1D-based locomotion in an AnimBlueprint (replaces state machine).
+
+    Creates a BlendSpace1D asset with idle/walk samples, reparents the AnimBP to
+    UEnemyAnimInstance (C++ class with smoothed Speed), and wires the AnimGraph:
+    BlendSpacePlayer(Speed) → Slot(DefaultSlot) → Output.
+
+    This is the production-correct approach (matches Lyra/ALS patterns):
+    - NO state machine, NO animation resets on speed oscillation
+    - Continuous blending between idle and walk based on Speed
+    - Speed smoothed in C++ via FInterpTo (NativeUpdateAnimation)
+    - Slot node preserved for montage overlays (attacks, hit-react, death)
+
+    Parameters:
+    - anim_blueprint_path: Content path to existing AnimBlueprint
+    - idle_animation: Content path to idle AnimSequence
+    - walk_animation: Content path to walk AnimSequence
+    - max_walk_speed: Speed value for full walk blend (default: 300.0)
+    - blendspace_path: Optional save path for BS1D asset (auto-derived if empty)
+
+    Returns:
+        Dictionary with success, blendspace_path, reparented, speed_wired status.
+
+    Example:
+        setup_blendspace_locomotion(
+            anim_blueprint_path="/Game/Characters/Enemies/Bell/ABP_BG_Bell",
+            idle_animation="/Game/Characters/Enemies/Bell/Animations/Idle",
+            walk_animation="/Game/Characters/Enemies/Bell/Animations/Walk",
+            max_walk_speed=300.0
+        )
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "anim_blueprint_path": anim_blueprint_path,
+            "idle_animation": idle_animation,
+            "walk_animation": walk_animation,
+            "max_walk_speed": max_walk_speed,
+        }
+        if blendspace_path:
+            params["blendspace_path"] = blendspace_path
+
+        response = unreal.send_command("setup_blendspace_locomotion", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"setup_blendspace_locomotion error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
 def set_character_properties(
     blueprint_path: str,
     anim_blueprint_path: str = "",
