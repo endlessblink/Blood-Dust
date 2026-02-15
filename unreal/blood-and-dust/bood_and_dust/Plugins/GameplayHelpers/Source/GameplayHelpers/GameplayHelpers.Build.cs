@@ -16,7 +16,8 @@ public class GameplayHelpers : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
-				"Niagara"
+				"Niagara",
+				"UMG"
 			}
 		);
 	}

@@ -11,6 +11,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
+#include "Components/AudioComponent.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SBox.h"
@@ -27,6 +29,12 @@
 #include "Engine/DirectionalLight.h"
 #include "Components/DirectionalLightComponent.h"
 #include "EngineUtils.h"
+#include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/WidgetComponent.h"
+#include "Components/ProgressBar.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -163,14 +171,16 @@ struct FPlayerHUDState
 	TSharedPtr<SWidget> RootWidget;
 	TSharedPtr<SWidget> DeathOverlay;
 
-	// Texture-based health bar
-	TStrongObjectPtr<UTexture2D> EmptyBarTexture;
-	TStrongObjectPtr<UTexture2D> FullBarTexture;
-	FSlateBrush EmptyBarBrush;
-	FSlateBrush FullBarBrush;
+	// Texture-based health bar (3-layer: base → fill → frame mask)
+	TStrongObjectPtr<UTexture2D> BaseBarTexture;
+	TStrongObjectPtr<UTexture2D> FillBarTexture;
+	TStrongObjectPtr<UTexture2D> FrameBarTexture;
+	FSlateBrush BaseBrush;   // Layer 0: frame + dark empty tube
+	FSlateBrush FillBrush;   // Layer 1: golden liquid (clipped by HP%)
+	FSlateBrush FrameBrush;  // Layer 2: frame with transparent tube hole (masks fill)
 	TSharedPtr<SBox> HealthClipBox;
 	TSharedPtr<SBorder> DamageFlashBorder;
-	float MaxHealth = 100.0f;
+	float MaxHealth = 50.0f;
 	double DamageFlashStartTime = 0.0;
 	bool bCreated = false;
 	bool bDead = false;
@@ -267,6 +277,9 @@ struct FEnemyAIStateData
 	bool bInitialized = false;
 	bool bHealthInitialized = false;
 	bool bDeathAnimStarted = false;
+	bool bDeathBreakStarted = false;
+	double DeathBreakStartTime = 0.0;
+	TArray<TWeakObjectPtr<AActor>> DebrisActors;
 
 	// Per-instance randomization for organic behavior
 	float SpeedMultiplier = 1.0f;
@@ -286,6 +299,7 @@ struct FEnemyAIStateData
 	// Per-instance selected animations (chosen from available pool on init)
 	UAnimSequence* ChosenAttackAnim = nullptr;
 	UAnimSequence* ChosenDeathAnim = nullptr;
+	UAnimSequence* ChosenHitReactAnim = nullptr;
 
 	// Idle behavior
 	EIdleBehavior CurrentIdleBehavior = EIdleBehavior::Stand;
@@ -304,8 +318,179 @@ struct FEnemyAIStateData
 	// Combat partner (visual fighting)
 	double LastPartnerAttackTime = 0.0;
 	float PartnerAttackCooldown = 0.0f;
+	TWeakObjectPtr<AActor> AutoDiscoveredPartner;
+	bool bPartnerSearchDone = false;
+
+	// Floating health bar
+	TWeakObjectPtr<UWidgetComponent> HealthBarComponent;
+	float MaxHealth = 100.f;
 };
 static TMap<TWeakObjectPtr<AActor>, FEnemyAIStateData> EnemyAIStates;
+
+// --- Per-Enemy-Type Sound Cache ---
+
+struct FEnemyTypeSounds
+{
+	USoundBase* Hit = nullptr;
+	USoundBase* GettingHit = nullptr;
+	USoundBase* Steps = nullptr;
+};
+
+static TMap<FString, FEnemyTypeSounds> EnemyTypeSoundCache;
+
+static FString GetEnemyTypeKey(AActor* Actor)
+{
+	if (!Actor) return FString();
+	FString ClassName = Actor->GetClass()->GetName();
+	if (ClassName.Contains(TEXT("Bell")))    return TEXT("Bell");
+	if (ClassName.Contains(TEXT("KingBot"))) return TEXT("Kingbot");
+	if (ClassName.Contains(TEXT("Giganto"))) return TEXT("Gigantus");
+	return FString();
+}
+
+enum class EEnemySoundType : uint8 { Hit, GettingHit, Steps };
+
+static FEnemyTypeSounds* GetOrLoadEnemyTypeSounds(const FString& TypeKey)
+{
+	if (TypeKey.IsEmpty()) return nullptr;
+	if (FEnemyTypeSounds* Existing = EnemyTypeSoundCache.Find(TypeKey))
+		return Existing;
+
+	FEnemyTypeSounds NewSounds;
+	FString HitPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_Hit.S_%s_Hit"), *TypeKey, *TypeKey, *TypeKey);
+	FString GettingHitPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_GettingHit.S_%s_GettingHit"), *TypeKey, *TypeKey, *TypeKey);
+	FString StepsPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_Steps.S_%s_Steps"), *TypeKey, *TypeKey, *TypeKey);
+
+	NewSounds.Hit = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *HitPath));
+	NewSounds.GettingHit = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *GettingHitPath));
+	NewSounds.Steps = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *StepsPath));
+
+	UE_LOG(LogTemp, Log, TEXT("EnemyTypeSounds: Loaded '%s' — Hit=%s GettingHit=%s Steps=%s"),
+		*TypeKey,
+		NewSounds.Hit ? TEXT("OK") : TEXT("MISSING"),
+		NewSounds.GettingHit ? TEXT("OK") : TEXT("MISSING"),
+		NewSounds.Steps ? TEXT("OK") : TEXT("MISSING"));
+
+	EnemyTypeSoundCache.Add(TypeKey, NewSounds);
+	return EnemyTypeSoundCache.Find(TypeKey);
+}
+
+static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundType SoundType)
+{
+	if (!World || !EnemyActor) return;
+	FString TypeKey = GetEnemyTypeKey(EnemyActor);
+	FEnemyTypeSounds* Sounds = GetOrLoadEnemyTypeSounds(TypeKey);
+	if (!Sounds) return;
+
+	USoundBase* Sound = nullptr;
+	switch (SoundType)
+	{
+	case EEnemySoundType::Hit:        Sound = Sounds->Hit; break;
+	case EEnemySoundType::GettingHit: Sound = Sounds->GettingHit; break;
+	case EEnemySoundType::Steps:      Sound = Sounds->Steps; break;
+	}
+	if (Sound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(World, Sound, EnemyActor->GetActorLocation(), 1.0f, 1.0f);
+	}
+}
+
+// --- Dynamic Music Crossfade ---
+
+struct FMusicState
+{
+	TWeakObjectPtr<UWorld> OwnerWorld;
+	bool bInitialized = false;
+	TWeakObjectPtr<UAudioComponent> ExplorationComp;
+	TWeakObjectPtr<UAudioComponent> CombatComp;
+	bool bInCombat = false;
+	double LastCombatEnemyTime = 0.0;
+	static constexpr float CombatCooldown = 5.0f;
+	USoundBase* ExplorationMusic = nullptr;
+	USoundBase* CombatMusic = nullptr;
+	bool bSoundsLoaded = false;
+};
+static FMusicState MusicSystem;
+
+static void UpdateMusicCrossfade(UWorld* World)
+{
+	if (!World) return;
+
+	if (MusicSystem.bInitialized && (!MusicSystem.OwnerWorld.IsValid() || MusicSystem.OwnerWorld.Get() != World))
+	{
+		MusicSystem = FMusicState();
+	}
+
+	if (!MusicSystem.bSoundsLoaded)
+	{
+		MusicSystem.bSoundsLoaded = true;
+		MusicSystem.ExplorationMusic = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr, TEXT("/Game/Audio/Music/S_Main_Theme.S_Main_Theme")));
+		MusicSystem.CombatMusic = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr, TEXT("/Game/Audio/Music/S_Action_1.S_Action_1")));
+	}
+
+	if (!MusicSystem.bInitialized)
+	{
+		MusicSystem.bInitialized = true;
+		MusicSystem.OwnerWorld = World;
+
+		if (MusicSystem.ExplorationMusic)
+		{
+			MusicSystem.ExplorationComp = UGameplayStatics::CreateSound2D(
+				World, MusicSystem.ExplorationMusic, 1.0f, 1.0f, 0.0f, nullptr, false, false);
+			if (MusicSystem.ExplorationComp.IsValid())
+				MusicSystem.ExplorationComp->FadeIn(2.0f, 1.0f);
+		}
+
+		if (MusicSystem.CombatMusic)
+		{
+			MusicSystem.CombatComp = UGameplayStatics::CreateSound2D(
+				World, MusicSystem.CombatMusic, 0.0f, 1.0f, 0.0f, nullptr, false, false);
+			if (MusicSystem.CombatComp.IsValid())
+			{
+				MusicSystem.CombatComp->Play();
+				MusicSystem.CombatComp->SetVolumeMultiplier(0.0f);
+			}
+		}
+	}
+
+	double CurrentTime = World->GetTimeSeconds();
+	bool bAnyCombat = false;
+	for (const auto& Pair : EnemyAIStates)
+	{
+		if (!Pair.Key.IsValid()) continue;
+		const FEnemyAIStateData& StateData = Pair.Value;
+		if (StateData.CurrentState == EEnemyAIState::Chase || StateData.CurrentState == EEnemyAIState::Attack)
+		{
+			bAnyCombat = true;
+			break;
+		}
+	}
+
+	if (bAnyCombat)
+		MusicSystem.LastCombatEnemyTime = CurrentTime;
+
+	bool bShouldBeCombat = (CurrentTime - MusicSystem.LastCombatEnemyTime) < MusicSystem.CombatCooldown
+		&& MusicSystem.LastCombatEnemyTime > 0.0;
+
+	if (bShouldBeCombat && !MusicSystem.bInCombat)
+	{
+		MusicSystem.bInCombat = true;
+		if (MusicSystem.ExplorationComp.IsValid())
+			MusicSystem.ExplorationComp->FadeOut(1.5f, 0.0f);
+		if (MusicSystem.CombatComp.IsValid())
+			MusicSystem.CombatComp->FadeIn(1.0f, 1.0f);
+	}
+	else if (!bShouldBeCombat && MusicSystem.bInCombat)
+	{
+		MusicSystem.bInCombat = false;
+		if (MusicSystem.CombatComp.IsValid())
+			MusicSystem.CombatComp->FadeOut(2.0f, 0.0f);
+		if (MusicSystem.ExplorationComp.IsValid())
+			MusicSystem.ExplorationComp->FadeIn(3.0f, 1.0f);
+	}
+}
 
 void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage, float Radius, float KnockbackImpulse)
 {
@@ -345,9 +530,20 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 		}
 	}
 
+	// Determine if attacker is the player (for friendly-fire prevention)
+	ACharacter* PlayerCharDmg = UGameplayStatics::GetPlayerCharacter(World, 0);
+	bool bAttackerIsPlayer = (Attacker == PlayerCharDmg);
+
 	for (ACharacter* Victim : HitCharacters)
 	{
 		if (!IsValid(Victim))
+		{
+			continue;
+		}
+
+		// Prevent enemy-to-enemy friendly fire: AI enemies should only damage the player
+		bool bVictimIsPlayer = (Victim == PlayerCharDmg);
+		if (!bAttackerIsPlayer && !bVictimIsPlayer)
 		{
 			continue;
 		}
@@ -393,6 +589,9 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 				*Victim->GetName(), Damage, EffectiveDamage);
 		}
 		CurrentHealth -= EffectiveDamage;
+
+		// NOTE: Attack SFX removed from here — will be added via AnimNotify later
+		// for proper animation-synced timing.
 
 		// Write back
 		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(HealthProp))
@@ -444,11 +643,12 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 			if (bManagedByAI)
 			{
 				// Let UpdateEnemyAI handle death animation + cleanup on next tick
-				// Just disable capsule collision so the enemy stops blocking
+				// Don't fully disable capsule — enemy needs floor support during death anim
+				// Just ignore pawns so the dead enemy doesn't block player movement
 				UCapsuleComponent* Capsule = Victim->GetCapsuleComponent();
 				if (Capsule)
 				{
-					Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					Capsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 				}
 			}
 			else
@@ -622,6 +822,43 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			if (AvailableDeaths.Num() > 0)
 				State.ChosenDeathAnim = AvailableDeaths[FMath::RandRange(0, AvailableDeaths.Num() - 1)];
 
+			// --- ANIMATION OVERRIDE BY NAME CONVENTION ---
+			// Load correct animations from enemy's folder, overriding Blueprint params if found.
+			// This ensures the right anim plays even if the Blueprint has wrong assignments.
+			{
+				FString AnimClassName = Enemy->GetClass()->GetName();
+				AnimClassName.RemoveFromEnd(TEXT("_C"));
+				FString AnimEnemyType = AnimClassName;
+				AnimEnemyType.RemoveFromStart(TEXT("BP_"));
+				FString AnimBasePath = FString::Printf(TEXT("/Game/Characters/Enemies/%s/Animations/"), *AnimEnemyType);
+
+				auto TryLoadAnimSeq = [&](const FString& Name) -> UAnimSequence* {
+					FString FullPath = AnimBasePath + Name + TEXT(".") + Name;
+					return LoadObject<UAnimSequence>(nullptr, *FullPath);
+				};
+
+				// Hit-react: prefer BodyBlock (impact reaction), then TakingPunch
+				UAnimSequence* HitReactCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_BodyBlock"));
+				if (!HitReactCandidate) HitReactCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_TakingPunch"));
+				if (HitReactCandidate)
+				{
+					State.ChosenHitReactAnim = HitReactCandidate;
+				}
+				else
+				{
+					State.ChosenHitReactAnim = HitReactAnim; // fallback to BP param
+				}
+
+				// Death: ALWAYS try name convention (overrides BP params for correctness)
+				{
+					UAnimSequence* DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_Death"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_Dying"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_ZombieDying"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_RifleHitBack"));
+					if (DeathCandidate) State.ChosenDeathAnim = DeathCandidate;
+				}
+			}
+
 			// Initialize idle behavior timer (staggered per instance)
 			State.NextIdleBehaviorTime = FMath::FRandRange(2.0f, 8.0f);
 			State.IdleBehaviorTimer = 0.0f;
@@ -669,14 +906,50 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			InitMoveComp->SetComponentTickEnabled(true);
 			InitMoveComp->GravityScale = 3.0f;
 			InitMoveComp->MaxWalkSpeed = MoveSpeed;
-			InitMoveComp->BrakingDecelerationWalking = 2000.0f;
-			InitMoveComp->GroundFriction = 8.0f;
-			InitMoveComp->bOrientRotationToMovement = false; // We handle rotation manually
-			InitMoveComp->SetMovementMode(MOVE_Falling); // Gravity settles onto ground
+			InitMoveComp->MaxAcceleration = 4096.0f;           // Fast ramp-up to full speed
+			InitMoveComp->BrakingDecelerationWalking = 300.0f; // Slow ramp-down (smooth stop)
+			InitMoveComp->GroundFriction = 6.0f;               // Slightly less friction
+			InitMoveComp->MaxStepHeight = 20.0f;               // Can't step onto other characters
+			InitMoveComp->bOrientRotationToMovement = false;    // We handle rotation manually
+			InitMoveComp->SetAvoidanceEnabled(true);             // RVO avoidance
+			InitMoveComp->AvoidanceWeight = 0.5f;
+			InitMoveComp->SetMovementMode(MOVE_Falling);        // Gravity settles onto ground
 		}
 
-		// AnimBP handles locomotion (Idle ↔ Walk driven by CMC velocity).
-		// Do NOT use AnimationSingleNode — it conflicts with PlayAnimationOneShot montages.
+		// Ensure AnimBP is assigned for locomotion state machine + montage slot.
+		// If set_skeletal_animation was ever called, it may have cleared the AnimBP class.
+		USkeletalMeshComponent* InitMesh = Enemy->GetMesh();
+		if (InitMesh)
+		{
+			UAnimInstance* ExistingAnim = InitMesh->GetAnimInstance();
+			if (!ExistingAnim || InitMesh->GetAnimationMode() != EAnimationMode::AnimationBlueprint)
+			{
+				// Derive AnimBP path from Blueprint class name: BP_Bell -> ABP_BG_Bell
+				FString ClassName = Enemy->GetClass()->GetName();
+				// Strip _C suffix if present (generated class name)
+				ClassName.RemoveFromEnd(TEXT("_C"));
+				// Extract enemy type: BP_Bell -> Bell, BP_KingBot -> KingBot
+				FString EnemyType = ClassName;
+				EnemyType.RemoveFromStart(TEXT("BP_"));
+
+				FString AnimBPPath = FString::Printf(
+					TEXT("/Game/Characters/Enemies/%s/ABP_BG_%s.ABP_BG_%s_C"),
+					*EnemyType, *EnemyType, *EnemyType
+				);
+
+				UClass* AnimBPClass = LoadObject<UClass>(nullptr, *AnimBPPath);
+				if (AnimBPClass)
+				{
+					InitMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+					InitMesh->SetAnimInstanceClass(AnimBPClass);
+					UE_LOG(LogTemp, Log, TEXT("UpdateEnemyAI: Assigned AnimBP %s to %s"), *AnimBPPath, *Enemy->GetName());
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("UpdateEnemyAI: Could not load AnimBP at %s for %s"), *AnimBPPath, *Enemy->GetName());
+				}
+			}
+		}
 	}
 
 	// Clean up dead entries periodically (every 100th call)
@@ -720,6 +993,68 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		}
 	}
 
+	// --- FLOATING HEALTH BAR ---
+	// Create UWidgetComponent on first tick (after health property is found)
+	if (!State.HealthBarComponent.IsValid() && HP > 0.f && HealthProp)
+	{
+		static TWeakObjectPtr<UClass> CachedWidgetClass;
+		static bool bWidgetClassLoadAttempted = false;
+		if (!bWidgetClassLoadAttempted)
+		{
+			bWidgetClassLoadAttempted = true;
+			CachedWidgetClass = LoadClass<UUserWidget>(nullptr,
+				TEXT("/Game/UI/WBP_EnemyHealthBar.WBP_EnemyHealthBar_C"));
+			if (!CachedWidgetClass.IsValid())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("UpdateEnemyAI: Failed to load WBP_EnemyHealthBar widget class"));
+			}
+		}
+
+		if (CachedWidgetClass.IsValid())
+		{
+			UWidgetComponent* WC = NewObject<UWidgetComponent>(Enemy, NAME_None);
+			WC->SetupAttachment(Enemy->GetRootComponent());
+
+			// Position above head: capsule half-height + offset
+			UCapsuleComponent* Cap = Enemy->GetCapsuleComponent();
+			float HeadZ = Cap ? Cap->GetScaledCapsuleHalfHeight() + 30.f : 120.f;
+			WC->SetRelativeLocation(FVector(0, 0, HeadZ));
+
+			WC->SetWidgetSpace(EWidgetSpace::Screen);
+			WC->SetDrawSize(FVector2D(120, 10));
+			WC->SetPivot(FVector2D(0.5f, 0.5f));
+			WC->SetWidgetClass(CachedWidgetClass.Get());
+			WC->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			WC->SetVisibility(false); // Hidden until damaged
+			WC->RegisterComponent();
+
+			State.HealthBarComponent = WC;
+			State.MaxHealth = HP;
+
+			UE_LOG(LogTemp, Log, TEXT("UpdateEnemyAI: Created health bar for %s (MaxHP=%.0f, HeadZ=%.0f)"),
+				*Enemy->GetName(), State.MaxHealth, HeadZ);
+		}
+	}
+
+	// Update health bar percent + visibility
+	if (State.HealthBarComponent.IsValid())
+	{
+		UUserWidget* Widget = State.HealthBarComponent->GetWidget();
+		if (Widget)
+		{
+			UProgressBar* Bar = Cast<UProgressBar>(
+				Widget->WidgetTree->FindWidget(FName("HealthFill")));
+			if (Bar)
+			{
+				Bar->SetPercent(FMath::Clamp(HP / State.MaxHealth, 0.f, 1.f));
+			}
+		}
+
+		// Show only when damaged, hide at full health
+		bool bShouldShow = (HP > 0.f && HP < State.MaxHealth);
+		State.HealthBarComponent->SetVisibility(bShouldShow);
+	}
+
 	USkeletalMeshComponent* MeshComp = Enemy->GetMesh();
 	UCharacterMovementComponent* MoveComp = Enemy->GetCharacterMovement();
 
@@ -748,6 +1083,14 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 		if (!State.bDeathAnimStarted)
 		{
+			// Hide + destroy health bar on death
+			if (State.HealthBarComponent.IsValid())
+			{
+				State.HealthBarComponent->SetVisibility(false);
+				State.HealthBarComponent->DestroyComponent();
+				State.HealthBarComponent = nullptr;
+			}
+
 			State.bDeathAnimStarted = true;
 			State.CurrentState = EEnemyAIState::Dead;
 			State.DeathStartTime = CurrentTime;
@@ -764,22 +1107,161 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				}
 			}
 
-			// Play death animation — PlayAnimation auto-switches to SingleNode (fine for dying enemy)
+			// Play death animation via montage — keeps AnimBP alive (no SingleNode mode switch)
 			UAnimSequence* UsedDeathAnim = State.ChosenDeathAnim ? State.ChosenDeathAnim : DeathAnim;
 			if (UsedDeathAnim && MeshComp)
 			{
-				MeshComp->PlayAnimation(UsedDeathAnim, false);
+				if (UAnimInstance* DeathAnimInst = MeshComp->GetAnimInstance())
+				{
+					DeathAnimInst->PlaySlotAnimationAsDynamicMontage(
+						UsedDeathAnim, FName("DefaultSlot"),
+						0.1f,   // BlendInTime
+						0.0f,   // BlendOutTime — no blend-out so pose holds
+						1.0f,   // PlayRate
+						1,      // LoopCount — play once
+						-1.f,   // BlendOutTriggerTime
+						0.0f    // StartAt
+					);
+				}
 			}
+			else if (MeshComp)
+			{
+				// No death animation available — freeze current pose and skip to break-apart
+				MeshComp->bPauseAnims = true;
+			}
+
+			// Play per-type enemy death sound (reuse GettingHit as death cry)
+			PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit);
 		}
 		else
 		{
-			// Wait for death anim to finish, then destroy
+			// Wait for death anim to finish, then break apart into rock debris
 			UAnimSequence* UsedDeathAnim = State.ChosenDeathAnim ? State.ChosenDeathAnim : DeathAnim;
-			float DeathAnimLen = UsedDeathAnim ? UsedDeathAnim->GetPlayLength() : 1.5f;
-			if ((CurrentTime - State.DeathStartTime) > DeathAnimLen + 0.3f)
+			float DeathAnimLen = UsedDeathAnim ? UsedDeathAnim->GetPlayLength() : 0.0f;
+			float TimeSinceDeath = (float)(CurrentTime - State.DeathStartTime);
+
+			// Freeze animation pose after death anim finishes (prevents snapping back to idle)
+			if (TimeSinceDeath >= DeathAnimLen - 0.05f && MeshComp && !MeshComp->bPauseAnims)
 			{
-				EnemyAIStates.Remove(Key);
-				Enemy->Destroy();
+				MeshComp->bPauseAnims = true;
+			}
+
+			if (!State.bDeathBreakStarted && TimeSinceDeath > DeathAnimLen + 0.3f)
+			{
+				// Start break-apart phase: hide enemy, spawn physics debris
+				State.bDeathBreakStarted = true;
+				State.DeathBreakStartTime = CurrentTime;
+
+				// Now fully disable capsule (enemy is done animating)
+				UCapsuleComponent* DeathCapsule = Enemy->GetCapsuleComponent();
+				if (DeathCapsule)
+				{
+					DeathCapsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				}
+
+				// Hide the enemy mesh
+				if (MeshComp)
+				{
+					MeshComp->SetVisibility(false);
+				}
+
+				// Load rock meshes for debris (cached static - loaded once across all deaths)
+				static TArray<UStaticMesh*> DebrisRockMeshes;
+				static bool bDebrisMeshesLoaded = false;
+				if (!bDebrisMeshesLoaded)
+				{
+					bDebrisMeshesLoaded = true;
+					const TCHAR* MeshPaths[] = {
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock01.rock_moss_set_01_rock01"),
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock02.rock_moss_set_01_rock02"),
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock03.rock_moss_set_01_rock03"),
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock04.rock_moss_set_01_rock04"),
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock05.rock_moss_set_01_rock05"),
+						TEXT("/Game/Meshes/Rocks/rock_moss_set_01_rock06.rock_moss_set_01_rock06"),
+					};
+					for (const TCHAR* Path : MeshPaths)
+					{
+						UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, Path);
+						if (Mesh)
+						{
+							DebrisRockMeshes.Add(Mesh);
+						}
+					}
+				}
+
+				// Spawn 5 debris rock chunks at chest height
+				if (DebrisRockMeshes.Num() > 0)
+				{
+					FVector EnemyLoc = Enemy->GetActorLocation();
+					EnemyLoc.Z += 50.f;
+
+					for (int32 i = 0; i < 5; i++)
+					{
+						FVector SpawnOffset(
+							FMath::FRandRange(-40.f, 40.f),
+							FMath::FRandRange(-40.f, 40.f),
+							FMath::FRandRange(0.f, 60.f)
+						);
+						FVector SpawnLoc = EnemyLoc + SpawnOffset;
+						FRotator SpawnRot(
+							FMath::FRandRange(0.f, 360.f),
+							FMath::FRandRange(0.f, 360.f),
+							FMath::FRandRange(0.f, 360.f)
+						);
+
+						FActorSpawnParameters SpawnParams;
+						SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+						SpawnParams.ObjectFlags = RF_Transient;
+
+						AActor* Debris = World->SpawnActor<AActor>(AActor::StaticClass(), SpawnLoc, SpawnRot, SpawnParams);
+						if (!Debris) continue;
+
+						UStaticMeshComponent* SMC = NewObject<UStaticMeshComponent>(Debris, NAME_None, RF_Transient);
+						SMC->SetStaticMesh(DebrisRockMeshes[FMath::RandRange(0, DebrisRockMeshes.Num() - 1)]);
+
+						float DebrisScale = FMath::FRandRange(0.15f, 0.5f);
+						SMC->SetRelativeScale3D(FVector(DebrisScale));
+
+						Debris->SetRootComponent(SMC);
+						SMC->RegisterComponent();
+
+						// Physics setup
+						SMC->SetCollisionProfileName(TEXT("PhysicsActor"));
+						SMC->SetSimulatePhysics(true);
+
+						// Outward + upward impulse for burst scatter
+						FVector ImpulseDir = FVector(
+							FMath::FRandRange(-1.f, 1.f),
+							FMath::FRandRange(-1.f, 1.f),
+							FMath::FRandRange(0.8f, 2.0f)
+						).GetSafeNormal();
+						float ImpulseMag = FMath::FRandRange(20000.f, 50000.f);
+						SMC->AddImpulse(ImpulseDir * ImpulseMag);
+
+						State.DebrisActors.Add(TWeakObjectPtr<AActor>(Debris));
+					}
+				}
+			}
+
+			// Cleanup debris + enemy after 3 seconds
+			if (State.bDeathBreakStarted)
+			{
+				constexpr float BreakCleanupDelay = 3.0f;
+				float TimeSinceBreak = (float)(CurrentTime - State.DeathBreakStartTime);
+
+				if (TimeSinceBreak >= BreakCleanupDelay)
+				{
+					for (auto& WeakDebris : State.DebrisActors)
+					{
+						if (WeakDebris.IsValid())
+						{
+							WeakDebris->Destroy();
+						}
+					}
+					State.DebrisActors.Empty();
+					EnemyAIStates.Remove(Key);
+					Enemy->Destroy();
+				}
 			}
 		}
 		return; // Don't process AI when dead/dying
@@ -789,14 +1271,18 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	if (State.PreviousHealth > 0.f && HP < State.PreviousHealth && HP > 0.f)
 	{
 		// Took damage — trigger hit react
-		if (State.CurrentState != EEnemyAIState::HitReact && HitReactAnim)
+		UAnimSequence* UsedHitReactAnim = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
+		if (State.CurrentState != EEnemyAIState::HitReact && UsedHitReactAnim)
 		{
 			State.PreHitReactState = State.CurrentState;
 			State.CurrentState = EEnemyAIState::HitReact;
 			State.HitReactStartTime = CurrentTime;
 
 			// Play hit react — bForceInterrupt instantly stops any attack montage
-			PlayAnimationOneShot(Enemy, HitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
+			PlayAnimationOneShot(Enemy, UsedHitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
+
+			// Play getting-hit sound immediately when enemy takes damage
+			PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit);
 		}
 	}
 	State.PreviousHealth = HP;
@@ -804,7 +1290,8 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	// HitReact -> previous state after animation finishes
 	if (State.CurrentState == EEnemyAIState::HitReact)
 	{
-		float HitReactLen = HitReactAnim ? FMath::Min(HitReactAnim->GetPlayLength(), 0.8f) : 0.5f;
+		UAnimSequence* HitReactForLen = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
+		float HitReactLen = HitReactForLen ? FMath::Min(HitReactForLen->GetPlayLength(), 1.5f) : 0.8f;
 		if ((CurrentTime - State.HitReactStartTime) > HitReactLen)
 		{
 			State.CurrentState = State.PreHitReactState;
@@ -919,11 +1406,29 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		{
 			State.LastAttackTime = CurrentTime;
 
-			// Play personality-selected attack animation
+			// Use personality-assigned attack animation (consistent per-enemy, no random cycling)
 			UAnimSequence* UsedAttackAnim = State.ChosenAttackAnim ? State.ChosenAttackAnim : AttackAnim;
 			if (UsedAttackAnim)
 			{
-				PlayAnimationOneShot(Enemy, UsedAttackAnim, 1.0f, 0.15f, 0.15f, false);
+				PlayAnimationOneShot(Enemy, UsedAttackAnim, 1.0f, 0.15f, 0.2f, false);
+
+				// Play attack SFX delayed to sync with animation impact (~40% of anim length)
+				float SfxDelay = UsedAttackAnim->GetPlayLength() * 0.4f;
+				FTimerHandle SfxTimerHandle;
+				TWeakObjectPtr<AActor> WeakEnemy(Enemy);
+				TWeakObjectPtr<UWorld> WeakWorld(World);
+				Enemy->GetWorldTimerManager().SetTimer(
+					SfxTimerHandle,
+					[WeakEnemy, WeakWorld]()
+					{
+						if (WeakEnemy.IsValid() && WeakWorld.IsValid())
+						{
+							PlayEnemyTypeSound(WeakWorld.Get(), WeakEnemy.Get(), EEnemySoundType::Hit);
+						}
+					},
+					SfxDelay,
+					false
+				);
 			}
 
 			// Deal damage scaled by personality
@@ -1039,10 +1544,50 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 		State.IdleBehaviorTimer += DeltaTime;
 
-		// Combat partner behavior — face partner and attack periodically
-		if (CombatPartner && IsValid(CombatPartner))
+		// Auto-discover combat partner: find nearest same-class enemy within 500 units
+		AActor* EffectiveCombatPartner = CombatPartner;
+		if (!EffectiveCombatPartner && !State.bPartnerSearchDone)
 		{
-			FVector DirToPartner = CombatPartner->GetActorLocation() - Enemy->GetActorLocation();
+			State.bPartnerSearchDone = true;
+			const float PartnerSearchRadius = 500.0f;
+			float BestDist = PartnerSearchRadius;
+			for (auto& Pair : EnemyAIStates)
+			{
+				AActor* Other = Pair.Key.Get();
+				if (!Other || Other == Enemy || !IsValid(Other)) continue;
+				if (Other->GetClass() != Enemy->GetClass()) continue;
+				float Dist = FVector::Dist(Enemy->GetActorLocation(), Other->GetActorLocation());
+				if (Dist < BestDist)
+				{
+					// Check the other enemy also doesn't already have a partner
+					FEnemyAIStateData& OtherState = Pair.Value;
+					if (!OtherState.AutoDiscoveredPartner.IsValid())
+					{
+						BestDist = Dist;
+						State.AutoDiscoveredPartner = Other;
+					}
+				}
+			}
+			if (State.AutoDiscoveredPartner.IsValid())
+			{
+				// Set mutual partnership
+				FEnemyAIStateData* OtherData = EnemyAIStates.Find(State.AutoDiscoveredPartner);
+				if (OtherData)
+				{
+					OtherData->AutoDiscoveredPartner = Enemy;
+					OtherData->bPartnerSearchDone = true;
+				}
+			}
+		}
+		if (!EffectiveCombatPartner && State.AutoDiscoveredPartner.IsValid())
+		{
+			EffectiveCombatPartner = State.AutoDiscoveredPartner.Get();
+		}
+
+		// Combat partner behavior — face partner and attack periodically
+		if (EffectiveCombatPartner && IsValid(EffectiveCombatPartner))
+		{
+			FVector DirToPartner = EffectiveCombatPartner->GetActorLocation() - Enemy->GetActorLocation();
 			FVector HorizDir = FVector(DirToPartner.X, DirToPartner.Y, 0.0f).GetSafeNormal();
 			if (!HorizDir.IsNearlyZero())
 			{
@@ -1063,10 +1608,34 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				State.LastPartnerAttackTime = CurrentTime;
 				State.PartnerAttackCooldown = FMath::FRandRange(2.5f, 5.0f); // Randomize next cooldown
 
-				UAnimSequence* UsedAttackAnim = State.ChosenAttackAnim ? State.ChosenAttackAnim : AttackAnim;
+				// Pick random attack from pool each time
+				TArray<UAnimSequence*> PartnerAttackPool;
+				if (AttackAnim) PartnerAttackPool.Add(AttackAnim);
+				if (AttackAnim2) PartnerAttackPool.Add(AttackAnim2);
+				if (AttackAnim3) PartnerAttackPool.Add(AttackAnim3);
+				UAnimSequence* UsedAttackAnim = PartnerAttackPool.Num() > 0
+					? PartnerAttackPool[FMath::RandRange(0, PartnerAttackPool.Num() - 1)] : nullptr;
 				if (UsedAttackAnim)
 				{
 					PlayAnimationOneShot(Enemy, UsedAttackAnim, State.AnimPlayRateVariation, 0.15f, 0.15f, false);
+
+					// Play attack SFX delayed for partner combat too
+					float PartnerSfxDelay = UsedAttackAnim->GetPlayLength() * 0.4f;
+					FTimerHandle PartnerSfxTimer;
+					TWeakObjectPtr<AActor> WeakPartnerEnemy(Enemy);
+					TWeakObjectPtr<UWorld> WeakPartnerWorld(World);
+					Enemy->GetWorldTimerManager().SetTimer(
+						PartnerSfxTimer,
+						[WeakPartnerEnemy, WeakPartnerWorld]()
+						{
+							if (WeakPartnerEnemy.IsValid() && WeakPartnerWorld.IsValid())
+							{
+								PlayEnemyTypeSound(WeakPartnerWorld.Get(), WeakPartnerEnemy.Get(), EEnemySoundType::Hit);
+							}
+						},
+						PartnerSfxDelay,
+						false
+					);
 				}
 			}
 
@@ -1197,7 +1766,7 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 
 		PlayerHUD.OwnerWorld = World;
 
-		// Read initial health as max; auto-init to 100 if CDO default didn't propagate
+		// Read initial health as max; auto-init to 50 if CDO default didn't propagate
 		FProperty* HealthProp = Player->GetClass()->FindPropertyByName(FName("Health"));
 		if (HealthProp)
 		{
@@ -1207,47 +1776,50 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp))
 				PlayerHUD.MaxHealth = (float)DP->GetPropertyValue(ValPtr);
 
-			// Safety: if Health is 0, set it to 100 so player doesn't die on first tick
+			// Safety: if Health is 0, set it to 50 so player doesn't die on first tick
 			if (PlayerHUD.MaxHealth <= 0.f)
 			{
-				PlayerHUD.MaxHealth = 100.f;
+				PlayerHUD.MaxHealth = 50.f;
 				if (FFloatProperty* FP = CastField<FFloatProperty>(HealthProp))
-					FP->SetPropertyValue(ValPtr, 100.f);
+					FP->SetPropertyValue(ValPtr, 50.f);
 				else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp))
-					DP->SetPropertyValue(ValPtr, 100.0);
-				UE_LOG(LogTemp, Warning, TEXT("ManagePlayerHUD: Player Health was 0, auto-initialized to 100"));
+					DP->SetPropertyValue(ValPtr, 50.0);
+				UE_LOG(LogTemp, Warning, TEXT("ManagePlayerHUD: Player Health was 0, auto-initialized to 50"));
 			}
 		}
 		else
 		{
-			PlayerHUD.MaxHealth = 100.f;
+			PlayerHUD.MaxHealth = 50.f;
 		}
 
 		// Load health bar textures
 		const float HealthBarWidth = 500.0f;
 		const float HealthBarHeight = HealthBarWidth * (1536.0f / 2816.0f); // ~273px, preserves 2816:1536 aspect
 
-		UTexture2D* EmptyTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HealthBar_Empty.T_HealthBar_Empty"));
-		UTexture2D* FullTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HealthBar_Full.T_HealthBar_Full"));
+		UTexture2D* BaseTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HB_Base.T_HB_Base"));
+		UTexture2D* FillTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HB_Fill.T_HB_Fill"));
+		UTexture2D* FrameTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HB_Frame.T_HB_Frame"));
 
-		if (EmptyTex && FullTex)
+		if (BaseTex && FillTex && FrameTex)
 		{
-			PlayerHUD.EmptyBarTexture = TStrongObjectPtr<UTexture2D>(EmptyTex);
-			PlayerHUD.FullBarTexture = TStrongObjectPtr<UTexture2D>(FullTex);
+			PlayerHUD.BaseBarTexture = TStrongObjectPtr<UTexture2D>(BaseTex);
+			PlayerHUD.FillBarTexture = TStrongObjectPtr<UTexture2D>(FillTex);
+			PlayerHUD.FrameBarTexture = TStrongObjectPtr<UTexture2D>(FrameTex);
 
-			PlayerHUD.EmptyBarBrush.SetResourceObject(EmptyTex);
-			PlayerHUD.EmptyBarBrush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
-			PlayerHUD.EmptyBarBrush.DrawAs = ESlateBrushDrawType::Image;
-			PlayerHUD.EmptyBarBrush.Tiling = ESlateBrushTileType::NoTile;
-
-			PlayerHUD.FullBarBrush.SetResourceObject(FullTex);
-			PlayerHUD.FullBarBrush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
-			PlayerHUD.FullBarBrush.DrawAs = ESlateBrushDrawType::Image;
-			PlayerHUD.FullBarBrush.Tiling = ESlateBrushTileType::NoTile;
+			auto SetupBrush = [&](FSlateBrush& Brush, UTexture2D* Tex) {
+				Brush.SetResourceObject(Tex);
+				Brush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
+				Brush.DrawAs = ESlateBrushDrawType::Image;
+				Brush.Tiling = ESlateBrushTileType::NoTile;
+			};
+			SetupBrush(PlayerHUD.BaseBrush, BaseTex);
+			SetupBrush(PlayerHUD.FillBrush, FillTex);
+			SetupBrush(PlayerHUD.FrameBrush, FrameTex);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("ManagePlayerHUD: Failed to load health bar textures"));
+			UE_LOG(LogTemp, Warning, TEXT("ManagePlayerHUD: Failed to load health bar textures (Base=%d, Fill=%d, Frame=%d)"),
+				BaseTex != nullptr, FillTex != nullptr, FrameTex != nullptr);
 		}
 
 		// Font styles — Dutch Golden Age aesthetic
@@ -1275,14 +1847,14 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 				[
 					SNew(SOverlay)
 
-					// Layer 1: Empty bar (always full size — empty glass tube visible)
+					// Layer 0: Base — frame + dark empty tube (always full size)
 					+ SOverlay::Slot()
 					[
 						SNew(SImage)
-						.Image(&PlayerHUD.EmptyBarBrush)
+						.Image(&PlayerHUD.BaseBrush)
 					]
 
-					// Layer 2: Full bar (clipped by HP% — golden fill)
+					// Layer 1: Fill — golden liquid (clipped by HP%, transparent elsewhere)
 					+ SOverlay::Slot()
 					.HAlign(HAlign_Left)
 					[
@@ -1291,9 +1863,16 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 						.Clipping(EWidgetClipping::ClipToBounds)
 						[
 							SNew(SImage)
-							.Image(&PlayerHUD.FullBarBrush)
+							.Image(&PlayerHUD.FillBrush)
 							.DesiredSizeOverride(FVector2D(HealthBarWidth, HealthBarHeight))
 						]
+					]
+
+					// Layer 2: Frame mask — frame with transparent tube hole (masks fill overflow)
+					+ SOverlay::Slot()
+					[
+						SNew(SImage)
+						.Image(&PlayerHUD.FrameBrush)
 					]
 				]
 			]
@@ -1529,15 +2108,16 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 	// Update health bar
 	float Pct = FMath::Clamp(HP / PlayerHUD.MaxHealth, 0.0f, 1.0f);
 
-	// Tube mapping: portrait=left 39%, tube=39-94%, right ornaments=94-100%
-	// Map HP% to clip from tube-start to full-width
+	// Tube mapping: liquid occupies cols 1335-2440 of 2816px source
+	// Map HP% linearly to the tube region only
 	const float HBDisplayWidth = 500.0f;
-	const float TubeLeftRatio = 0.39f;
-	float ClipRatio = TubeLeftRatio + (1.0f - TubeLeftRatio) * Pct;
+	const float TubeLeftPx = (1335.0f / 2816.0f) * HBDisplayWidth;   // ~237px
+	const float TubeRightPx = (2440.0f / 2816.0f) * HBDisplayWidth;  // ~433px
+	float ClipWidth = TubeLeftPx + (TubeRightPx - TubeLeftPx) * Pct;
 
 	if (PlayerHUD.HealthClipBox.IsValid())
 	{
-		PlayerHUD.HealthClipBox->SetWidthOverride(HBDisplayWidth * ClipRatio);
+		PlayerHUD.HealthClipBox->SetWidthOverride(ClipWidth);
 	}
 
 	// Damage flash fade (0.3s)
@@ -1556,6 +2136,9 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			PlayerHUD.DamageFlashStartTime = 0.0;
 		}
 	}
+
+	// --- Dynamic Music Crossfade ---
+	UpdateMusicCrossfade(World);
 
 	// Handle death
 	if (HP <= 0.0f)
@@ -1582,6 +2165,8 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 					GameFlow = FGameFlowState();
 					EnemyAIStates.Empty();
 					BlockingActors.Empty();
+					MusicSystem = FMusicState();
+					EnemyTypeSoundCache.Empty();
 
 					FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
 					UGameplayStatics::OpenLevel(WeakWorld.Get(), FName(*LevelName));
@@ -1797,6 +2382,21 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 				CP.bIsBeacon = false;
 				GameFlow.CheckpointsCollected++;
 
+				// Play checkpoint chime
+				static USoundBase* CheckpointSound = nullptr;
+				static bool bCheckpointSoundLoadAttempted = false;
+				if (!bCheckpointSoundLoadAttempted)
+				{
+					bCheckpointSoundLoadAttempted = true;
+					CheckpointSound = Cast<USoundBase>(StaticLoadObject(
+						USoundBase::StaticClass(), nullptr,
+						TEXT("/Game/Audio/SFX/S_Checkpoint_Chime.S_Checkpoint_Chime")));
+				}
+				if (CheckpointSound)
+				{
+					UGameplayStatics::PlaySound2D(World, CheckpointSound, 1.0f, 1.0f);
+				}
+
 				// Trigger golden flash
 				GameFlow.GoldenFlashStartTime = CurrentTime;
 
@@ -1923,6 +2523,21 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 			GameFlow.bVictory = true;
 			GameFlow.VictoryStartTime = CurrentTime;
 
+			// Play victory fanfare
+			static USoundBase* VictorySound = nullptr;
+			static bool bVictorySoundLoadAttempted = false;
+			if (!bVictorySoundLoadAttempted)
+			{
+				bVictorySoundLoadAttempted = true;
+				VictorySound = Cast<USoundBase>(StaticLoadObject(
+					USoundBase::StaticClass(), nullptr,
+					TEXT("/Game/Audio/SFX/S_Victory_Fanfare.S_Victory_Fanfare")));
+			}
+			if (VictorySound)
+			{
+				UGameplayStatics::PlaySound2D(World, VictorySound, 1.0f, 1.0f);
+			}
+
 			UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: VICTORY! %d/%d souls recovered"),
 				GameFlow.CheckpointsCollected, GameFlow.TotalCheckpoints);
 
@@ -1961,6 +2576,8 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 						GameFlow = FGameFlowState();
 						EnemyAIStates.Empty();
 						BlockingActors.Empty();
+						MusicSystem = FMusicState();
+						EnemyTypeSoundCache.Empty();
 
 						FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
 						UGameplayStatics::OpenLevel(WeakWorld.Get(), FName(*LevelName));

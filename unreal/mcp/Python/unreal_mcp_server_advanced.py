@@ -963,6 +963,7 @@ def import_texture(
         "Masks" (TC_Masks) - Channel-packed masks like ARM (linear, no sRGB)
         "Grayscale" (TC_Grayscale) - Single channel textures
         "HDR" (TC_HDR) - High dynamic range textures
+        "EditorIcon" (TC_EditorIcon) - UI textures (no compression, no streaming, no mipmaps)
     - srgb: Whether texture uses sRGB color space (True for diffuse, False for normal/ARM/data)
     - flip_green_channel: Flip green channel for OpenGL→DirectX normal map conversion
 
@@ -980,6 +981,10 @@ def import_texture(
         # Import an ARM packed texture (AO/Roughness/Metallic)
         import_texture("/home/user/textures/rock_arm.png", "T_Rock_ARM", "/Game/Textures/Rocks/",
                        compression_type="Masks", srgb=False)
+
+        # Import a UI texture with alpha (health bar, icons)
+        import_texture("/home/user/ui/health_bar.png", "T_HealthBar", "/Game/UI/Textures/",
+                       compression_type="EditorIcon")
     """
     unreal = get_unreal_connection()
     if not unreal:
@@ -1065,7 +1070,8 @@ def set_texture_properties(
     texture_path: str,
     compression_type: str = "",
     srgb: bool = None,
-    flip_green_channel: bool = None
+    flip_green_channel: bool = None,
+    never_stream: bool = None
 ) -> Dict[str, Any]:
     """
     Set properties on an existing texture asset in the Unreal project.
@@ -1081,8 +1087,10 @@ def set_texture_properties(
         "Masks" (TC_Masks) - Channel-packed masks like ARM (linear, no sRGB)
         "Grayscale" (TC_Grayscale) - Single channel textures
         "HDR" (TC_HDR) - High dynamic range textures
+        "EditorIcon" (TC_EditorIcon) - UI textures (no compression, no streaming, no mipmaps)
     - srgb: Whether texture uses sRGB color space (True for diffuse, False for normal/ARM/data)
     - flip_green_channel: Flip green channel for OpenGL to DirectX normal map conversion
+    - never_stream: Disable texture streaming (True for UI textures that must be fully resident)
 
     Returns:
         Dictionary with success status and current texture properties.
@@ -1098,6 +1106,9 @@ def set_texture_properties(
 
         # Set a diffuse texture back to default
         set_texture_properties("/Game/Textures/T_Color", compression_type="Default", srgb=True)
+
+        # Convert to UI texture (full quality, no streaming)
+        set_texture_properties("/Game/UI/Textures/T_Icon", compression_type="EditorIcon")
     """
     unreal = get_unreal_connection()
     if not unreal:
@@ -1111,6 +1122,8 @@ def set_texture_properties(
             params["srgb"] = srgb
         if flip_green_channel is not None:
             params["flip_green_channel"] = flip_green_channel
+        if never_stream is not None:
+            params["never_stream"] = never_stream
 
         response = unreal.send_command("set_texture_properties", params)
         return response or {"success": False, "message": "No response from Unreal"}

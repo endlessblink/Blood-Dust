@@ -2020,6 +2020,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportTexture(const 
             ImportedTexture->CompressionSettings = TC_Grayscale;
         else if (CompressionType == TEXT("HDR") || CompressionType == TEXT("TC_HDR"))
             ImportedTexture->CompressionSettings = TC_HDR;
+        else if (CompressionType == TEXT("EditorIcon") || CompressionType == TEXT("TC_EditorIcon") || CompressionType == TEXT("UserInterface2D"))
+        {
+            ImportedTexture->CompressionSettings = TC_EditorIcon;
+            // UI textures must be fully resident — no streaming, no mipmaps
+            ImportedTexture->NeverStream = true;
+            ImportedTexture->MipGenSettings = TMGS_NoMipmaps;
+            ImportedTexture->LODGroup = TEXTUREGROUP_UI;
+        }
     }
 
     bool bSRGB;
@@ -2110,6 +2118,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetTextureProperties
             Texture->CompressionSettings = TC_HDR;
             bChanged = true;
         }
+        else if (CompressionType == TEXT("EditorIcon") || CompressionType == TEXT("TC_EditorIcon") || CompressionType == TEXT("UserInterface2D"))
+        {
+            Texture->CompressionSettings = TC_EditorIcon;
+            // UI textures must be fully resident — no streaming, no mipmaps
+            Texture->NeverStream = true;
+            Texture->MipGenSettings = TMGS_NoMipmaps;
+            Texture->LODGroup = TEXTUREGROUP_UI;
+            bChanged = true;
+        }
     }
 
     // Set sRGB
@@ -2125,6 +2142,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetTextureProperties
     if (Params->TryGetBoolField(TEXT("flip_green_channel"), bFlipGreen))
     {
         Texture->bFlipGreenChannel = bFlipGreen;
+        bChanged = true;
+    }
+
+    // Set NeverStream explicitly (useful for UI textures)
+    bool bNeverStream;
+    if (Params->TryGetBoolField(TEXT("never_stream"), bNeverStream))
+    {
+        Texture->NeverStream = bNeverStream;
         bChanged = true;
     }
 
@@ -2144,9 +2169,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetTextureProperties
         Texture->CompressionSettings == TC_Masks ? TEXT("TC_Masks") :
         Texture->CompressionSettings == TC_Grayscale ? TEXT("TC_Grayscale") :
         Texture->CompressionSettings == TC_HDR ? TEXT("TC_HDR") :
+        Texture->CompressionSettings == TC_EditorIcon ? TEXT("TC_EditorIcon") :
         TEXT("TC_Default"));
     Result->SetBoolField(TEXT("srgb"), Texture->SRGB);
     Result->SetBoolField(TEXT("flip_green_channel"), Texture->bFlipGreenChannel);
+    Result->SetBoolField(TEXT("never_stream"), Texture->NeverStream);
     Result->SetStringField(TEXT("message"), TEXT("Texture properties updated successfully"));
 
     return Result;

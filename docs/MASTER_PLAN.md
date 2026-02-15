@@ -74,6 +74,9 @@
 | ~~TASK-034D~~ | ~~Add wind WPO Phase 3: height mask + combine + output (12 nodes)~~ | P1 | ✅ DONE | TASK-034C |
 | ~~TASK-034E~~ | ~~Apply M_Grass_Wind to all 8 grass mesh assets~~ | P1 | ✅ DONE | TASK-034D |
 | ~~TASK-034F~~ | ~~Visual tuning + screenshot verification~~ | P1 | ✅ DONE | TASK-034E |
+| ~~**TASK-035**~~ | ✅ **Enemy floating health bar that depletes on damage** | **P2** | ✅ **DONE** (2026-02-15) | - |
+| **TASK-036** | **Add floating dust particles (atmospheric Niagara)** | **P0** | OPEN | - |
+| **TASK-037** | **"Soul Recovered" title fade+reappear on checkpoint collect** | **P2** | OPEN | FEATURE-018 |
 | **FEATURE-032** | **Enemy Animation Pipeline: Mixamo import + AnimBP architecture** | **P0** | IN PROGRESS | - |
 | TASK-032A | Import KingBot Mixamo animations (16 FBXes) | P0 | IN PROGRESS | - |
 | TASK-032B | Import Bell Mixamo model + animations (1 mesh + 26 FBXes) | P0 | OPEN | - |
