@@ -38,6 +38,11 @@
 #include "NiagaraSystem.h"
 #include "NiagaraFunctionLibrary.h"
 
+// Niagara editor utilities for creating systems from templates
+#include "NiagaraSystemFactoryNew.h"
+#include "NiagaraEditorUtilities.h"
+#include "NiagaraEmitter.h"
+
 FEpicUnrealMCPGameplayCommands::FEpicUnrealMCPGameplayCommands()
 {
 }
@@ -67,6 +72,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleCommand(const FStr
 	else if (CommandType == TEXT("spawn_niagara_system"))
 	{
 		return HandleSpawnNiagaraSystem(Params);
+	}
+	else if (CommandType == TEXT("create_niagara_system"))
+	{
+		return HandleCreateNiagaraSystem(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_parameter"))
+	{
+		return HandleSetNiagaraParameter(Params);
 	}
 	else if (CommandType == TEXT("set_skeletal_animation"))
 	{
@@ -1164,6 +1177,241 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleSetSkeletalAnimati
 	ResultObj->SetStringField(TEXT("animation_mode"), TEXT("AnimationSingleNode"));
 	ResultObj->SetStringField(TEXT("message"), FString::Printf(TEXT("Animation '%s' set on actor '%s' (looping=%s, rate=%.2f)"),
 		*AnimationPath, *ActorName, bLooping ? TEXT("true") : TEXT("false"), PlayRate));
+
+	return ResultObj;
+}
+
+// ============================================================================
+// 8. HandleCreateNiagaraSystem
+// ============================================================================
+TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleCreateNiagaraSystem(const TSharedPtr<FJsonObject>& Params)
+{
+	// Required: system_name
+	FString SystemName;
+	if (!Params->TryGetStringField(TEXT("system_name"), SystemName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_name' parameter"));
+	}
+
+	// Optional: destination_path (default /Game/FX)
+	FString DestinationPath = TEXT("/Game/FX");
+	Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+	// Optional: template_emitter_path (default HangingParticulates)
+	FString TemplatePath = TEXT("/Niagara/DefaultAssets/Templates/Emitters/HangingParticulates");
+	Params->TryGetStringField(TEXT("template_emitter_path"), TemplatePath);
+
+	// Build full asset path
+	FString FullAssetPath = DestinationPath / SystemName;
+
+	// Load template emitter
+	UNiagaraEmitter* TemplateEmitter = Cast<UNiagaraEmitter>(
+		StaticLoadObject(UNiagaraEmitter::StaticClass(), nullptr, *TemplatePath));
+
+	if (!IsValid(TemplateEmitter))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to load template emitter at path: %s"), *TemplatePath));
+	}
+
+	// Create package
+	UPackage* Package = CreatePackage(*FullAssetPath);
+	if (!Package)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to create package at: %s"), *FullAssetPath));
+	}
+
+	// Create the Niagara system
+	UNiagaraSystem* NewSystem = NewObject<UNiagaraSystem>(
+		Package, FName(*SystemName), RF_Public | RF_Standalone);
+
+	if (!NewSystem)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create UNiagaraSystem object"));
+	}
+
+	// Initialize the system
+	UNiagaraSystemFactoryNew::InitializeSystem(NewSystem, true /* bCanBeInCluster */);
+
+	// Add emitter to system (UE 5.7 API: emitter + version GUID as separate params)
+	FNiagaraEditorUtilities::AddEmitterToSystem(*NewSystem, *TemplateEmitter, TemplateEmitter->GetExposedVersion().VersionGuid, true /* bCopy */);
+
+	// Request compile
+	NewSystem->RequestCompile(false);
+
+	// Wait for compilation to complete
+	NewSystem->WaitForCompilationComplete();
+
+	// Register with asset registry
+	FAssetRegistryModule::AssetCreated(NewSystem);
+
+	// Mark package dirty and save
+	Package->MarkPackageDirty();
+
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		FullAssetPath, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Package, NewSystem, *PackageFilename, SaveArgs);
+
+	UE_LOG(LogTemp, Log, TEXT("Created NiagaraSystem '%s' at '%s' from template '%s'"),
+		*SystemName, *FullAssetPath, *TemplatePath);
+
+	// Build response
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("system_path"), FullAssetPath);
+	ResultObj->SetStringField(TEXT("system_name"), SystemName);
+	ResultObj->SetStringField(TEXT("template_used"), TemplatePath);
+
+	return ResultObj;
+}
+
+// ============================================================================
+// 9. HandleSetNiagaraParameter
+// ============================================================================
+TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleSetNiagaraParameter(const TSharedPtr<FJsonObject>& Params)
+{
+	// Required: actor_name
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+	}
+
+	// Required: parameter_name
+	FString ParamName;
+	if (!Params->TryGetStringField(TEXT("parameter_name"), ParamName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parameter_name' parameter"));
+	}
+
+	// Required: parameter_type
+	FString ParamType;
+	if (!Params->TryGetStringField(TEXT("parameter_type"), ParamType))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parameter_type' parameter. Must be one of: float, int, bool, vector, vector2d, position, color"));
+	}
+
+	// Required: value
+	if (!Params->HasField(TEXT("value")))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
+	}
+
+	// Get world
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
+
+	// Find actor
+	AActor* FoundActor = FEpicUnrealMCPCommonUtils::FindActorByName(World, ActorName);
+	if (!IsValid(FoundActor))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	// Cast to NiagaraActor
+	ANiagaraActor* NiagaraActor = Cast<ANiagaraActor>(FoundActor);
+	if (!NiagaraActor)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Actor '%s' is not a NiagaraActor"), *ActorName));
+	}
+
+	// Get Niagara component
+	UNiagaraComponent* NiagaraComp = NiagaraActor->GetNiagaraComponent();
+	if (!IsValid(NiagaraComp))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NiagaraActor has no valid NiagaraComponent"));
+	}
+
+	// Parse value based on parameter_type
+	FString ValueSet;
+
+	if (ParamType == TEXT("float"))
+	{
+		double Value = Params->GetNumberField(TEXT("value"));
+		NiagaraComp->SetVariableFloat(FName(*ParamName), (float)Value);
+		ValueSet = FString::Printf(TEXT("%.4f"), Value);
+	}
+	else if (ParamType == TEXT("int"))
+	{
+		int32 Value = (int32)Params->GetNumberField(TEXT("value"));
+		NiagaraComp->SetVariableInt(FName(*ParamName), Value);
+		ValueSet = FString::Printf(TEXT("%d"), Value);
+	}
+	else if (ParamType == TEXT("bool"))
+	{
+		bool bValue = Params->GetBoolField(TEXT("value"));
+		NiagaraComp->SetVariableBool(FName(*ParamName), bValue);
+		ValueSet = bValue ? TEXT("true") : TEXT("false");
+	}
+	else if (ParamType == TEXT("vector") || ParamType == TEXT("position"))
+	{
+		FVector Vec = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("value"));
+		if (ParamType == TEXT("vector"))
+		{
+			NiagaraComp->SetVariableVec3(FName(*ParamName), Vec);
+		}
+		else
+		{
+			NiagaraComp->SetVariablePosition(FName(*ParamName), Vec);
+		}
+		ValueSet = FString::Printf(TEXT("(%.2f, %.2f, %.2f)"), Vec.X, Vec.Y, Vec.Z);
+	}
+	else if (ParamType == TEXT("vector2d"))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ValueArray = nullptr;
+		if (Params->TryGetArrayField(TEXT("value"), ValueArray) && ValueArray && ValueArray->Num() >= 2)
+		{
+			float X = (float)(*ValueArray)[0]->AsNumber();
+			float Y = (float)(*ValueArray)[1]->AsNumber();
+			NiagaraComp->SetVariableVec2(FName(*ParamName), FVector2D(X, Y));
+			ValueSet = FString::Printf(TEXT("(%.2f, %.2f)"), X, Y);
+		}
+		else
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid vector2d value. Expected array [X, Y]"));
+		}
+	}
+	else if (ParamType == TEXT("color"))
+	{
+		const TSharedPtr<FJsonObject>* ColorObj = nullptr;
+		if (Params->TryGetObjectField(TEXT("value"), ColorObj) && ColorObj && (*ColorObj).IsValid())
+		{
+			float R = (float)(*ColorObj)->GetNumberField(TEXT("R"));
+			float G = (float)(*ColorObj)->GetNumberField(TEXT("G"));
+			float B = (float)(*ColorObj)->GetNumberField(TEXT("B"));
+			float A = (*ColorObj)->HasField(TEXT("A")) ? (float)(*ColorObj)->GetNumberField(TEXT("A")) : 1.0f;
+			NiagaraComp->SetVariableLinearColor(FName(*ParamName), FLinearColor(R, G, B, A));
+			ValueSet = FString::Printf(TEXT("(R=%.2f, G=%.2f, B=%.2f, A=%.2f)"), R, G, B, A);
+		}
+		else
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid color value. Expected object {\"R\":...,\"G\":...,\"B\":...,\"A\":...}"));
+		}
+	}
+	else
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Invalid parameter_type: '%s'. Must be one of: float, int, bool, vector, vector2d, position, color"), *ParamType));
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("Set Niagara parameter '%s' on actor '%s' to %s (type: %s)"),
+		*ParamName, *ActorName, *ValueSet, *ParamType);
+
+	// Build response
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("actor_name"), ActorName);
+	ResultObj->SetStringField(TEXT("parameter_name"), ParamName);
+	ResultObj->SetStringField(TEXT("parameter_type"), ParamType);
+	ResultObj->SetStringField(TEXT("value_set"), ValueSet);
 
 	return ResultObj;
 }

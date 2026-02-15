@@ -114,6 +114,7 @@ class UnrealConnection:
         "create_widget_blueprint",
         "create_behavior_tree",
         "take_screenshot",
+        "create_niagara_system",
     }
 
     # Commands that need a post-execution cooldown to let the engine
@@ -135,6 +136,7 @@ class UnrealConnection:
         "create_behavior_tree": 1.0,      # BT asset creation + save
         "create_blackboard": 1.0,         # BB asset creation + save
         "take_screenshot": 1.0,          # SceneCapture2D render + ReadPixels + PNG encode
+        "create_niagara_system": 2.0,    # Niagara system creation + compile + save
     }
     
     def __init__(self):
@@ -5827,6 +5829,76 @@ def spawn_niagara_system(
     }
     try:
         response = unreal.send_command("spawn_niagara_system", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def create_niagara_system(
+    system_name: str,
+    destination_path: str = "/Game/FX",
+    template_emitter_path: str = "/Niagara/DefaultAssets/Templates/Emitters/HangingParticulates"
+) -> Dict[str, Any]:
+    """
+    Create a new Niagara particle system asset from a built-in template emitter.
+
+    Duplicates an existing template emitter (e.g., HangingParticulates) into a new
+    UNiagaraSystem asset. The system is compiled and saved, ready to be spawned
+    with spawn_niagara_system and customized with set_niagara_parameter.
+
+    Parameters:
+    - system_name: Name for the new system asset (e.g., "NS_FloatingDust")
+    - destination_path: Content directory to create the asset in (default: "/Game/FX")
+    - template_emitter_path: Content path to the template emitter to copy
+      (default: "/Niagara/DefaultAssets/Templates/Emitters/HangingParticulates")
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "system_name": system_name,
+        "destination_path": destination_path,
+        "template_emitter_path": template_emitter_path
+    }
+    try:
+        response = unreal.send_command("create_niagara_system", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def set_niagara_parameter(
+    actor_name: str,
+    parameter_name: str,
+    parameter_type: str,
+    value: Any = None
+) -> Dict[str, Any]:
+    """
+    Set a runtime parameter on a spawned NiagaraActor's Niagara component.
+
+    Allows customizing particle behavior by setting user-exposed parameters
+    (e.g., spawn rate, color, size) on a Niagara system that is already placed in the level.
+
+    Parameters:
+    - actor_name: Name of the ANiagaraActor in the level
+    - parameter_name: Full parameter name (e.g., "User.SpawnRate", "User.Color")
+    - parameter_type: One of: "float", "int", "bool", "vector", "vector2d", "position", "color"
+    - value: The value to set. Format depends on parameter_type:
+      - float/int: plain number (e.g., 100.0)
+      - bool: true/false
+      - vector/position: [X, Y, Z] array (e.g., [1.0, 0.5, 0.0])
+      - vector2d: [X, Y] array (e.g., [1.0, 0.5])
+      - color: {"R": 0.72, "G": 0.55, "B": 0.27, "A": 0.4} object (A defaults to 1.0)
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "actor_name": actor_name,
+        "parameter_name": parameter_name,
+        "parameter_type": parameter_type,
+        "value": value
+    }
+    try:
+        response = unreal.send_command("set_niagara_parameter", params)
         return response.get("result", response)
     except Exception as e:
         return {"success": False, "message": str(e)}

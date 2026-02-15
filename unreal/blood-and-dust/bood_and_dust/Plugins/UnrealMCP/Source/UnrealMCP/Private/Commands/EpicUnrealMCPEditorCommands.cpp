@@ -1975,6 +1975,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportTexture(const 
 
     // Create package for the texture
     FString PackagePath = DestinationPath + TextureName;
+
+    // If asset already exists, delete it first to prevent name collision crash
+    if (UEditorAssetLibrary::DoesAssetExist(PackagePath))
+    {
+        UE_LOG(LogTemp, Log, TEXT("import_texture: Asset '%s' already exists, deleting before re-import"), *PackagePath);
+        UEditorAssetLibrary::DeleteAsset(PackagePath);
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    }
+
     UPackage* Package = CreatePackage(*PackagePath);
 
     if (!Package)
@@ -6089,6 +6098,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportSound(const TS
 
     // Create package for the sound
     FString PackagePath = DestinationPath + SoundName;
+
+    // If asset already exists, delete it first to prevent name collision crash
+    if (UEditorAssetLibrary::DoesAssetExist(PackagePath))
+    {
+        UE_LOG(LogTemp, Log, TEXT("import_sound: Asset '%s' already exists, deleting before re-import"), *PackagePath);
+        UEditorAssetLibrary::DeleteAsset(PackagePath);
+        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+    }
+
     UPackage* Package = CreatePackage(*PackagePath);
 
     if (!Package)

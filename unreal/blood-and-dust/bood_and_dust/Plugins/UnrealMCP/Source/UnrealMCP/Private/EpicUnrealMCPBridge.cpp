@@ -634,6 +634,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("apply_impulse") ||
                      CommandType == TEXT("trigger_post_process_effect") ||
                      CommandType == TEXT("spawn_niagara_system") ||
+                     CommandType == TEXT("create_niagara_system") ||
+                     CommandType == TEXT("set_niagara_parameter") ||
                      CommandType == TEXT("set_skeletal_animation"))
             {
                 ResultJson = GameplayCommands->HandleCommand(CommandType, Params);

@@ -73,7 +73,8 @@ public class UnrealMCP : ModuleRules
 				"UMG",                   // Widget blueprint creation (F-019)
 				"UMGEditor",             // Widget blueprint factory (F-019)
 				"AIModule",              // Behavior trees and AI controllers (F-021)
-				"GameplayTasks"          // BT tasks and decorators (F-021)
+				"GameplayTasks",         // BT tasks and decorators (F-021)
+				"NiagaraEditor"          // Niagara system creation from templates
 			}
 		);
 		

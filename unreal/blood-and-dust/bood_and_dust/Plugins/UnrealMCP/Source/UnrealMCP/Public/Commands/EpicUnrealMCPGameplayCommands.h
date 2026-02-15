@@ -35,4 +35,10 @@ private:
 
 	// Set animation on a placed actor's skeletal mesh (SingleNode mode)
 	TSharedPtr<FJsonObject> HandleSetSkeletalAnimation(const TSharedPtr<FJsonObject>& Params);
+
+	// Niagara system asset creation from template emitter
+	TSharedPtr<FJsonObject> HandleCreateNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
+
+	// Set runtime parameter on a spawned NiagaraActor's component
+	TSharedPtr<FJsonObject> HandleSetNiagaraParameter(const TSharedPtr<FJsonObject>& Params);
 };
