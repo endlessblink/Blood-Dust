@@ -278,7 +278,9 @@
       "Bash(git checkout:*)",
       "WebFetch(domain:alinloghin.com)",
       "WebFetch(domain:jesshiderue4.wordpress.com)",
-      "WebFetch(domain:developer.nvidia.com)"
+      "WebFetch(domain:developer.nvidia.com)",
+      "WebFetch(domain:victorialartwork.wixsite.com)",
+      "WebFetch(domain:www.arnaudvanderveken.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
