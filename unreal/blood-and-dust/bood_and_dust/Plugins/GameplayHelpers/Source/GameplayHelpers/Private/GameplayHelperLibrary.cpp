@@ -1,4 +1,5 @@
 #include "GameplayHelperLibrary.h"
+#include "IntroSequenceComponent.h"
 #include "EnemyAnimInstance.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -36,6 +37,7 @@
 #include "Components/ProgressBar.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -109,6 +111,42 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		-1.0f,  // BlendOutTriggerTime = auto
 		0.0f    // InTimeToStartMontageAt
 	);
+
+	// Fire AnimNotify_PlaySound events from the source AnimSequence via timers.
+	// Dynamic montages do NOT copy notifies from source sequences, so we manually
+	// read notify events and schedule UGameplayStatics::PlaySoundAtLocation calls.
+	for (const FAnimNotifyEvent& NotifyEvent : AnimSequence->Notifies)
+	{
+		UAnimNotify_PlaySound* SoundNotify = Cast<UAnimNotify_PlaySound>(NotifyEvent.Notify);
+		if (SoundNotify && SoundNotify->Sound)
+		{
+			float NotifyTime = NotifyEvent.GetTriggerTime() / FMath::Max(PlayRate, 0.01f);
+			TWeakObjectPtr<AActor> WeakActor(Character);
+			USoundBase* Sound = SoundNotify->Sound;
+			float Volume = SoundNotify->VolumeMultiplier;
+			float Pitch = SoundNotify->PitchMultiplier;
+
+			FTimerHandle SoundTimerHandle;
+			Character->GetWorldTimerManager().SetTimer(
+				SoundTimerHandle,
+				[WeakActor, Sound, Volume, Pitch]()
+				{
+					if (WeakActor.IsValid())
+					{
+						UGameplayStatics::PlaySoundAtLocation(
+							WeakActor->GetWorld(),
+							Sound,
+							WeakActor->GetActorLocation(),
+							Volume,
+							Pitch
+						);
+					}
+				},
+				FMath::Max(NotifyTime, 0.01f),
+				false
+			);
+		}
+	}
 
 	// Set timer to restore movement speed after animation completes
 	if (bStopMovement && MovementComp)
@@ -325,6 +363,11 @@ struct FEnemyAIStateData
 	// Floating health bar
 	TWeakObjectPtr<UWidgetComponent> HealthBarComponent;
 	float MaxHealth = 100.f;
+
+	bool bPendingDamage = false;
+	double PendingDamageTime = 0.0;
+	float PendingDamageAmount = 0.f;
+	float PendingDamageRadius = 0.f;
 };
 static TMap<TWeakObjectPtr<AActor>, FEnemyAIStateData> EnemyAIStates;
 
@@ -493,6 +536,119 @@ static void UpdateMusicCrossfade(UWorld* World)
 	}
 }
 
+// --- Player Footstep System (distance-based, not AnimNotify) ---
+// Tracks actual movement distance and plays alternating L/R footstep sounds.
+// This is superior to AnimNotify for locomotion because it decouples sound
+// timing from animation cycle length — footsteps sync to real movement.
+
+struct FPlayerFootstepState
+{
+	TWeakObjectPtr<UWorld> OwnerWorld;
+	bool bInitialized = false;
+	FVector LastPosition = FVector::ZeroVector;
+	float DistanceAccumulated = 0.0f;
+	bool bLeftFoot = true;
+	double LastStepTime = 0.0;
+	USoundBase* WalkL = nullptr;
+	USoundBase* WalkR = nullptr;
+	USoundBase* DeathSound = nullptr;
+	bool bSoundsLoaded = false;
+};
+static FPlayerFootstepState PlayerFootsteps;
+
+static void UpdatePlayerFootsteps(ACharacter* Player)
+{
+	if (!Player) return;
+	UWorld* World = Player->GetWorld();
+	if (!World) return;
+
+	// Reset if world changed (level restart)
+	if (PlayerFootsteps.bInitialized && (!PlayerFootsteps.OwnerWorld.IsValid() || PlayerFootsteps.OwnerWorld.Get() != World))
+	{
+		PlayerFootsteps = FPlayerFootstepState();
+	}
+
+	// Load sounds once
+	if (!PlayerFootsteps.bSoundsLoaded)
+	{
+		PlayerFootsteps.bSoundsLoaded = true;
+		PlayerFootsteps.WalkL = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Walk_L.S_Hero_Walk_L")));
+		PlayerFootsteps.WalkR = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Walk_R.S_Hero_Walk_R")));
+		PlayerFootsteps.DeathSound = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Death.S_Hero_Death")));
+
+		UE_LOG(LogTemp, Log, TEXT("PlayerFootsteps: WalkL=%s WalkR=%s Death=%s"),
+			PlayerFootsteps.WalkL ? TEXT("OK") : TEXT("MISSING"),
+			PlayerFootsteps.WalkR ? TEXT("OK") : TEXT("MISSING"),
+			PlayerFootsteps.DeathSound ? TEXT("OK") : TEXT("MISSING"));
+	}
+
+	if (!PlayerFootsteps.bInitialized)
+	{
+		PlayerFootsteps.bInitialized = true;
+		PlayerFootsteps.OwnerWorld = World;
+		PlayerFootsteps.LastPosition = Player->GetActorLocation();
+		return; // Skip first frame to establish baseline position
+	}
+
+	UCharacterMovementComponent* CMC = Player->GetCharacterMovement();
+	if (!CMC) return;
+
+	// Only play footsteps when grounded (not jumping/falling)
+	if (!CMC->IsMovingOnGround()) return;
+
+	// Calculate horizontal distance moved this frame
+	FVector CurrentPos = Player->GetActorLocation();
+	FVector Delta = CurrentPos - PlayerFootsteps.LastPosition;
+	Delta.Z = 0.0f;
+	float DistThisFrame = Delta.Size();
+	PlayerFootsteps.LastPosition = CurrentPos;
+
+	// Need minimum speed to count as walking (filters idle drift)
+	float Speed = CMC->Velocity.Size2D();
+	if (Speed < 10.0f)
+	{
+		PlayerFootsteps.DistanceAccumulated = 0.0f;
+		return;
+	}
+
+	// Step distance scales with speed: longer strides when running
+	// Walking (~400) = ~110 cm per step, Running (~800) = ~140 cm per step
+	float StepDistance = FMath::Lerp(110.0f, 140.0f,
+		FMath::Clamp((Speed - 200.0f) / 600.0f, 0.0f, 1.0f));
+
+	// Minimum time between steps prevents machine-gun footsteps on frame spikes
+	constexpr float MinStepInterval = 0.2f;
+	double CurrentTime = World->GetTimeSeconds();
+
+	PlayerFootsteps.DistanceAccumulated += DistThisFrame;
+
+	if (PlayerFootsteps.DistanceAccumulated >= StepDistance
+		&& (CurrentTime - PlayerFootsteps.LastStepTime) >= MinStepInterval)
+	{
+		USoundBase* StepSound = PlayerFootsteps.bLeftFoot
+			? PlayerFootsteps.WalkL
+			: PlayerFootsteps.WalkR;
+
+		if (StepSound)
+		{
+			// Slight pitch variation for naturalness
+			float PitchVar = FMath::FRandRange(0.95f, 1.05f);
+			UGameplayStatics::PlaySoundAtLocation(
+				World, StepSound, Player->GetActorLocation(), 1.0f, PitchVar);
+		}
+
+		PlayerFootsteps.bLeftFoot = !PlayerFootsteps.bLeftFoot;
+		PlayerFootsteps.DistanceAccumulated = 0.0f;
+		PlayerFootsteps.LastStepTime = CurrentTime;
+	}
+}
+
 void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage, float Radius, float KnockbackImpulse)
 {
 	if (!Attacker)
@@ -531,9 +687,56 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 		}
 	}
 
+	// --- FORWARD CONE FILTER ---
+	// Melee attacks are directional: only hit targets roughly in front of the attacker.
+	// This prevents hitting enemies behind or beside the attacker.
+	{
+		FVector Fwd = Attacker->GetActorForwardVector();
+		Fwd.Z = 0.f;
+		if (!Fwd.IsNearlyZero())
+		{
+			Fwd.Normalize();
+			TSet<ACharacter*> InCone;
+			for (ACharacter* HC : HitCharacters)
+			{
+				FVector ToTarget = HC->GetActorLocation() - Origin;
+				ToTarget.Z = 0.f;
+				float Dist = ToTarget.Size();
+				if (Dist < 1.f) { InCone.Add(HC); continue; } // Overlapping = always hit
+				FVector Dir = ToTarget / Dist;
+				// cos(80°) ≈ 0.17 → ~160° cone in front of attacker
+				if (FVector::DotProduct(Fwd, Dir) > 0.17f)
+				{
+					InCone.Add(HC);
+				}
+			}
+			HitCharacters = InCone;
+		}
+	}
+
 	// Determine if attacker is the player (for friendly-fire prevention)
 	ACharacter* PlayerCharDmg = UGameplayStatics::GetPlayerCharacter(World, 0);
 	bool bAttackerIsPlayer = (Attacker == PlayerCharDmg);
+
+	// --- SINGLE TARGET for player melee ---
+	// Player attacks hit only the closest enemy in the cone.
+	// This prevents AoE splash damage on grouped enemies.
+	if (bAttackerIsPlayer && HitCharacters.Num() > 1)
+	{
+		ACharacter* Closest = nullptr;
+		float ClosestDistSq = FLT_MAX;
+		for (ACharacter* HC : HitCharacters)
+		{
+			float DSq = FVector::DistSquared(Origin, HC->GetActorLocation());
+			if (DSq < ClosestDistSq)
+			{
+				ClosestDistSq = DSq;
+				Closest = HC;
+			}
+		}
+		HitCharacters.Empty();
+		if (Closest) HitCharacters.Add(Closest);
+	}
 
 	for (ACharacter* Victim : HitCharacters)
 	{
@@ -985,10 +1188,20 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp)) HP = (float)DP->GetPropertyValue(ValPtr);
 
 		// Auto-initialize: Health==0 on first tick means CDO default didn't propagate
+		// Scale HP by enemy type: bigger enemies are tougher
 		if (HP == 0.f && !State.bHealthInitialized)
 		{
 			State.bHealthInitialized = true;
-			HP = 100.f;
+			HP = 60.f; // Bell: swarmer, dies fast
+			FString ClassName = Enemy->GetClass()->GetName();
+			if (ClassName.Contains(TEXT("KingBot")))
+			{
+				HP = 200.f; // KingBot: mid-tier
+			}
+			else if (ClassName.Contains(TEXT("Giganto")))
+			{
+				HP = 450.f; // Giganto: tank, hard to kill
+			}
 			if (FFloatProperty* FP = CastField<FFloatProperty>(HealthProp)) FP->SetPropertyValue(ValPtr, HP);
 			else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp)) DP->SetPropertyValue(ValPtr, (double)HP);
 		}
@@ -1093,6 +1306,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			}
 
 			State.bDeathAnimStarted = true;
+			State.bPendingDamage = false;
 			State.CurrentState = EEnemyAIState::Dead;
 			State.DeathStartTime = CurrentTime;
 
@@ -1287,6 +1501,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			State.PreHitReactState = State.CurrentState;
 			State.CurrentState = EEnemyAIState::HitReact;
 			State.HitReactStartTime = CurrentTime;
+			State.bPendingDamage = false;
 
 			// Play hit react — bForceInterrupt instantly stops any attack montage
 			PlayAnimationOneShot(Enemy, UsedHitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
@@ -1301,7 +1516,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	if (State.CurrentState == EEnemyAIState::HitReact)
 	{
 		UAnimSequence* HitReactForLen = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
-		float HitReactLen = HitReactForLen ? FMath::Min(HitReactForLen->GetPlayLength(), 1.5f) : 0.8f;
+		float HitReactLen = HitReactForLen ? FMath::Min(HitReactForLen->GetPlayLength(), 0.3f) : 0.3f;
 		if ((CurrentTime - State.HitReactStartTime) > HitReactLen)
 		{
 			State.CurrentState = State.PreHitReactState;
@@ -1312,6 +1527,17 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	if (MoveComp)
 	{
 		MoveComp->MaxWalkSpeed = MoveSpeed * State.SpeedMultiplier;
+	}
+
+	// Process pending damage (delayed from attack windup)
+	if (State.bPendingDamage && CurrentTime >= State.PendingDamageTime)
+	{
+		// Only deal damage if still in Attack state (cancelled by hit-react, death, etc.)
+		if (State.CurrentState == EEnemyAIState::Attack)
+		{
+			ApplyMeleeDamage(Enemy, State.PendingDamageAmount, State.PendingDamageRadius, 30000.f);
+		}
+		State.bPendingDamage = false;
 	}
 
 	// --- STATE TRANSITIONS (with hysteresis) ---
@@ -1421,28 +1647,14 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			if (UsedAttackAnim)
 			{
 				PlayAnimationOneShot(Enemy, UsedAttackAnim, 1.0f, 0.15f, 0.2f, false);
-
-				// Play attack SFX delayed to sync with animation impact (~40% of anim length)
-				float SfxDelay = UsedAttackAnim->GetPlayLength() * 0.4f;
-				FTimerHandle SfxTimerHandle;
-				TWeakObjectPtr<AActor> WeakEnemy(Enemy);
-				TWeakObjectPtr<UWorld> WeakWorld(World);
-				Enemy->GetWorldTimerManager().SetTimer(
-					SfxTimerHandle,
-					[WeakEnemy, WeakWorld]()
-					{
-						if (WeakEnemy.IsValid() && WeakWorld.IsValid())
-						{
-							PlayEnemyTypeSound(WeakWorld.Get(), WeakEnemy.Get(), EEnemySoundType::Hit);
-						}
-					},
-					SfxDelay,
-					false
-				);
+				// Attack SFX handled by AnimNotify baked into animation assets
 			}
 
-			// Deal damage scaled by personality
-			ApplyMeleeDamage(Enemy, AttackDamage * State.DamageMultiplier, AttackRadius, 30000.f);
+			// Queue delayed damage — gives player a window to stun/interrupt the attack
+			State.bPendingDamage = true;
+			State.PendingDamageTime = CurrentTime + 0.35;
+			State.PendingDamageAmount = AttackDamage * State.DamageMultiplier;
+			State.PendingDamageRadius = AttackRadius;
 		}
 		break;
 	}
@@ -1628,24 +1840,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				if (UsedAttackAnim)
 				{
 					PlayAnimationOneShot(Enemy, UsedAttackAnim, State.AnimPlayRateVariation, 0.15f, 0.15f, false);
-
-					// Play attack SFX delayed for partner combat too
-					float PartnerSfxDelay = UsedAttackAnim->GetPlayLength() * 0.4f;
-					FTimerHandle PartnerSfxTimer;
-					TWeakObjectPtr<AActor> WeakPartnerEnemy(Enemy);
-					TWeakObjectPtr<UWorld> WeakPartnerWorld(World);
-					Enemy->GetWorldTimerManager().SetTimer(
-						PartnerSfxTimer,
-						[WeakPartnerEnemy, WeakPartnerWorld]()
-						{
-							if (WeakPartnerEnemy.IsValid() && WeakPartnerWorld.IsValid())
-							{
-								PlayEnemyTypeSound(WeakPartnerWorld.Get(), WeakPartnerEnemy.Get(), EEnemySoundType::Hit);
-							}
-						},
-						PartnerSfxDelay,
-						false
-					);
+					// Attack SFX handled by AnimNotify baked into animation assets
 				}
 			}
 
@@ -1852,8 +2047,9 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			.Padding(20.0f, 0.0f, 0.0f, 20.0f)
 			[
 				SNew(SBox)
-				.WidthOverride(HealthBarWidth)
+				.WidthOverride(HealthBarWidth * 0.87f)
 				.HeightOverride(HealthBarHeight)
+				.Clipping(EWidgetClipping::ClipToBounds)
 				[
 					SNew(SOverlay)
 
@@ -2150,10 +2346,20 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 	// --- Dynamic Music Crossfade ---
 	UpdateMusicCrossfade(World);
 
+	// --- Player Footsteps (distance-based) ---
+	UpdatePlayerFootsteps(Player);
+
 	// Handle death
 	if (HP <= 0.0f)
 	{
 		PlayerHUD.bDead = true;
+
+		// Play death sound
+		if (PlayerFootsteps.DeathSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(
+				World, PlayerFootsteps.DeathSound, Player->GetActorLocation(), 1.0f, 1.0f);
+		}
 
 		// Show death overlay
 		if (PlayerHUD.DeathOverlay.IsValid())
@@ -2176,6 +2382,7 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 					EnemyAIStates.Empty();
 					BlockingActors.Empty();
 					MusicSystem = FMusicState();
+					PlayerFootsteps = FPlayerFootstepState();
 					EnemyTypeSoundCache.Empty();
 
 					FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
@@ -2587,6 +2794,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 						EnemyAIStates.Empty();
 						BlockingActors.Empty();
 						MusicSystem = FMusicState();
+						PlayerFootsteps = FPlayerFootstepState();
 						EnemyTypeSoundCache.Empty();
 
 						FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
@@ -2598,4 +2806,48 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 			);
 		}
 	}
+}
+
+void UGameplayHelperLibrary::StartIntroSequence(ACharacter* Character, UAnimSequence* GettingUpAnimation,
+	USoundBase* GettingUpSound, FName HeadBoneName, float FadeInDuration, float CameraDriftDuration, float InitialBlackHoldDuration)
+{
+	if (!Character || !GettingUpAnimation)
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: Creating component on %s"), *Character->GetName());
+
+	// Immediately go black so player doesn't see the level before intro
+	APlayerController* PC = Cast<APlayerController>(Character->GetController());
+	if (PC)
+	{
+		PC->DisableInput(PC);
+		if (PC->PlayerCameraManager)
+		{
+			PC->PlayerCameraManager->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
+		}
+	}
+
+	UIntroSequenceComponent* IntroComp = NewObject<UIntroSequenceComponent>(Character);
+	IntroComp->GettingUpAnimation = GettingUpAnimation;
+	IntroComp->GettingUpSound = GettingUpSound;
+	IntroComp->HeadBoneName = HeadBoneName;
+	IntroComp->FadeInDuration = FadeInDuration;
+	IntroComp->CameraDriftDuration = CameraDriftDuration;
+	IntroComp->InitialBlackHoldDuration = InitialBlackHoldDuration;
+	IntroComp->RegisterComponent();
+	Character->AddInstanceComponent(IntroComp);
+
+	// Defer StartSequence by 0.5s to let camera manager, input, and physics fully initialize
+	TWeakObjectPtr<UIntroSequenceComponent> WeakComp = IntroComp;
+	FTimerHandle TimerHandle;
+	Character->GetWorldTimerManager().SetTimer(TimerHandle, [WeakComp]()
+	{
+		if (WeakComp.IsValid())
+		{
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence: Deferred StartSequence firing"));
+			WeakComp->StartSequence();
+		}
+	}, 0.5f, false);
 }

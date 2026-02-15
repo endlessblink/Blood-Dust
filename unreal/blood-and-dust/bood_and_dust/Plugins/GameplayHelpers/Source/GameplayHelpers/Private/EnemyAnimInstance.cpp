@@ -1,6 +1,7 @@
 #include "EnemyAnimInstance.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "UObject/UnrealType.h"
 
 void UEnemyAnimInstance::NativeInitializeAnimation()
 {
@@ -49,5 +50,21 @@ void UEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	if (Speed < 3.0f)
 	{
 		Speed = 0.0f;
+	}
+
+	// Also set LocSpeed BP variable for AnimGraph BlendSpace binding.
+	// The EventGraph also computes LocSpeed, but C++ is more reliable —
+	// this ensures the BlendSpace always gets the correct speed value.
+	if (FProperty* Prop = GetClass()->FindPropertyByName(FName("LocSpeed")))
+	{
+		void* ValPtr = Prop->ContainerPtrToValuePtr<void>(this);
+		if (FFloatProperty* FP = CastField<FFloatProperty>(Prop))
+		{
+			FP->SetPropertyValue(ValPtr, Speed);
+		}
+		else if (FDoubleProperty* DP = CastField<FDoubleProperty>(Prop))
+		{
+			DP->SetPropertyValue(ValPtr, (double)Speed);
+		}
 	}
 }

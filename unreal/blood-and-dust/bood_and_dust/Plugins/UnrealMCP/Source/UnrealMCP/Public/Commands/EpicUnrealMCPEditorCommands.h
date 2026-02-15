@@ -80,4 +80,7 @@ private:
 
     // Audio import
     TSharedPtr<FJsonObject> HandleImportSound(const TSharedPtr<FJsonObject>& Params);
+
+    // Animation notify
+    TSharedPtr<FJsonObject> HandleAddAnimNotify(const TSharedPtr<FJsonObject>& Params);
 };

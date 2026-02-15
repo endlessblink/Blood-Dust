@@ -11,6 +11,7 @@ class ACharacter;
 class UAnimSequence;
 class UInputMappingContext;
 class UNiagaraSystem;
+class USoundBase;
 
 /**
  * Static helper functions for common gameplay operations.
@@ -107,4 +108,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|GameFlow", meta=(DefaultToSelf="Player"))
 	static void ManageGameFlow(ACharacter* Player);
+
+	/**
+	 * Start intro camera sequence: 1st-person head-bone POV during getting-up animation,
+	 * fade from black, then smooth camera drift back to 3rd-person.
+	 * Dynamically creates UIntroSequenceComponent on the Character.
+	 * Player input is disabled until the sequence completes.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Intro", meta=(DefaultToSelf="Character"))
+	static void StartIntroSequence(ACharacter* Character, UAnimSequence* GettingUpAnimation,
+		USoundBase* GettingUpSound = nullptr,
+		FName HeadBoneName = FName("Head"), float FadeInDuration = 1.0f,
+		float CameraDriftDuration = 1.5f, float InitialBlackHoldDuration = 0.3f);
 };

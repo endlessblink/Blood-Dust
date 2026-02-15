@@ -1,6 +1,8 @@
 #include "Commands/EpicUnrealMCPEditorCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "Editor.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorViewport.h"
 #include "ImageUtils.h"
@@ -271,6 +273,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     else if (CommandType == TEXT("import_sound"))
     {
         return HandleImportSound(Params);
+    }
+    // Animation notify
+    else if (CommandType == TEXT("add_anim_notify"))
+    {
+        return HandleAddAnimNotify(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -1976,12 +1983,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportTexture(const 
     // Create package for the texture
     FString PackagePath = DestinationPath + TextureName;
 
-    // If asset already exists, delete it first to prevent name collision crash
+    // If asset already exists, return success — NEVER delete+reimport over loaded assets
+    // (editor subsystems hold RefCount > 0, causing "partially loaded" crash on SavePackage)
     if (UEditorAssetLibrary::DoesAssetExist(PackagePath))
     {
-        UE_LOG(LogTemp, Log, TEXT("import_texture: Asset '%s' already exists, deleting before re-import"), *PackagePath);
-        UEditorAssetLibrary::DeleteAsset(PackagePath);
-        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        UE_LOG(LogTemp, Warning, TEXT("import_texture: Asset '%s' already exists, skipping import"), *PackagePath);
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("name"), TextureName);
+        Result->SetStringField(TEXT("path"), PackagePath);
+        Result->SetStringField(TEXT("message"), TEXT("Asset already exists, skipped import"));
+        return Result;
     }
 
     UPackage* Package = CreatePackage(*PackagePath);
@@ -6099,12 +6111,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportSound(const TS
     // Create package for the sound
     FString PackagePath = DestinationPath + SoundName;
 
-    // If asset already exists, delete it first to prevent name collision crash
+    // If asset already exists, return success — NEVER delete+reimport over loaded assets
+    // (editor subsystems hold RefCount > 0, causing "partially loaded" crash on SavePackage)
     if (UEditorAssetLibrary::DoesAssetExist(PackagePath))
     {
-        UE_LOG(LogTemp, Log, TEXT("import_sound: Asset '%s' already exists, deleting before re-import"), *PackagePath);
-        UEditorAssetLibrary::DeleteAsset(PackagePath);
-        CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+        UE_LOG(LogTemp, Warning, TEXT("import_sound: Asset '%s' already exists, skipping import"), *PackagePath);
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("name"), SoundName);
+        Result->SetStringField(TEXT("path"), PackagePath);
+        Result->SetStringField(TEXT("message"), TEXT("Asset already exists, skipped import"));
+        return Result;
     }
 
     UPackage* Package = CreatePackage(*PackagePath);
@@ -6173,6 +6190,108 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleImportSound(const TS
     Result->SetNumberField(TEXT("num_channels"), static_cast<double>(ImportedSound->NumChannels));
     Result->SetBoolField(TEXT("looping"), ImportedSound->bLooping);
     Result->SetStringField(TEXT("message"), TEXT("Sound imported successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleAddAnimNotify(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AnimationPath;
+    if (!Params->TryGetStringField(TEXT("animation_path"), AnimationPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'animation_path' parameter"));
+    }
+
+    double TimeSeconds = 0.0;
+    if (!Params->TryGetNumberField(TEXT("time_seconds"), TimeSeconds))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'time_seconds' parameter"));
+    }
+
+    FString SoundPath;
+    if (!Params->TryGetStringField(TEXT("sound_path"), SoundPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'sound_path' parameter"));
+    }
+
+    double Volume = 1.0;
+    Params->TryGetNumberField(TEXT("volume"), Volume);
+
+    bool bClearExisting = false;
+    Params->TryGetBoolField(TEXT("clear_existing"), bClearExisting);
+
+    // Load the animation sequence
+    FString FullAnimPath = AnimationPath;
+    if (!FullAnimPath.Contains(TEXT(".")))
+    {
+        FString AssetName = FPackageName::GetShortName(FullAnimPath);
+        FullAnimPath = FullAnimPath + TEXT(".") + AssetName;
+    }
+
+    UAnimSequence* AnimSeq = LoadObject<UAnimSequence>(nullptr, *FullAnimPath);
+    if (!AnimSeq)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation not found: %s"), *AnimationPath));
+    }
+
+    // Load the sound asset
+    FString FullSoundPath = SoundPath;
+    if (!FullSoundPath.Contains(TEXT(".")))
+    {
+        FString SoundName = FPackageName::GetShortName(FullSoundPath);
+        FullSoundPath = FullSoundPath + TEXT(".") + SoundName;
+    }
+
+    USoundBase* Sound = LoadObject<USoundBase>(nullptr, *FullSoundPath);
+    if (!Sound)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Sound not found: %s"), *SoundPath));
+    }
+
+    // Clear existing notifies if requested
+    if (bClearExisting)
+    {
+        AnimSeq->Notifies.Empty();
+    }
+
+    // Create the PlaySound notify instance
+    UAnimNotify_PlaySound* SoundNotify = NewObject<UAnimNotify_PlaySound>(AnimSeq);
+    SoundNotify->Sound = Sound;
+    SoundNotify->VolumeMultiplier = static_cast<float>(Volume);
+
+    // Add notify event to the animation
+    float ClampedTime = FMath::Clamp(static_cast<float>(TimeSeconds), 0.02f, AnimSeq->GetPlayLength() - 0.01f);
+
+    FAnimNotifyEvent& NewEvent = AnimSeq->Notifies.AddDefaulted_GetRef();
+    NewEvent.Notify = SoundNotify;
+    NewEvent.NotifyName = FName(TEXT("PlaySound"));
+    NewEvent.Link(AnimSeq, ClampedTime);
+    NewEvent.TriggerTimeOffset = GetTriggerTimeOffsetForType(EAnimEventTriggerOffsets::OffsetBefore);
+
+    // Sort notifies by time and refresh cache
+    AnimSeq->SortNotifies();
+    AnimSeq->PostEditChange();
+    AnimSeq->MarkPackageDirty();
+
+    // Save to disk
+    UPackage* Package = AnimSeq->GetOutermost();
+    FString PackageName = Package->GetName();
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    UPackage::SavePackage(Package, AnimSeq, *PackageFilename, SaveArgs);
+
+    // Result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("animation_path"), AnimationPath);
+    Result->SetStringField(TEXT("sound_path"), SoundPath);
+    Result->SetNumberField(TEXT("time_seconds"), ClampedTime);
+    Result->SetNumberField(TEXT("total_notifies"), AnimSeq->Notifies.Num());
+    Result->SetNumberField(TEXT("animation_length"), AnimSeq->GetPlayLength());
+    Result->SetStringField(TEXT("message"), TEXT("AnimNotify_PlaySound added successfully"));
 
     return Result;
 }

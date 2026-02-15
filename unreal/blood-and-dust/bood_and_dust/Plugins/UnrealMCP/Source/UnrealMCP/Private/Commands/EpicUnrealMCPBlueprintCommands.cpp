@@ -3324,19 +3324,96 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 
 	BS->SetSkeleton(Skeleton);
 
-	// Add samples — AddSample auto-expands axis range via ExpandRangeForSample
+	// Log diagnostics for debugging
+	UE_LOG(LogTemp, Display, TEXT("setup_blendspace: BS skeleton=%s, IdleAnim skeleton=%s, WalkAnim skeleton=%s"),
+		BS->GetSkeleton() ? *BS->GetSkeleton()->GetPathName() : TEXT("NULL"),
+		IdleAnim->GetSkeleton() ? *IdleAnim->GetSkeleton()->GetPathName() : TEXT("NULL"),
+		WalkAnim->GetSkeleton() ? *WalkAnim->GetSkeleton()->GetPathName() : TEXT("NULL"));
+
+	// Pre-configure BlendParameters axis range BEFORE AddSample.
+	// Default range is [0,100] — if MaxWalkSpeed > 100, AddSample's IsSampleWithinBounds fails
+	// because ExpandRangeForSample only extends in grid-delta increments.
+	// BlendParameters is protected, so we use FProperty reflection.
+	{
+		FStructProperty* ParamProp = CastField<FStructProperty>(UBlendSpace::StaticClass()->FindPropertyByName(FName("BlendParameters")));
+		if (ParamProp)
+		{
+			FBlendParameter* BlendParams = ParamProp->ContainerPtrToValuePtr<FBlendParameter>(BS);
+			BlendParams[0].DisplayName = TEXT("Speed");
+			BlendParams[0].Min = 0.0f;
+			BlendParams[0].Max = (float)MaxWalkSpeed;
+			BlendParams[0].GridNum = 4;
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Pre-configured BlendParameters[0] range 0-%.0f"), MaxWalkSpeed);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: Failed to find BlendParameters property via reflection"));
+		}
+	}
+
+	// Add samples (axis range already covers [0, MaxWalkSpeed])
 	int32 IdleIdx = BS->AddSample(IdleAnim, FVector(0, 0, 0));
 	int32 WalkIdx = BS->AddSample(WalkAnim, FVector(MaxWalkSpeed, 0, 0));
 
+	UE_LOG(LogTemp, Display, TEXT("setup_blendspace: AddSample results: idle=%d, walk=%d"), IdleIdx, WalkIdx);
+
+	// Fallback: if AddSample still fails, populate SampleData directly via reflection
 	if (IdleIdx == INDEX_NONE || WalkIdx == INDEX_NONE)
 	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
-			TEXT("Failed to add samples to BlendSpace (idle=%d, walk=%d). Check skeleton compatibility."),
-			IdleIdx, WalkIdx));
+		UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: AddSample failed, using direct SampleData population fallback"));
+
+		FArrayProperty* SampleDataProp = CastField<FArrayProperty>(UBlendSpace::StaticClass()->FindPropertyByName(FName("SampleData")));
+		if (SampleDataProp)
+		{
+			FScriptArrayHelper ArrayHelper(SampleDataProp, SampleDataProp->ContainerPtrToValuePtr<void>(BS));
+			ArrayHelper.EmptyValues();
+
+			// Add idle sample
+			int32 IdxIdle = ArrayHelper.AddValue();
+			FBlendSample* IdleSamplePtr = (FBlendSample*)ArrayHelper.GetRawPtr(IdxIdle);
+			IdleSamplePtr->Animation = IdleAnim;
+			IdleSamplePtr->SampleValue = FVector(0, 0, 0);
+			IdleSamplePtr->RateScale = 1.0f;
+			IdleSamplePtr->bIsValid = true;
+
+			// Add walk sample
+			int32 IdxWalk = ArrayHelper.AddValue();
+			FBlendSample* WalkSamplePtr = (FBlendSample*)ArrayHelper.GetRawPtr(IdxWalk);
+			WalkSamplePtr->Animation = WalkAnim;
+			WalkSamplePtr->SampleValue = FVector(MaxWalkSpeed, 0, 0);
+			WalkSamplePtr->RateScale = 1.0f;
+			WalkSamplePtr->bIsValid = true;
+
+			IdleIdx = IdxIdle;
+			WalkIdx = IdxWalk;
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Direct SampleData population succeeded (idle=%d, walk=%d)"), IdleIdx, WalkIdx);
+		}
+
+		if (IdleIdx == INDEX_NONE || WalkIdx == INDEX_NONE)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Failed to add samples to BlendSpace even with reflection fallback."));
+		}
 	}
 
 	BS->ValidateSampleData();
 	BS->GetPackage()->MarkPackageDirty();
+
+	// Diagnostic: verify BS samples
+	{
+		int32 NumSamples = BS->GetNumberOfBlendSamples();
+		UE_LOG(LogTemp, Display, TEXT("setup_blendspace: BS has %d samples after creation"), NumSamples);
+		for (int32 i = 0; i < NumSamples; i++)
+		{
+			const FBlendSample& S = BS->GetBlendSample(i);
+			UE_LOG(LogTemp, Display, TEXT("  Sample[%d]: anim=%s, value=(%.1f,%.1f,%.1f), valid=%d"),
+				i, S.Animation ? *S.Animation->GetName() : TEXT("NULL"),
+				S.SampleValue.X, S.SampleValue.Y, S.SampleValue.Z, S.bIsValid);
+		}
+		const FBlendParameter& BP0 = BS->GetBlendParameter(0);
+		UE_LOG(LogTemp, Display, TEXT("  BlendParam[0]: name=%s, min=%.1f, max=%.1f, grid=%d"),
+			*BP0.DisplayName, BP0.Min, BP0.Max, BP0.GridNum);
+	}
 
 	// Save BlendSpace asset
 	FString BSFilename = FPackageName::LongPackageNameToFilename(BlendSpacePath, FPackageName::GetAssetPackageExtension());
@@ -3394,20 +3471,159 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 		}
 	}
 
-	// Clean EventGraph — remove ALL nodes (C++ UEnemyAnimInstance handles Speed via NativeUpdateAnimation)
+	// === Part 4b: Rebuild EventGraph with Speed computation ===
+	// BlueprintUpdateAnimation → TryGetPawnOwner → GetVelocity → VSizeXY → Set LocSpeed
+	bool bEventGraphBuilt = false;
 	if (AnimBP->UbergraphPages.Num() > 0)
 	{
 		UEdGraph* EG = AnimBP->UbergraphPages[0];
-		TArray<UEdGraphNode*> EGNodesToRemove;
-		for (UEdGraphNode* Node : EG->Nodes)
+
+		// Clear existing EventGraph nodes
 		{
-			EGNodesToRemove.Add(Node);
+			TArray<UEdGraphNode*> EGNodesToRemove;
+			for (UEdGraphNode* Node : EG->Nodes)
+			{
+				EGNodesToRemove.Add(Node);
+			}
+			for (UEdGraphNode* Node : EGNodesToRemove)
+			{
+				Node->BreakAllNodeLinks();
+				EG->RemoveNode(Node);
+			}
 		}
-		for (UEdGraphNode* Node : EGNodesToRemove)
+
+		// Ensure LocSpeed BP variable exists
+		bool bHasLocSpeed = false;
+		for (const FBPVariableDescription& Var : AnimBP->NewVariables)
 		{
-			Node->BreakAllNodeLinks();
-			EG->RemoveNode(Node);
+			if (Var.VarName == FName("LocSpeed"))
+			{
+				bHasLocSpeed = true;
+				break;
+			}
 		}
+		if (!bHasLocSpeed)
+		{
+			FBPVariableDescription SpeedVar;
+			SpeedVar.VarName = FName("LocSpeed");
+			SpeedVar.FriendlyName = TEXT("LocSpeed");
+			SpeedVar.VarType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			SpeedVar.VarType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+			SpeedVar.PropertyFlags |= CPF_BlueprintVisible;
+			AnimBP->NewVariables.Add(SpeedVar);
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Created LocSpeed BP variable"));
+		}
+
+		// Must recompile after adding variable so the generated class has the property
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+		FKismetEditorUtilities::CompileBlueprint(AnimBP);
+
+		// 1. Event BlueprintUpdateAnimation
+		UK2Node_Event* UpdateAnimEvent = NewObject<UK2Node_Event>(EG);
+		UpdateAnimEvent->EventReference.SetExternalMember(FName("BlueprintUpdateAnimation"), UAnimInstance::StaticClass());
+		UpdateAnimEvent->bOverrideFunction = true;
+		UpdateAnimEvent->NodePosX = 0;
+		UpdateAnimEvent->NodePosY = 0;
+		EG->AddNode(UpdateAnimEvent, true, false);
+		UpdateAnimEvent->CreateNewGuid();
+		UpdateAnimEvent->AllocateDefaultPins();
+
+		// 2. TryGetPawnOwner (pure — no exec pins)
+		UK2Node_CallFunction* TryGetPawnNode = NewObject<UK2Node_CallFunction>(EG);
+		{
+			UFunction* Func = UAnimInstance::StaticClass()->FindFunctionByName(FName("TryGetPawnOwner"));
+			if (Func)
+			{
+				TryGetPawnNode->SetFromFunction(Func);
+			}
+		}
+		TryGetPawnNode->NodePosX = 200;
+		TryGetPawnNode->NodePosY = 100;
+		EG->AddNode(TryGetPawnNode, true, false);
+		TryGetPawnNode->CreateNewGuid();
+		TryGetPawnNode->AllocateDefaultPins();
+
+		// 3. GetVelocity (pure — called on the Pawn return value)
+		UK2Node_CallFunction* GetVelocityNode = NewObject<UK2Node_CallFunction>(EG);
+		{
+			UFunction* Func = AActor::StaticClass()->FindFunctionByName(FName("GetVelocity"));
+			if (Func)
+			{
+				GetVelocityNode->SetFromFunction(Func);
+			}
+		}
+		GetVelocityNode->NodePosX = 400;
+		GetVelocityNode->NodePosY = 100;
+		EG->AddNode(GetVelocityNode, true, false);
+		GetVelocityNode->CreateNewGuid();
+		GetVelocityNode->AllocateDefaultPins();
+
+		// 4. VSizeXY (from KismetMathLibrary — pure, takes FVector, returns XY-plane magnitude)
+		UK2Node_CallFunction* VSize2DNode = NewObject<UK2Node_CallFunction>(EG);
+		{
+			UFunction* Func = UKismetMathLibrary::StaticClass()->FindFunctionByName(FName("VSizeXY"));
+			if (Func)
+			{
+				VSize2DNode->SetFromFunction(Func);
+			}
+		}
+		VSize2DNode->NodePosX = 600;
+		VSize2DNode->NodePosY = 100;
+		EG->AddNode(VSize2DNode, true, false);
+		VSize2DNode->CreateNewGuid();
+		VSize2DNode->AllocateDefaultPins();
+
+		// 5. Set LocSpeed variable
+		UK2Node_VariableSet* SetLocSpeedNode = NewObject<UK2Node_VariableSet>(EG);
+		SetLocSpeedNode->VariableReference.SetSelfMember(FName("LocSpeed"));
+		SetLocSpeedNode->NodePosX = 800;
+		SetLocSpeedNode->NodePosY = 0;
+		EG->AddNode(SetLocSpeedNode, true, false);
+		SetLocSpeedNode->CreateNewGuid();
+		SetLocSpeedNode->AllocateDefaultPins();
+
+		// === Wire exec chain ===
+		// Event.Then → SetLocSpeed.Execute (pure functions have no exec pins)
+		UEdGraphPin* EventThenPin = UpdateAnimEvent->FindPin(UEdGraphSchema_K2::PN_Then);
+		UEdGraphPin* SetExecPin = SetLocSpeedNode->GetExecPin();
+		if (EventThenPin && SetExecPin)
+		{
+			EventThenPin->MakeLinkTo(SetExecPin);
+		}
+
+		// === Wire data chain ===
+		// TryGetPawnOwner.ReturnValue → GetVelocity.self
+		UEdGraphPin* PawnOutPin = TryGetPawnNode->GetReturnValuePin();
+		UEdGraphPin* VelSelfPin = GetVelocityNode->FindPin(UEdGraphSchema_K2::PN_Self);
+		if (PawnOutPin && VelSelfPin)
+		{
+			PawnOutPin->MakeLinkTo(VelSelfPin);
+		}
+
+		// GetVelocity.ReturnValue → VSize2D.A
+		UEdGraphPin* VelReturnPin = GetVelocityNode->GetReturnValuePin();
+		UEdGraphPin* VSize2DInputPin = VSize2DNode->FindPin(TEXT("A"));
+		if (VelReturnPin && VSize2DInputPin)
+		{
+			VelReturnPin->MakeLinkTo(VSize2DInputPin);
+		}
+
+		// VSize2D.ReturnValue → SetLocSpeed.LocSpeed
+		UEdGraphPin* VSize2DReturnPin = VSize2DNode->GetReturnValuePin();
+		UEdGraphPin* SetLocSpeedValuePin = SetLocSpeedNode->FindPin(FName("LocSpeed"));
+		if (VSize2DReturnPin && SetLocSpeedValuePin)
+		{
+			VSize2DReturnPin->MakeLinkTo(SetLocSpeedValuePin);
+		}
+
+		bEventGraphBuilt = true;
+		UE_LOG(LogTemp, Display, TEXT("setup_blendspace: EventGraph rebuilt with Speed computation (5 nodes, 4 data + 1 exec wire)"));
+
+		// Log all wiring for diagnostic
+		UE_LOG(LogTemp, Display, TEXT("  EventThen→SetExec: %d"), EventThenPin && SetExecPin && EventThenPin->LinkedTo.Contains(SetExecPin));
+		UE_LOG(LogTemp, Display, TEXT("  Pawn→VelSelf: %d"), PawnOutPin && VelSelfPin && PawnOutPin->LinkedTo.Contains(VelSelfPin));
+		UE_LOG(LogTemp, Display, TEXT("  VelReturn→VSizeXY.A: %d"), VelReturnPin && VSize2DInputPin && VelReturnPin->LinkedTo.Contains(VSize2DInputPin));
+		UE_LOG(LogTemp, Display, TEXT("  VSizeXY.Return→SetLocSpeed: %d"), VSize2DReturnPin && SetLocSpeedValuePin && VSize2DReturnPin->LinkedTo.Contains(SetLocSpeedValuePin));
 	}
 
 	// === Part 5: Create AnimGraph: BlendSpacePlayer → Slot(DefaultSlot) → Root ===
@@ -3462,24 +3678,21 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 	if (BSOutputPin && SlotInputPin) BSOutputPin->MakeLinkTo(SlotInputPin);
 	if (SlotOutputPin && RootInputPin) SlotOutputPin->MakeLinkTo(RootInputPin);
 
-	// === Part 6: Wire Speed to BlendSpacePlayer X pin ===
+	// === Part 6: Wire LocSpeed BP variable to BlendSpacePlayer X pin ===
 	bool bSpeedWired = false;
-	if (EnemyAnimClass)
 	{
-		// K2Node_VariableGet for Speed (from UEnemyAnimInstance C++ UPROPERTY)
-		UK2Node_VariableGet* SpeedGetNode = NewObject<UK2Node_VariableGet>(AnimGraph);
-		SpeedGetNode->VariableReference.SetSelfMember(FName("Speed"));
-		SpeedGetNode->NodePosX = BSNode->NodePosX - 200;
-		SpeedGetNode->NodePosY = BSNode->NodePosY + 100;
-		AnimGraph->AddNode(SpeedGetNode, true, false);
-		SpeedGetNode->CreateNewGuid();
-		SpeedGetNode->AllocateDefaultPins();
+		UK2Node_VariableGet* LocSpeedGetNode = NewObject<UK2Node_VariableGet>(AnimGraph);
+		LocSpeedGetNode->VariableReference.SetSelfMember(FName("LocSpeed"));
+		LocSpeedGetNode->NodePosX = BSNode->NodePosX - 200;
+		LocSpeedGetNode->NodePosY = BSNode->NodePosY + 100;
+		AnimGraph->AddNode(LocSpeedGetNode, true, false);
+		LocSpeedGetNode->CreateNewGuid();
+		LocSpeedGetNode->AllocateDefaultPins();
 
 		// Find X pin on BlendSpacePlayer
 		UEdGraphPin* BSXPin = BSNode->FindPin(TEXT("X"));
 		if (!BSXPin)
 		{
-			// Fallback: search for float input pin by type
 			for (UEdGraphPin* Pin : BSNode->Pins)
 			{
 				if (Pin->Direction == EGPD_Input &&
@@ -3493,33 +3706,53 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 			}
 		}
 
-		UEdGraphPin* SpeedOut = SpeedGetNode->GetValuePin();
-		if (SpeedOut && BSXPin)
+		UEdGraphPin* LocSpeedOut = LocSpeedGetNode->GetValuePin();
+		if (LocSpeedOut && BSXPin)
 		{
-			SpeedOut->MakeLinkTo(BSXPin);
+			LocSpeedOut->MakeLinkTo(BSXPin);
 			bSpeedWired = true;
-			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Speed → BS.X wired successfully"));
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: LocSpeed BP var → BS.X wired successfully"));
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: Failed to wire Speed→BS.X (SpeedOut=%d, BSXPin=%d)"),
-				SpeedOut != nullptr, BSXPin != nullptr);
-			// Log all BS pins for debugging
-			for (UEdGraphPin* Pin : BSNode->Pins)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("  BSNode pin: %s, category=%s, subcategory=%s, dir=%d"),
-					*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(),
-					*Pin->PinType.PinSubCategory.ToString(), (int)Pin->Direction);
-			}
+			UE_LOG(LogTemp, Warning, TEXT("setup_blendspace: Failed to wire LocSpeed→BS.X (LocSpeedOut=%d, BSXPin=%d)"),
+				LocSpeedOut != nullptr, BSXPin != nullptr);
 		}
 	}
 
-	// === Part 7: Compile ===
+	// === Part 6.5: Remove stale BP variables (keep LocSpeed, remove others) ===
+	{
+		TArray<FName> VarsToRemove;
+		for (const FBPVariableDescription& Var : AnimBP->NewVariables)
+		{
+			if (Var.VarName != FName("LocSpeed"))
+			{
+				VarsToRemove.Add(Var.VarName);
+			}
+		}
+		for (const FName& VarName : VarsToRemove)
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(AnimBP, VarName);
+			UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Removed stale BP variable: %s"), *VarName.ToString());
+		}
+	}
+
+	// === Part 7: Compile and Save ===
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
 	FKismetEditorUtilities::CompileBlueprint(AnimBP);
 
 	bool bCompileSucceeded = (AnimBP->Status != EBlueprintStatus::BS_Error);
-	UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Final compile status=%d (0=UpToDate, 1=Dirty, 2=Error)"), (int)AnimBP->Status);
+	UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Final compile status=%d (3=UpToDate, 2=Error)"), (int)AnimBP->Status);
+
+	// Save AnimBP to disk (prevents loss on editor restart)
+	if (bCompileSucceeded)
+	{
+		FString ABPFilename = FPackageName::LongPackageNameToFilename(AnimBPPath, FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs ABPSaveArgs;
+		ABPSaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		UPackage::SavePackage(AnimBP->GetPackage(), AnimBP, *ABPFilename, ABPSaveArgs);
+		UE_LOG(LogTemp, Display, TEXT("setup_blendspace: Saved AnimBP to disk: %s"), *ABPFilename);
+	}
 
 	// Build result
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
@@ -3534,8 +3767,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 	{
 		ResultObj->SetStringField(TEXT("error"), TEXT("AnimBP compilation failed — open ABP in editor to see errors"));
 	}
+	ResultObj->SetBoolField(TEXT("event_graph_built"), bEventGraphBuilt);
 	ResultObj->SetStringField(TEXT("message"), FString::Printf(
-		TEXT("BlendSpace1D locomotion: [BS(%s) Speed:0=Idle,%.0f=Walk] → Slot(DefaultSlot) → Output. Speed driven by C++ UEnemyAnimInstance."),
+		TEXT("BlendSpace1D locomotion: [BS(%s) LocSpeed:0=Idle,%.0f=Walk] → Slot(DefaultSlot) → Output. Speed computed in EventGraph (TryGetPawnOwner→GetVelocity→VSizeXY→LocSpeed)."),
 		*BSAssetName, MaxWalkSpeed));
 	return ResultObj;
 }

@@ -294,7 +294,15 @@
       "mcp__unrealMCP__create_niagara_system",
       "mcp__unrealMCP__spawn_niagara_system",
       "WebFetch(domain:abovenoisestudios.com)",
-      "mcp__unrealMCP__set_niagara_parameter"
+      "mcp__unrealMCP__set_niagara_parameter",
+      "mcp__unrealMCP__setup_blendspace_locomotion",
+      "WebFetch(domain:kidswithsticks.com)",
+      "WebFetch(domain:www.cyanhall.com)",
+      "WebFetch(domain:foro3d.com)",
+      "WebFetch(domain:timengelke.medium.com)",
+      "mcp__unrealMCP__create_atmospheric_fx",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture checkout -- \"unreal/blood-and-dust/bood_and_dust/Content/FX/NS_FloatingDust.uasset\")",
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture status -- \"unreal/blood-and-dust/bood_and_dust/Content/FX/NS_FloatingDust.uasset\")"
     ]
   },
   "enableAllProjectMcpServers": true,
