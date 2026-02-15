@@ -45,9 +45,9 @@ Before running this skill, verify these exist:
 - **PlayAnimationOneShot** has `bForceInterrupt` param:
   - `false` (default): for attacks — prevents rapid restart, skips if montage playing
   - `true`: for hit-react, scream, death transitions — instantly stops current montage first
-- **Death** uses `MeshComp->PlayAnimation(Anim, false)` (SingleNode, freezes on last frame) — the ONLY valid SingleNode use
+- **Death** uses montage via `PlaySlotAnimationAsDynamicMontage(DefaultSlot, BlendOut=0.0)` + `bPauseAnims=true` — NEVER use PlayAnimation/SingleNode (destroys AnimBP)
 - **Montage_Stop(0.0f)** must be called BEFORE PlayAnimation for death (prevents blend overlap)
-- Enemy personalities (Normal/Berserker/Stalker/Brute/Crawler) affect stats + attack anim selection, NOT locomotion anims (AnimBP has fixed Idle/Walk state machine)
+- Enemy personalities (Normal/Berserker/Stalker/Brute/Crawler) affect stats + attack anim selection, NOT locomotion anims (UEnemyAnimInstance + BlendSpace1D handles locomotion smoothly)
 
 ---
 

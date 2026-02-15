@@ -1,4 +1,5 @@
 #include "GameplayHelperLibrary.h"
+#include "EnemyAnimInstance.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
@@ -1128,6 +1129,15 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			{
 				// No death animation available — freeze current pose and skip to break-apart
 				MeshComp->bPauseAnims = true;
+			}
+
+			// Signal AnimInstance to freeze Speed updates (BlendSpace stays at last pose)
+			if (MeshComp)
+			{
+				if (UEnemyAnimInstance* EnemyAnim = Cast<UEnemyAnimInstance>(MeshComp->GetAnimInstance()))
+				{
+					EnemyAnim->bIsDead = true;
+				}
 			}
 
 			// Play per-type enemy death sound (reuse GettingHit as death cry)

@@ -32,17 +32,22 @@ Complete pipeline for adding enemy AI behavior via a single C++ tick function. E
 5. **ALWAYS auto-fit capsule BEFORE wiring AI** — enemies float if capsule doesn't match mesh.
 6. **After signature change, DELETE old UpdateEnemyAI nodes and recreate fresh** — old pins will be orphaned.
 7. **`set_node_property action=set_pin_default` for anim pins**: `default_value="/Game/Path/Anim.Anim"` (with `.Anim` suffix)
-8. **NEVER use SingleNode except for death freeze-frame** — `MeshComp->PlayAnimation(DeathAnim, false)` is the ONLY valid use.
-9. **`setup_locomotion_state_machine` creates AnimBP** — no need for manual state machine wiring.
+8. **NEVER use SingleNode/PlayAnimation for ANY purpose** — it destroys the AnimBP. Death uses montage + bPauseAnims.
+9. **BlendSpace1D replaces state machines** — `UEnemyAnimInstance` provides smoothed Speed. NEVER use state machines for locomotion (they restart anims on state re-entry).
 
 ## Animation Architecture Rules (CRITICAL)
 
-### Core Pattern: AnimBP + Slot + Montages
+### Core Pattern: UEnemyAnimInstance + BlendSpace1D + Slot + Montages
 
-- **AnimBP** drives locomotion (Idle ↔ Walk state machine based on velocity)
-- **Slot(DefaultSlot)** in the AnimBP allows montages to overlay on top of locomotion
-- **Montages** for one-shot actions: attacks, hit reactions, screams
-- **Death** is the ONLY exception — uses `MeshComp->PlayAnimation(Anim, false)` to freeze on last frame
+- **UEnemyAnimInstance** (C++ class in GameplayHelpers) provides smoothed `Speed` variable via `FInterpTo`
+- **BlendSpace1D** drives locomotion — Speed 0=Idle, ~300=Walk. NO state machine, NO animation resets
+- **Slot(DefaultSlot)** allows montage overlays for one-shot actions (attacks, hit-react, scream)
+- **Death** uses montage + `bIsDead=true` on AnimInstance + `bPauseAnims=true` to freeze final pose, then break-apart debris
+
+The AnimGraph for each enemy:
+```
+[BlendSpace1D (Speed param)] → [Slot(DefaultSlot)] → Output
+```
 
 ### PlayAnimationOneShot: bForceInterrupt Parameter
 
@@ -185,7 +190,7 @@ Attack animation selection varies by personality:
    (IDLE)
 
 HIT-REACT: Stunned for animation duration, face player, return to pre-hit state
-DEAD: Play death anim (SingleNode freeze), destroy after anim finishes
+DEAD: Play death montage → bPauseAnims freeze → rock debris break-apart → cleanup
 ```
 
 ### Hit Reaction Trigger
@@ -200,8 +205,11 @@ When enemy takes damage via `ReceiveAnyDamage` event:
 
 When `Health <= 0`:
 - Call `Montage_Stop(0.0f)` to stop all montages
-- Call `MeshComp->PlayAnimation(DeathAnim, false)` — SingleNode mode, freezes on last frame
-- Destroy actor after animation finishes
+- Set `bIsDead=true` on UEnemyAnimInstance (freezes BlendSpace Speed)
+- Play death animation via `PlaySlotAnimationAsDynamicMontage(DefaultSlot, BlendOut=0.0)`
+- Set `bPauseAnims=true` after death anim finishes (freezes final pose)
+- Break-apart: spawn 5 physics rock debris chunks, cleanup after 3s
+- NEVER use `MeshComp->PlayAnimation()` — it destroys the AnimBP
 
 ---
 
@@ -269,65 +277,39 @@ The `auto_fit_capsule` tool uses `GetImportedBounds()` internally. If you ever n
 
 ---
 
-## Phase 1: AnimBP Setup (uses setup_locomotion_state_machine)
+## Phase 1: BlendSpace1D + AnimBP Setup (replaces old state machine approach)
 
-For each enemy, create an AnimBP with 3-state locomotion (Idle/Walk/Run) + Slot(DefaultSlot) for montages.
+For each enemy type, create a BlendSpace1D asset and AnimBP using UEnemyAnimInstance as the parent class.
 
-**The tool is IDEMPOTENT** — it cleans old AnimGraph + EventGraph nodes before creating new ones. Safe to re-run after editor restart.
+**IMPORTANT**: The old `setup_locomotion_state_machine` approach uses state machines which restart animations on state entry. The new approach uses BlendSpace1D for continuous interpolation — NO animation resets.
 
-### KingBot
+### Step 1: Create BlendSpace1D Assets (MCP)
+
+For each enemy type, create a BlendSpace1D with the idle and walk animations:
+
+**KingBot**: Idle at Speed=0, Walk at Speed=300
+**Bell**: Idle at Speed=0, Walk at Speed=300
+**Giganto**: Idle at Speed=0, Walk at Speed=300
+
+### Step 2: Create AnimBPs with UEnemyAnimInstance Parent
+
+Delete old AnimBPs and create new ones:
 ```
-setup_locomotion_state_machine(
-    anim_blueprint_path="/Game/Characters/Enemies/KingBot/ABP_BG_KingBot",
-    idle_animation="/Game/Characters/Enemies/KingBot/Animations/KingBot_Idle",
-    walk_animation="/Game/Characters/Enemies/KingBot/Animations/KingBot_Walking_v2",
-    run_animation="/Game/Characters/Enemies/KingBot/Animations/KingBot_Run",
-    walk_speed_threshold=5.0,
-    run_speed_threshold=300.0,
-    crossfade_duration=0.2
-)
-```
-
-### Bell
-```
-setup_locomotion_state_machine(
-    anim_blueprint_path="/Game/Characters/Enemies/Bell/ABP_BG_Bell",
-    idle_animation="/Game/Characters/Enemies/Bell/Animations/Bell_Idle",
-    walk_animation="/Game/Characters/Enemies/Bell/Animations/Bell_Walking",
-    run_animation="/Game/Characters/Enemies/Bell/Animations/Bell_Running",
-    walk_speed_threshold=5.0,
-    run_speed_threshold=300.0,
-    crossfade_duration=0.2
-)
+For each enemy type:
+    delete_asset(asset_path="/Game/Characters/Enemies/{Type}/ABP_BG_{Type}", force_delete=true)
+    create_anim_blueprint(
+        blueprint_name="ABP_BG_{Type}",
+        skeleton_path="/Game/Characters/Enemies/{Type}/SK_{Type}_Skeleton",
+        blueprint_path="/Game/Characters/Enemies/{Type}/",
+        parent_class="/Script/GameplayHelpers.UEnemyAnimInstance"
+    )
 ```
 
-**CRITICAL: Bell ABP MUST target SK_Bell_Skeleton (NOT SK_Bell_New_Skeleton). If ABP needs recreation:**
-```
-delete_asset(asset_path="/Game/Characters/Enemies/Bell/ABP_BG_Bell", force_delete=true)
-create_anim_blueprint(
-    blueprint_name="ABP_BG_Bell",
-    skeleton_path="/Game/Characters/Enemies/Bell/SK_Bell_Skeleton",
-    blueprint_path="/Game/Characters/Enemies/Bell/"
-)
-```
+### Step 3: Set Up AnimGraph
 
-### Giganto
-```
-setup_locomotion_state_machine(
-    anim_blueprint_path="/Game/Characters/Enemies/Giganto/ABP_BG_Giganto",
-    idle_animation="/Game/Characters/Enemies/Giganto/Anim_Idle",
-    walk_animation="/Game/Characters/Enemies/Giganto/Anim_Walking",
-    run_animation="/Game/Characters/Enemies/Giganto/Anim_Running",
-    walk_speed_threshold=5.0,
-    run_speed_threshold=300.0,
-    crossfade_duration=0.2
-)
-```
-
-This creates per AnimBP:
-- **EventGraph**: TryGetPawnOwner → GetVelocity → VSize → SetSpeed (float variable)
-- **AnimGraph**: State machine (Idle ↔ Walk ↔ Run based on Speed thresholds) → Slot(DefaultSlot) → Output
-- Automatically compiles
+AnimGraph: BlendSpace1D → Slot(DefaultSlot) → Output Pose
+- BlendSpace1D node uses `Speed` property from UEnemyAnimInstance
+- Slot node uses `DefaultSlot` for montage overlays
 
 ### Assign AnimBP to Enemy BP
 
@@ -627,7 +609,7 @@ LogTemp: Enemy BP_KingBot_C_0 died, playing death animation
 - Ensure DeathAnim pin is set in UpdateEnemyAI node
 - Verify enemy has Health variable (created by `/unreal-combat` skill)
 - Check Output Log for "Enemy died, playing death animation"
-- Death uses SingleNode mode (NOT montage) — freezes on last frame
+- Death uses montage + bPauseAnims (NOT SingleNode mode)
 
 ### "Enemy animation freezes mid-attack"
 - Old UpdateEnemyAI signature used OverrideAnimationData (breaks AnimBP) — DELETE old node, recreate with new signature
