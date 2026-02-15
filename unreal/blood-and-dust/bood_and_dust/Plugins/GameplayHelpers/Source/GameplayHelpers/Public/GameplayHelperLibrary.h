@@ -6,6 +6,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GameplayHelperLibrary.generated.h"
 
+class AActor;
 class ACharacter;
 class UAnimSequence;
 class UInputMappingContext;
@@ -32,9 +33,10 @@ public:
 	 * Play an AnimSequence as a one-shot dynamic montage on the character.
 	 * Blends in/out smoothly and returns to AnimBP state machine when done.
 	 * Uses the DefaultSlot so multiple calls interrupt each other (no stacking).
+	 * bForceInterrupt: if true, instantly stops any playing montage first (use for hit-react/death).
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|Animation", meta=(DefaultToSelf="Character"))
-	static void PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate = 1.0f, float BlendIn = 0.25f, float BlendOut = 0.25f, bool bStopMovement = false);
+	static void PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate = 1.0f, float BlendIn = 0.25f, float BlendOut = 0.25f, bool bStopMovement = false, bool bForceInterrupt = false);
 
 	/**
 	 * Add an Input Mapping Context to the character's player controller.
@@ -66,16 +68,15 @@ public:
 		float AttackDamage = 10.0f,
 		float AttackRadius = 150.0f,
 		UAnimSequence* AttackAnim = nullptr,
-		UAnimSequence* IdleAnim = nullptr,
-		UAnimSequence* WalkAnim = nullptr,
 		UAnimSequence* DeathAnim = nullptr,
 		UAnimSequence* HitReactAnim = nullptr,
 		UAnimSequence* AttackAnim2 = nullptr,
 		UAnimSequence* AttackAnim3 = nullptr,
-		UAnimSequence* RunAnim = nullptr,
-		UAnimSequence* CrawlAnim = nullptr,
 		UAnimSequence* ScreamAnim = nullptr,
-		UAnimSequence* DeathAnim2 = nullptr
+		UAnimSequence* DeathAnim2 = nullptr,
+		bool bIgnorePlayer = false,
+		float PatrolRadius = 0.0f,
+		AActor* CombatPartner = nullptr
 	);
 
 	/**

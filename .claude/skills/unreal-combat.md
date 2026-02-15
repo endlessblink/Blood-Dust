@@ -39,6 +39,16 @@ Before running this skill, verify these exist:
 9. **DynamicCast needs `_C` suffix** for Blueprint classes: `/Game/Path/BP_Name.BP_Name_C`
 10. **PlayAnimationOneShot blocks re-entry** — silently ignores new calls while montage is playing.
 
+## Animation Architecture Rules (CRITICAL)
+- **AnimBP + Slot(DefaultSlot) + montages** is the ONLY correct animation pattern for enemies
+- **NEVER use OverrideAnimationData or SingleNode mode for runtime AI** — resets CurrentTime to 0, destroys AnimBP, no crossfade
+- **PlayAnimationOneShot** has `bForceInterrupt` param:
+  - `false` (default): for attacks — prevents rapid restart, skips if montage playing
+  - `true`: for hit-react, scream, death transitions — instantly stops current montage first
+- **Death** uses `MeshComp->PlayAnimation(Anim, false)` (SingleNode, freezes on last frame) — the ONLY valid SingleNode use
+- **Montage_Stop(0.0f)** must be called BEFORE PlayAnimation for death (prevents blend overlap)
+- Enemy personalities (Normal/Berserker/Stalker/Brute/Crawler) affect stats + attack anim selection, NOT locomotion anims (AnimBP has fixed Idle/Walk state machine)
+
 ---
 
 ## SCOPE TIERS

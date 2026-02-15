@@ -2491,6 +2491,52 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AnimGraph Root node not found"));
 	}
 
+	// === Part 2.5: Clean up existing AnimGraph nodes (except Root) ===
+	// This allows setup_locomotion_state_machine to be called idempotently
+	{
+		TArray<UEdGraphNode*> NodesToRemove;
+		for (UEdGraphNode* Node : AnimGraph->Nodes)
+		{
+			if (Node != RootNode)
+			{
+				NodesToRemove.Add(Node);
+			}
+		}
+		for (UEdGraphNode* Node : NodesToRemove)
+		{
+			Node->BreakAllNodeLinks();
+			AnimGraph->RemoveNode(Node);
+		}
+		// Also break any stale connections on Root input
+		for (UEdGraphPin* Pin : RootNode->Pins)
+		{
+			Pin->BreakAllPinLinks();
+		}
+	}
+
+	// Clean up existing EventGraph nodes (except the UpdateAnimation event which we reuse)
+	if (AnimBP->UbergraphPages.Num() > 0)
+	{
+		UEdGraph* EG = AnimBP->UbergraphPages[0];
+		TArray<UEdGraphNode*> EGNodesToRemove;
+		for (UEdGraphNode* Node : EG->Nodes)
+		{
+			UK2Node_Event* EvNode = Cast<UK2Node_Event>(Node);
+			if (EvNode && EvNode->EventReference.GetMemberName() == FName("BlueprintUpdateAnimation"))
+			{
+				// Keep the event node but break its connections so we rewire fresh
+				EvNode->BreakAllNodeLinks();
+				continue;
+			}
+			EGNodesToRemove.Add(Node);
+		}
+		for (UEdGraphNode* Node : EGNodesToRemove)
+		{
+			Node->BreakAllNodeLinks();
+			EG->RemoveNode(Node);
+		}
+	}
+
 	// === Part 3: Create State Machine ===
 	UAnimGraphNode_StateMachine* SMNode = NewObject<UAnimGraphNode_StateMachine>(AnimGraph);
 	SMNode->NodePosX = RootNode->NodePosX - 400;
@@ -3279,33 +3325,57 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 		USkeletalMesh* SkelMesh = MeshComp->GetSkeletalMeshAsset();
 		if (SkelMesh)
 		{
-			FBoxSphereBounds MeshBounds = SkelMesh->GetBounds();
-			// BoxExtent is half-extents
-			float MeshHeight = MeshBounds.BoxExtent.Z * 2.0f; // Full height
+			// Use GetImportedBounds() for accurate mesh geometry bounds.
+			// GetBounds() returns worst-case skeleton bounds (all bones extended)
+			// which are drastically inflated and cause wrong capsule sizing.
+			FBoxSphereBounds MeshBounds = SkelMesh->GetImportedBounds();
+
+			// Fallback: if imported bounds are zero (shouldn't happen), try GetBounds
+			if (MeshBounds.BoxExtent.Z < 1.0f)
+			{
+				MeshBounds = SkelMesh->GetBounds();
+				ChangesApplied.Add(TEXT("auto_fit: ImportedBounds was zero, fell back to GetBounds"));
+			}
+
+			// Full mesh dimensions
+			float MeshHeight = MeshBounds.BoxExtent.Z * 2.0f;
 			float MeshWidth = FMath::Max(MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y) * 2.0f;
 
-			// Standard UE sizing: capsule encloses the mesh
-			float FitHalfHeight = MeshHeight / 2.0f;
-			float FitRadius = FMath::Min(MeshWidth / 2.0f, FitHalfHeight); // Radius can't exceed half-height
+			// The mesh's lowest and highest points in local space
+			float MeshMinZ = MeshBounds.Origin.Z - MeshBounds.BoxExtent.Z;
+			float MeshMaxZ = MeshBounds.Origin.Z + MeshBounds.BoxExtent.Z;
 
-			// Apply with a small margin (5%)
-			FitHalfHeight *= 1.05f;
-			FitRadius *= 1.05f;
+			// Capsule half-height = half the mesh height with 5% margin
+			float FitHalfHeight = (MeshHeight / 2.0f) * 1.05f;
+
+			// Radius from the widest axis, clamped to not exceed half-height
+			float FitRadius = FMath::Min((MeshWidth / 2.0f) * 1.05f, FitHalfHeight);
+			FitRadius = FMath::Max(FitRadius, 20.0f); // minimum sane radius
 
 			UCapsuleComponent* Capsule = CDO->GetCapsuleComponent();
 			if (Capsule)
 			{
 				Capsule->SetCapsuleHalfHeight(FitHalfHeight);
 				Capsule->SetCapsuleRadius(FitRadius);
-				ChangesApplied.Add(FString::Printf(TEXT("Auto-fit capsule: HalfHeight=%.1f, Radius=%.1f (from mesh bounds: H=%.1f, W=%.1f)"),
-					FitHalfHeight, FitRadius, MeshHeight, MeshWidth));
 			}
 
-			// Also auto-set mesh Z offset = -HalfHeight (standard UE practice)
+			// Position mesh so its BOTTOM aligns with capsule BOTTOM.
+			// Capsule bottom (relative to capsule center) = -HalfHeight
+			// Mesh bottom (relative to mesh origin) = MeshMinZ
+			// We need: mesh_offset_z + MeshMinZ = -FitHalfHeight
+			// Therefore: mesh_offset_z = -FitHalfHeight - MeshMinZ
+			float AutoFitMeshZ = -FitHalfHeight - MeshMinZ;
+
 			FVector Loc = MeshComp->GetRelativeLocation();
-			Loc.Z = -FitHalfHeight;
+			Loc.Z = AutoFitMeshZ;
 			MeshComp->SetRelativeLocation(Loc);
-			ChangesApplied.Add(FString::Printf(TEXT("Mesh Z offset auto-set to %.1f"), -FitHalfHeight));
+
+			ChangesApplied.Add(FString::Printf(
+				TEXT("Auto-fit capsule: HH=%.1f, R=%.1f, MeshZ=%.1f (ImportedBounds: Origin=(%.1f,%.1f,%.1f), Extent=(%.1f,%.1f,%.1f), MeshMinZ=%.1f, MeshMaxZ=%.1f, Height=%.1f, Width=%.1f)"),
+				FitHalfHeight, FitRadius, AutoFitMeshZ,
+				MeshBounds.Origin.X, MeshBounds.Origin.Y, MeshBounds.Origin.Z,
+				MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y, MeshBounds.BoxExtent.Z,
+				MeshMinZ, MeshMaxZ, MeshHeight, MeshWidth));
 		}
 		else
 		{

@@ -1,6 +1,6 @@
 # Skill: Game Flow — "The Escape" Objective Loop
 
-Set up the core game flow for Blood & Dust: a golden glowing portal beacon at the escape point, a dim warm start zone, breadcrumb path lights, HUD objective text, and a win condition trigger that displays "DEMO COMPLETE" when the player reaches the portal.
+Set up the core game flow for Blood & Dust: a golden glowing portal beacon at the escape point, a dim warm start zone, breadcrumb path lights that explode when collected, and a golden victory screen when the player reaches the portal.
 
 ## Trigger Phrases
 - "game flow"
@@ -9,6 +9,9 @@ Set up the core game flow for Blood & Dust: a golden glowing portal beacon at th
 - "portal beacon"
 - "win condition"
 - "reach the light"
+- "checkpoint feedback"
+- "victory screen"
+- "end level"
 
 ## Prerequisites
 
@@ -16,6 +19,7 @@ Before running this skill, verify:
 - UnrealMCP server connected (TCP 127.0.0.1:55557)
 - Landscape exists in level
 - BP_RobotCharacter exists at `/Game/Characters/Robot/BP_RobotCharacter`
+- GameplayHelpers plugin compiled and loaded
 - Player start location near X=0, Y=0
 
 **Run `does_asset_exist` for critical assets before proceeding.**
@@ -27,8 +31,27 @@ Before running this skill, verify:
 3. **Max 3 spawn operations in rapid succession** — then pause with a lightweight MCP call.
 4. **Prompt user to Ctrl+S** after each major phase. Unsaved packages accumulate in RAM.
 5. **Take screenshot after visual phases** to verify placement.
-6. **Actor names must be unique** — all names use `Portal_`, `Start_`, `Breadcrumb_`, `WBP_` prefixes.
+6. **Actor names must be unique** — all names use `Portal_`, `Start_`, `Breadcrumb_` prefixes.
 7. **connect_nodes APPENDS connections** — never call twice on the same pin. If wrong, DELETE the node and recreate.
+
+---
+
+## Architecture Overview
+
+```
+ManageGameFlow(Player)     <- called from EventTick on BP_RobotCharacter
+|-- Init: TActorIterator<APointLight> discovers Breadcrumb_Light* and Portal_Light*
+|-- Tick: Distance check -> collect checkpoints (intensity ramp -> burst -> destroy)
+|-- Tick: Golden flash animation (0.5s ease-out)
+|-- Tick: "SOUL RECOVERED (2/3)" text (1.5s fade-in/hold/fade-out)
++-- Tick: Victory at portal -> overlay + disable input + restart after 5s
+```
+
+**Why C++ over Blueprint Trigger + UMG Widgets:**
+- Slate overlays created in C++ avoid MCP's widget wiring fragility
+- Light intensity animation needs per-frame tick (FMath::InterpEaseOut)
+- Single function handles collection, feedback, and victory — no Blueprint graph complexity
+- Same proven pattern as ManagePlayerHUD and UpdateEnemyAI
 
 ---
 
@@ -36,14 +59,18 @@ Before running this skill, verify:
 
 ```
 START: Dark ruins, small warm light. "Where am I?"
-       ↓
-LOOK UP: Distant golden glow on horizon. "I need to reach that."
-       ↓
-MOVE: Enemies in the way, cover to use. "Fight or run?"
-       ↓
-ARRIVE: Blinding golden light. Relief. "I made it."
-       ↓
-END: "DEMO COMPLETE"
+       |
+DISCOVER: First breadcrumb light. Walk toward it.
+       |
+COLLECT: Light ramps bright -> BURSTS -> golden flash! "SOUL RECOVERED (1/3)"
+       |
+CHASE: More lights ahead. Enemies in the way. "Fight or run?"
+       |
+ARRIVE: Portal's blinding golden glow. Walk into it.
+       |
+VICTORY: "THE ESCAPE -- LEVEL COMPLETE -- 3/3 Souls Recovered"
+       |
+RESTART: Level restarts after 5 seconds.
 ```
 
 ---
@@ -55,7 +82,7 @@ END: "DEMO COMPLETE"
 ```
 get_actors_in_level()
 ```
-Check for any existing portal lights, breadcrumb lights, or trigger volumes. If `Portal_Light_01` already exists, skip Phase 1. If `Start_Light_01` exists, skip Phase 3.
+Check for any existing portal lights, breadcrumb lights. If `Portal_Light_01` already exists, skip Phase 1. If `Breadcrumb_Light_01` exists, skip Phase 3.
 
 ### Step 2: Get Ground Heights
 
@@ -183,7 +210,7 @@ spawn_niagara_system(
 )
 ```
 
-If no Niagara asset exists, **skip** — the twin lights are the primary visual beacon. Niagara is enhancement only.
+If no Niagara asset exists, **skip** — the twin lights are the primary visual beacon.
 
 ### Checkpoint
 > "Phase 1 complete. Golden portal beacon placed at X=7500 with ground light (50K intensity) and high beacon (100K intensity). Press **Ctrl+S** to save. Ready for Phase 2?"
@@ -242,7 +269,7 @@ Small radius — a tight pool of warmth in the darkness.
 ## Phase 3: Path Breadcrumbs (~5 min, ~14 MCP calls)
 
 ### Goal
-3 smaller golden lights along the X axis from start to portal. They create a "trail of light" guiding the player without being obvious.
+3 smaller golden lights along the X axis from start to portal. They create a "trail of light" guiding the player. These lights will be COLLECTED by ManageGameFlow when the player walks near them.
 
 ### Breadcrumb Positions
 
@@ -253,6 +280,8 @@ Small radius — a tight pool of warmth in the darkness.
 | Breadcrumb_Light_03 | 6000 | 100 | 5000 | 800 | Getting close, brighter |
 
 Y offsets are slightly varied — perfectly aligned would look artificial.
+
+**IMPORTANT**: Names MUST contain "Breadcrumb_Light" — ManageGameFlow discovers lights by this name pattern via `TActorIterator<APointLight>`.
 
 ### For Each Breadcrumb Light:
 
@@ -289,370 +318,410 @@ get_actors_in_level()
 
 ---
 
-## Phase 4: Objective HUD Widget (~3 min, ~4 MCP calls)
+## Phase 4: C++ Implementation — ManageGameFlow (~20 min, requires plugin rebuild)
 
 ### Goal
-Create a "REACH THE LIGHT" text that appears on-screen at game start.
+Add `ManageGameFlow()` to GameplayHelperLibrary — a tick-based function that handles checkpoint collection, visual feedback, and victory screen. Same architecture as ManagePlayerHUD and UpdateEnemyAI.
 
-### Step 1: Create Objective Widget
+### Architecture
 
 ```
-create_widget_blueprint(
-    widget_name="WBP_Objective",
-    widget_path="/Game/UI/",
-    elements=[
-        {
-            "type": "TextBlock",
-            "name": "ObjectiveText",
-            "position": [0, 80],
-            "size": [1920, 100],
-            "properties": {
-                "Text": "REACH THE LIGHT",
-                "ColorAndOpacity": [0.95, 0.75, 0.3, 1.0],
-                "FontSize": 36
-            }
-        }
+ManageGameFlow(ACharacter* Player) -- static, called per frame
+|
+|-- STATE: FGameFlowState (static)
+|   |-- TArray<FCheckpointData> Checkpoints -- discovered at init
+|   |-- PortalLightActor/PortalLocation -- win trigger
+|   |-- CheckpointsCollected / TotalCheckpoints -- counter
+|   |-- GoldenFlashStartTime -- drives flash animation
+|   |-- CheckpointTextStartTime -- drives text animation
+|   +-- bVictory -- terminal state
+|
+|-- INIT (first call per level):
+|   +-- TActorIterator<APointLight> discovers:
+|       |-- "Breadcrumb_Light*" -> Checkpoints array (stores location + intensity)
+|       +-- "Portal_Light*" -> PortalLightActor
+|
+|-- TICK -- Checkpoint Collection:
+|   |-- For each Active: distance < 400 -> mark Collecting
+|   |-- For each Collecting:
+|   |   |-- 0-0.3s: InterpEaseOut intensity ramp (original -> original x 10)
+|   |   |-- At 0.3s: Niagara burst (if loaded) -> Destroy light -> mark Collected
+|   |   +-- Trigger golden flash + checkpoint text
+|   +-- Niagara: StaticLoadObject "/Game/FX/NS_CheckpointBurst" (graceful null)
+|
+|-- TICK -- Golden Flash (0.5s):
+|   |-- 0-0.1s: alpha 0 -> 0.35 (sharp in)
+|   +-- 0.1-0.5s: alpha 0.35 -> 0 (slow fade)
+|
+|-- TICK -- Checkpoint Text (1.5s):
+|   |-- 0-0.2s: fade in (alpha 0 -> 1)
+|   |-- 0.2-0.8s: hold at alpha 1
+|   +-- 0.8-1.5s: fade out (alpha 1 -> 0)
+|
++-- TICK -- Victory Condition:
+    |-- Distance to Portal < 500 AND !bDead -> bVictory = true
+    |-- Show VictoryOverlay (Collapsed -> Visible)
+    |-- Update "X/Y Souls Recovered" text
+    |-- DisableInput on PlayerController
+    +-- Timer 5s -> reset PlayerHUD + GameFlow + EnemyAIStates -> OpenLevel
+```
+
+### Research-Backed Design Decisions
+
+**Light intensity curves (from VFX timing research):**
+- Use `FMath::InterpEaseOut(Start, Peak, Alpha, 2.0f)` — NOT linear Lerp
+- Rapid initial brightening that slows as it peaks feels professional
+- Duration 0.3s is standard for collectible feedback (0.3-0.5s range)
+- Peak intensity: 10x original (3000 -> 30000) — dramatic but brief
+
+**Screen flash timing (from game UX research):**
+- 0.5s total: 0.1s sharp ramp in, 0.4s slow ease-out fade
+- Peak alpha 0.35 (not 0.8+ — that's jarring for a positive event)
+- Golden color (0.55, 0.35, 0.10) — matches Rembrandt palette, warm reward
+- Ease-out curve for fade: fast -> slow = satisfying
+
+**Text notification timing (from UI/UX research):**
+- 1.5s total: 0.2s fade-in, 0.6s hold, 0.7s fade-out
+- Spaced letter text "S O U L   R E C O V E R E D" for gravitas
+- Counter format "( 2 / 3 )" so player knows progress
+- Same golden color as flash for visual cohesion
+
+**Victory screen (from game design research):**
+- 5s display before restart (3s too short for reading, 8s feels stuck)
+- Disable input IMMEDIATELY on trigger (PlayerController::DisableInput)
+- Show checkpoint counter ("X / Y Souls Recovered") for replayability motivation
+- Use OpenLevel with current level name for clean restart
+- Reset ALL static state: PlayerHUD + GameFlow + EnemyAIStates + BlockingActors
+
+**Slate vs UMG (from Epic's UMG Best Practices):**
+- Slate is correct here because ManagePlayerHUD already uses Slate
+- Extending the existing SOverlay Root is cleaner than mixing Slate + UMG
+- No editor-side UMG assets needed — everything built in C++
+- Performance: Slate is faster than UMG for simple overlays
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `GameplayHelperLibrary.h` | Add `ManageGameFlow` UFUNCTION declaration |
+| `GameplayHelperLibrary.cpp` | Add includes, state structs, extend Slate HUD, implement ManageGameFlow |
+
+**No Build.cs changes** — `Engine`, `Slate`, `Niagara`, `EngineUtils` already available.
+
+### Step 1: Header Declaration
+
+Add to `GameplayHelperLibrary.h` before closing `};`:
+
+```cpp
+/**
+ * Manage game flow: checkpoint light collection + victory screen.
+ * Call from EventTick on the player character, after ManagePlayerHUD.
+ * Discovers PointLights named "Breadcrumb_Light*" and "Portal_Light*" on first call.
+ */
+UFUNCTION(BlueprintCallable, Category="Gameplay|GameFlow", meta=(DefaultToSelf="Player"))
+static void ManageGameFlow(ACharacter* Player);
+```
+
+### Step 2: New Includes
+
+Add after existing `#include "NiagaraSystem.h"`:
+
+```cpp
+#include "Engine/PointLight.h"
+#include "Components/PointLightComponent.h"
+#include "EngineUtils.h"
+```
+
+### Step 3: State Structs
+
+Add after `static FPlayerHUDState PlayerHUD;`:
+
+```cpp
+// --- Game Flow (Checkpoint + Victory) ---
+
+enum class ECheckpointState : uint8
+{
+    Active,      // Waiting for player
+    Collecting,  // Intensity ramp animation (0.3s)
+    Collected    // Destroyed
+};
+
+struct FCheckpointData
+{
+    TWeakObjectPtr<AActor> LightActor;
+    FVector Location;
+    ECheckpointState State = ECheckpointState::Active;
+    double CollectStartTime = 0.0;
+    float OriginalIntensity = 3000.0f;
+};
+
+struct FGameFlowState
+{
+    TWeakObjectPtr<UWorld> OwnerWorld;
+    bool bInitialized = false;
+    bool bVictory = false;
+    TArray<FCheckpointData> Checkpoints;
+    int32 CheckpointsCollected = 0;
+    int32 TotalCheckpoints = 0;
+    TWeakObjectPtr<AActor> PortalLightActor;
+    FVector PortalLocation = FVector::ZeroVector;
+    double GoldenFlashStartTime = 0.0;
+    double CheckpointTextStartTime = 0.0;
+    double VictoryStartTime = 0.0;
+    FString CheckpointDisplayText;
+};
+static FGameFlowState GameFlow;
+```
+
+### Step 4: Extend FPlayerHUDState
+
+Add after `bool bDead = false;` inside the existing struct:
+
+```cpp
+// Game flow UI (built alongside HUD in ManagePlayerHUD)
+TSharedPtr<SBorder> GoldenFlashBorder;
+TSharedPtr<STextBlock> CheckpointText;
+TSharedPtr<SWidget> VictoryOverlay;
+TSharedPtr<STextBlock> VictoryCheckpointText;
+```
+
+### Step 5: Extend Slate Widget Tree
+
+In the `!PlayerHUD.bCreated` block inside ManagePlayerHUD, after the DamageFlashBorder slot, add 3 new SOverlay slots:
+
+**Slot: Golden Flash** — fullscreen golden overlay, starts transparent
+```cpp
++ SOverlay::Slot()
+.HAlign(HAlign_Fill)
+.VAlign(VAlign_Fill)
+[
+    SAssignNew(PlayerHUD.GoldenFlashBorder, SBorder)
+    .BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+    .BorderBackgroundColor(FLinearColor(0.55f, 0.35f, 0.10f, 0.0f))
+    .Padding(0)
+    .Visibility(EVisibility::HitTestInvisible)
+]
+```
+
+**Slot: Checkpoint Text** — centered, starts transparent
+```cpp
++ SOverlay::Slot()
+.HAlign(HAlign_Center)
+.VAlign(VAlign_Center)
+[
+    SAssignNew(PlayerHUD.CheckpointText, STextBlock)
+    .Text(FText::FromString(TEXT("")))
+    .Font(FCoreStyle::GetDefaultFontStyle("Bold", 28))
+    .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.35f, 0.10f, 0.0f)))
+    .ShadowOffset(FVector2D(2.0f, 2.0f))
+    .ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.5f))
+    .Visibility(EVisibility::HitTestInvisible)
+]
+```
+
+**Slot: Victory Overlay** — Dutch Golden Age ornate screen, starts collapsed
+```cpp
++ SOverlay::Slot()
+.HAlign(HAlign_Fill)
+.VAlign(VAlign_Fill)
+[
+    SAssignNew(PlayerHUD.VictoryOverlay, SOverlay)
+    .Visibility(EVisibility::Collapsed)
+
+    // Deep warm umber vignette (NOT crimson -- golden/warm only)
+    + SOverlay::Slot()
+    [
+        SNew(SBorder)
+        .BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+        .BorderBackgroundColor(FLinearColor(0.08f, 0.05f, 0.02f, 0.90f))
+        .Padding(0)
     ]
-)
-```
 
-Position [0, 80] places the text near the top of the screen. Width 1920 spans full HD width.
+    // Centered victory content
+    + SOverlay::Slot()
+    .HAlign(HAlign_Center)
+    .VAlign(VAlign_Center)
+    [
+        SNew(SVerticalBox)
 
-**NOTE**: Widget has NO anchoring via MCP — it will look correct at 1920x1080 but may misalign at other resolutions. For production, anchor it manually in UMG Editor after creation.
+        // Upper decorative double rule
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+          .Padding(0, 0, 0, 16)
+        [ SNew(STextBlock)
+          .Text(FText::FromString(TEXT("========================")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.40f, 0.28f, 0.10f, 0.80f)))
+        ]
 
-### Step 2: Verify Widget Created
-```
-does_asset_exist(asset_path="/Game/UI/WBP_Objective")
-```
+        // "THE ESCAPE" -- Bold 64pt
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+        [ SNew(STextBlock)
+          .Text(FText::FromString(TEXT("THE ESCAPE")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Bold", 64))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.35f, 0.10f, 1.0f)))
+          .ShadowOffset(FVector2D(3, 3))
+          .ShadowColorAndOpacity(FLinearColor(0, 0, 0, 0.6f))
+        ]
 
-### Limitations & Manual Follow-Up
-- **Cannot add fade-in animation via MCP** — must add manually in UMG if desired
-- **Cannot center-align text via MCP** — default is left-aligned
-- **Cannot add to viewport automatically** — `add_widget_to_viewport` only works during PIE
-- **For runtime display**: The widget must be added to viewport via Blueprint logic (see Phase 6 for an approach, or add it to BP_RobotCharacter's BeginPlay manually)
+        // Lower decorative double rule
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+          .Padding(0, 16, 0, 24)
+        [ SNew(STextBlock)
+          .Text(FText::FromString(TEXT("========================")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.40f, 0.28f, 0.10f, 0.80f)))
+        ]
 
-### Checkpoint
-> "Phase 4 complete. WBP_Objective widget created with 'REACH THE LIGHT' text. Press **Ctrl+S**. Ready for Phase 5?"
+        // "LEVEL COMPLETE" -- Regular 24pt
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+          .Padding(0, 0, 0, 16)
+        [ SNew(STextBlock)
+          .Text(FText::FromString(TEXT("LEVEL COMPLETE")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Regular", 24))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.40f, 0.22f, 1.0f)))
+        ]
 
----
+        // "X / Y Souls Recovered" -- dynamic text
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+          .Padding(0, 0, 0, 32)
+        [ SAssignNew(PlayerHUD.VictoryCheckpointText, STextBlock)
+          .Text(FText::FromString(TEXT("0 / 0 Souls Recovered")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Regular", 16))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.40f, 0.28f, 0.10f, 0.65f)))
+        ]
 
-## Phase 5: Demo Complete Widget (~3 min, ~4 MCP calls)
-
-### Goal
-Create the "DEMO COMPLETE" end screen widget.
-
-### Step 1: Create Demo Complete Widget
-
-```
-create_widget_blueprint(
-    widget_name="WBP_DemoComplete",
-    widget_path="/Game/UI/",
-    elements=[
-        {
-            "type": "TextBlock",
-            "name": "TitleText",
-            "position": [0, 300],
-            "size": [1920, 120],
-            "properties": {
-                "Text": "THE ESCAPE",
-                "ColorAndOpacity": [0.95, 0.80, 0.35, 1.0],
-                "FontSize": 64
-            }
-        },
-        {
-            "type": "TextBlock",
-            "name": "SubtitleText",
-            "position": [0, 450],
-            "size": [1920, 80],
-            "properties": {
-                "Text": "DEMO COMPLETE",
-                "ColorAndOpacity": [0.8, 0.65, 0.3, 0.85],
-                "FontSize": 42
-            }
-        }
+        // "Restarting..." -- Regular 18pt, dim
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+        [ SNew(STextBlock)
+          .Text(FText::FromString(TEXT("Restarting...")))
+          .Font(FCoreStyle::GetDefaultFontStyle("Regular", 18))
+          .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.40f, 0.22f, 0.60f)))
+        ]
     ]
-)
+]
 ```
 
-Two text blocks: a large title and a smaller subtitle, centered vertically.
+**Palette Rules:**
+- GoldHighlight: `(0.55, 0.35, 0.10)` — titles, flash, checkpoint text
+- GildedEdge: `(0.40, 0.28, 0.10)` — decorative rules, dim text
+- WarmParchment: `(0.55, 0.40, 0.22)` — subtitles
+- **NO crimson/red** — victory screen is golden/warm only (death screen uses crimson)
 
-### Step 2: Verify
+### Step 6: Implement ManageGameFlow
+
+Add after `IsPlayerBlocking()` function at end of file.
+
+**Init block:**
+- Reset if world changed (`OwnerWorld != current World`)
+- `TActorIterator<APointLight>` discovers lights by name pattern
+- Stores location + original intensity for each checkpoint
+- Attempts `StaticLoadObject` for Niagara burst FX (graceful null)
+
+**Checkpoint collection:**
+- Active -> distance < 400 -> Collecting
+- Collecting 0-0.3s: `FMath::InterpEaseOut(original, original*10, alpha, 2.0f)` on PointLightComponent
+  - Research says ease-out feels more professional than linear lerp
+  - 10x multiplier (e.g., 3000 -> 30000) is dramatic but brief
+- At 0.3s: SpawnSystemAtLocation (Niagara burst, bAutoDestroy=true) -> Destroy light -> Collected
+- Increment counter, trigger flash + text
+
+**Golden flash (0.5s):**
+- 0-0.1s: alpha ramp 0 -> 0.35 (sharp in)
+- 0.1-0.5s: alpha fade 0.35 -> 0 (ease-out)
+- Peak alpha 0.35 (research: 0.6-0.8 is for damage, 0.3-0.4 for positive events)
+
+**Checkpoint text (1.5s):**
+- 0-0.2s: fade in (0 -> 1)
+- 0.2-0.8s: hold at 1
+- 0.8-1.5s: fade out (1 -> 0)
+- Text: "S O U L   R E C O V E R E D   ( 2 / 3 )"
+
+**Victory condition:**
+- Distance to Portal < 500 AND !bDead
+- SetVisibility(EVisibility::Visible) on VictoryOverlay
+- Update VictoryCheckpointText with "X / Y Souls Recovered"
+- DisableInput on PlayerController (research: disable on PC, not Pawn)
+- Timer 5s -> reset all static state -> OpenLevel for clean restart
+
+**Reset on level restart:**
+```cpp
+PlayerHUD = FPlayerHUDState();
+GameFlow = FGameFlowState();
+EnemyAIStates.Empty();
+BlockingActors.Empty();
 ```
-does_asset_exist(asset_path="/Game/UI/WBP_DemoComplete")
+All four static states cleared for clean restart.
+
+### Step 7: Rebuild Plugin
+
+```bash
+/path/to/engine/Engine/Build/BatchFiles/Linux/Build.sh bood_and_dustEditor Linux Development -Project="/path/to/bood_and_dust.uproject"
 ```
+
+Must complete with 0 errors. Common issues:
+- Missing `#include "EngineUtils.h"` -> TActorIterator undefined
+- Missing `#include "Components/PointLightComponent.h"` -> GetPointLightComponent undefined
+- Mismatched brackets in Slate tree -> count `[` and `]` carefully
 
 ### Checkpoint
-> "Phase 5 complete. WBP_DemoComplete widget created. Press **Ctrl+S**. Ready for Phase 6?"
+> "Phase 4 complete. ManageGameFlow implemented and plugin rebuilt. Restart the editor to load new code. Press **Ctrl+S** before closing. Ready for Phase 5?"
 
 ---
 
-## Phase 6: Portal Trigger Blueprint (~8 min, ~20 MCP calls)
+## Phase 5: Wire ManageGameFlow into BP_RobotCharacter (~5 min, ~4 MCP calls)
 
 ### Goal
-Create a Blueprint actor with a BoxCollision trigger volume. When the player overlaps it, display WBP_DemoComplete and pause the game.
+Add ManageGameFlow to the EventTick chain in BP_RobotCharacter, after the existing ManagePlayerHUD call.
 
-**WHY A BLUEPRINT**: `spawn_actor` does NOT support TriggerBox. We create a custom Blueprint with a BoxCollision component instead, using ReceiveActorBeginOverlap (Actor-level overlap).
+### Step 1: Read Current Blueprint
 
-### Step 1: Create BP_PortalTrigger
-
-```
-create_blueprint(
-    blueprint_name="BP_PortalTrigger",
-    blueprint_path="/Game/Gameplay/",
-    parent_class="Actor"
-)
-```
-
-### Step 2: Add BoxCollision Component
-
-```
-add_component_to_blueprint(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    component_type="BoxCollision",
-    component_name="TriggerZone"
-)
-```
-
-This adds a UBoxComponent that generates overlap events.
-
-### Step 3: Compile Initial Blueprint
-
-```
-compile_blueprint(blueprint_name="/Game/Gameplay/BP_PortalTrigger")
-```
-Must return 0 errors before adding nodes.
-
-### Step 4: Add ReceiveActorBeginOverlap Event
-
-```
-add_event_node(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    event_name="ReceiveActorBeginOverlap",
-    pos_x=0,
-    pos_y=0
-)
-```
-Capture `overlap_node_id` from response.
-
-### Step 5: Add CreateWidget Node
-
-```
-add_node(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    node_type="CallFunction",
-    function_name="CreateWidget",
-    target_class="/Script/UMG.WidgetBlueprintLibrary",
-    pos_x=300,
-    pos_y=0
-)
-```
-Capture `widget_node_id`.
-
-### Step 6: Wire Overlap → CreateWidget (exec chain)
-
-```
-connect_nodes(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    source_node_id="<overlap_node_id>",
-    source_pin_name="then",
-    target_node_id="<widget_node_id>",
-    target_pin_name="execute"
-)
-```
-
-### Step 7: Set WidgetType Pin Default
-
-The CreateWidget node needs its `WidgetType` pin set to WBP_DemoComplete:
-```
-set_node_property(
-    blueprint_name="/Game/Gameplay/BP_PortalTrigger",
-    node_id="<widget_node_id>",
-    action="set_pin_default",
-    pin_name="WidgetType",
-    default_value="/Game/UI/WBP_DemoComplete.WBP_DemoComplete_C"
-)
-```
-
-**NOTE**: The class path uses `_C` suffix (Blueprint Generated Class).
-
-### Step 8: Add AddToViewport Node
-
-```
-add_node(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    node_type="CallFunction",
-    function_name="AddToViewport",
-    pos_x=600,
-    pos_y=0
-)
-```
-Capture `viewport_node_id`.
-
-### Step 9: Wire CreateWidget → AddToViewport
-
-Exec chain:
-```
-connect_nodes(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    source_node_id="<widget_node_id>",
-    source_pin_name="then",
-    target_node_id="<viewport_node_id>",
-    target_pin_name="execute"
-)
-```
-
-Widget instance connection:
-```
-connect_nodes(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    source_node_id="<widget_node_id>",
-    source_pin_name="ReturnValue",
-    target_node_id="<viewport_node_id>",
-    target_pin_name="self"
-)
-```
-
-### Step 10: Add SetGamePaused Node
-
-```
-add_node(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    node_type="CallFunction",
-    function_name="SetGamePaused",
-    target_class="/Script/Engine.GameplayStatics",
-    pos_x=900,
-    pos_y=0
-)
-```
-Capture `pause_node_id`.
-
-### Step 11: Wire AddToViewport → SetGamePaused
-
-```
-connect_nodes(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    source_node_id="<viewport_node_id>",
-    source_pin_name="then",
-    target_node_id="<pause_node_id>",
-    target_pin_name="execute"
-)
-```
-
-### Step 12: Set bPaused Pin to True
-
-```
-set_node_property(
-    blueprint_name="/Game/Gameplay/BP_PortalTrigger",
-    node_id="<pause_node_id>",
-    action="set_pin_default",
-    pin_name="bPaused",
-    default_value="true"
-)
-```
-
-### Step 13: Final Compile
-
-```
-compile_blueprint(blueprint_name="/Game/Gameplay/BP_PortalTrigger")
-```
-**MUST return**: `compiled: true`, `num_errors: 0`
-
-If errors: run `analyze_blueprint_graph` to inspect node connections. Common issues:
-- Wrong pin names → check with `read_blueprint_content`
-- Missing WidgetType default → set_node_property may need full class path with `_C` suffix
-
-### Step 14: Spawn BP_PortalTrigger in Level
-
-```
-spawn_blueprint_actor_in_level(
-    blueprint_path="/Game/Gameplay/BP_PortalTrigger",
-    actor_name="PortalTrigger_01",
-    location=[7500, 0, PORTAL_Z + 200],
-    rotation=[0, 0, 0],
-    scale=[5, 5, 4]
-)
-```
-Scale [5,5,4] creates a ~500x500x400 unit trigger zone centered at the portal.
-
-### Fallback: If Blueprint Wiring Fails
-
-Blueprint graph wiring via MCP can be fragile. If compile fails or nodes don't connect properly:
-
-1. **Skip the wiring steps** (Steps 4-12)
-2. **Just create the Blueprint with the BoxCollision component** (Steps 1-3)
-3. **Spawn it in the level** (Step 14)
-4. **Tell the user**: "Open BP_PortalTrigger in the Blueprint Editor. Add an ActorBeginOverlap event → CreateWidget (class: WBP_DemoComplete) → AddToViewport → Set Game Paused (true). This takes ~30 seconds manually."
-
-This hybrid approach guarantees the visual elements work even if the programmatic wiring fails.
-
-### Checkpoint
-> "Phase 6 complete. Portal trigger Blueprint created and placed at X=7500. Press **Ctrl+S**. Ready for Phase 7?"
-
----
-
-## Phase 7: HUD Display Setup (~3 min, ~6 MCP calls)
-
-### Goal
-Wire the objective HUD ("REACH THE LIGHT") to display when the game starts. This requires adding widget creation to BP_RobotCharacter's BeginPlay chain.
-
-### Approach A: Add to Character BeginPlay (via MCP)
-
-Read existing BeginPlay chain:
 ```
 read_blueprint_content(blueprint_path="/Game/Characters/Robot/BP_RobotCharacter")
 ```
 
-Find the LAST node in the BeginPlay exec chain. Then:
+Find the LAST node in the EventTick exec chain. Should end with ManagePlayerHUD call. Note its node ID.
+
+### Step 2: Add ManageGameFlow Node
 
 ```
 add_node(
     blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
     node_type="CallFunction",
-    function_name="CreateWidget",
-    target_class="/Script/UMG.WidgetBlueprintLibrary",
-    pos_x=1200,
-    pos_y=0
+    function_name="ManageGameFlow",
+    target_class="/Script/GameplayHelpers.GameplayHelperLibrary",
+    pos_x=LAST_NODE_X + 300,
+    pos_y=LAST_NODE_Y
 )
 ```
-Capture `hud_widget_id`.
+Capture `flow_node_id`.
+
+`meta=(DefaultToSelf="Player")` auto-resolves the Player pin to self in Character BPs.
+
+### Step 3: Wire Exec Connection
 
 ```
-set_node_property(
-    blueprint_name="/Game/Characters/Robot/BP_RobotCharacter",
-    node_id="<hud_widget_id>",
-    action="set_pin_default",
-    pin_name="WidgetType",
-    default_value="/Game/UI/WBP_Objective.WBP_Objective_C"
-)
-```
-
-```
-add_node(
+connect_nodes(
     blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
-    node_type="CallFunction",
-    function_name="AddToViewport",
-    pos_x=1500,
-    pos_y=0
+    source_node_id="<last_tick_node_id>",
+    source_pin_name="then",
+    target_node_id="<flow_node_id>",
+    target_pin_name="execute"
 )
 ```
-Capture `hud_viewport_id`.
 
-Wire exec chain from last BeginPlay node → CreateWidget → AddToViewport, plus ReturnValue → self.
+### Step 4: Compile
 
 ```
 compile_blueprint(blueprint_name="/Game/Characters/Robot/BP_RobotCharacter")
 ```
-
-### Approach B: Manual (Fallback)
-
-Tell user: "In BP_RobotCharacter → BeginPlay, after the IMC setup nodes, add: CreateWidget (class: WBP_Objective) → AddToViewport. This shows 'REACH THE LIGHT' when the game starts."
+Must return 0 errors. If "ManageGameFlow not found" -> editor hasn't loaded the rebuilt plugin yet. Restart editor.
 
 ### Checkpoint
-> "Phase 7 complete. Objective HUD wired to display on game start. Press **Ctrl+S**. Ready for final verification?"
+> "Phase 5 complete. ManageGameFlow wired into EventTick chain. Press **Ctrl+S**. Ready for verification?"
 
 ---
 
-## Phase 8: Verification & Screenshot (~2 min, 2-3 MCP calls)
+## Phase 6: Verification & Screenshot (~3 min, 2-3 MCP calls)
 
 ### Step 1: Screenshot
 ```
@@ -672,14 +741,24 @@ Compare with the "before" screenshot from Phase 0:
 ### Step 3: PIE Test Checklist
 
 Tell user to test in Play-In-Editor (Alt+P):
-- [ ] "REACH THE LIGHT" text appears on screen at start
-- [ ] Golden portal glow visible in the distance
-- [ ] Breadcrumb lights visible along the path
-- [ ] Walking into portal trigger zone shows "DEMO COMPLETE"
-- [ ] Game pauses after "DEMO COMPLETE" appears
+- [ ] Walk toward first breadcrumb light -> light ramps bright -> bursts -> disappears
+- [ ] Golden screen flash appears briefly (0.5s, warm gold color)
+- [ ] "SOUL RECOVERED (1/3)" text fades in, holds, fades out
+- [ ] Repeat for all 3 breadcrumbs
+- [ ] Walk to portal -> "THE ESCAPE / LEVEL COMPLETE" victory screen appears
+- [ ] "3 / 3 Souls Recovered" counter shows correct count
+- [ ] Player input disabled (can't move during victory)
+- [ ] Level restarts after 5 seconds
+- [ ] After restart: all lights are back, checkpoint counter reset
+
+### Edge Cases to Test
+- [ ] Die before reaching portal -> death screen shows, NOT victory
+- [ ] Skip checkpoints -> counter shows "0/3" at portal (still wins)
+- [ ] Lights already destroyed -> WeakObjectPtr handles gracefully
+- [ ] Multiple restarts -> no memory leaks (static state fully reset)
 
 ### Final Message
-> "Game flow complete. The Escape objective loop is in place: dark start → trail of light → golden portal → DEMO COMPLETE. Press **Ctrl+S** to save all changes."
+> "Game flow complete. The Escape objective loop is in place: dark start -> collect soul lights -> golden portal -> victory screen -> restart. Press **Ctrl+S** to save all changes."
 
 ---
 
@@ -689,30 +768,41 @@ Tell user to test in Play-In-Editor (Alt+P):
 |---------|-------|---------|
 | Portal light not visible from start | AttenuationRadius too small | Increase Portal_Beacon_01 radius to 20000+ |
 | Lights underground | Wrong Z height | Re-query `get_height_at_location` and re-set transform |
-| Widget doesn't appear in PIE | CreateWidget not wired in BeginPlay | Check BP_RobotCharacter graph for widget nodes |
-| "DEMO COMPLETE" never shows | Trigger volume too small or wrong location | Increase scale to [8,8,6], verify location matches portal |
-| Game doesn't pause | SetGamePaused not wired or bPaused=false | Check BP_PortalTrigger graph, verify bPaused default |
-| Blueprint compile errors | Wrong pin names or missing connections | Run `analyze_blueprint_graph`, use fallback manual approach |
-| Niagara FX missing | No NS_Portal_Glow asset | Expected — skip Niagara, lights are primary beacon |
+| "ManageGameFlow not found" in compile | Plugin not rebuilt or editor not restarted | Rebuild plugin, restart editor |
+| Checkpoints not detected | Light names don't contain "Breadcrumb_Light" | Rename lights to include pattern |
+| No golden flash on collection | GoldenFlashBorder not created | Verify ManagePlayerHUD creates Slate tree first |
+| Victory screen never appears | Portal light name doesn't contain "Portal_Light" | Check actor naming |
+| Game doesn't restart after victory | Timer didn't fire or OpenLevel failed | Check UE_LOG for ManageGameFlow messages |
+| Niagara burst missing | No NS_CheckpointBurst asset | Expected — collection still works without VFX |
+| Death screen overlaps victory | Both triggered same frame | bDead check in ManageGameFlow prevents this |
 
 ## What CANNOT Be Done via MCP
 
 | Feature | Why | Workaround |
 |---------|-----|-----------|
-| Widget anchoring/alignment | MCP widget tools don't expose anchor settings | Edit in UMG Designer after creation |
-| Text fade-in animation | No animation support in widget tools | Add UMG animation manually |
-| Component-specific overlap | Only ReceiveActorBeginOverlap, no OnComponentBeginOverlap | Actor-level overlap is sufficient for demo |
-| Niagara creation | spawn_niagara_system only places existing systems | Create in Niagara Editor, then place via MCP |
-| Widget runtime updates | No widget instance reference after AddToViewport | Add Blueprint logic for dynamic text changes |
+| Niagara burst creation | spawn_niagara_system only places existing systems | Create NS_CheckpointBurst in Niagara Editor, or skip (light ramp is primary feedback) |
+| Sound on collection | No audio component wiring in ManageGameFlow | Add SoundCue playback in C++ (future enhancement) |
+| Per-checkpoint unique VFX | Would need different Niagara assets | Use same burst for all (consistent visual language) |
+| Smooth camera transitions on victory | Requires camera blend logic | Could add in future ManageGameFlow update |
 
-## Pin Names Reference
+## Professional Timing Reference (From Research)
+
+| Effect | Duration | Curve | Peak Value | Source |
+|--------|----------|-------|------------|--------|
+| Light Intensity Ramp | 0.3s | InterpEaseOut(exp=2) | 10x original | VFX timing research |
+| Niagara Burst VFX | 0.5-0.8s | Rapid start, slow fade | 20-50 particles | Game VFX best practices |
+| Screen Flash | 0.5s (0.1s in + 0.4s out) | Ease-out | Alpha 0.35 | UI/UX research |
+| Text Fade In | 0.2s | Linear | Alpha 1.0 | UE Slate animation patterns |
+| Text Hold | 0.6s | - | Alpha 1.0 | - |
+| Text Fade Out | 0.7s | Linear | Alpha 0.0 | - |
+| Victory Display | 5.0s | - | - | Game design convention |
+| Total Checkpoint Feedback | ~1.5s | Layered | All above combined | - |
+
+## Pin Names Reference (MCP Blueprint Wiring)
 
 | Node | Key Input Pins | Key Output Pins |
 |------|---------------|-----------------|
-| ReceiveActorBeginOverlap | (event, no input exec) | then, OtherActor |
-| CreateWidget (WidgetBlueprintLibrary) | execute, OwningPlayer, WidgetType | then, ReturnValue (UUserWidget) |
-| AddToViewport | execute, self (UUserWidget), ZOrder | then |
-| SetGamePaused (GameplayStatics) | execute, bPaused | then, ReturnValue (bool) |
+| ManageGameFlow (GameplayHelperLibrary) | execute, Player (auto self) | then |
 
 ## Timeline Reference
 
@@ -722,12 +812,10 @@ Tell user to test in Play-In-Editor (Alt+P):
 | 1: Portal Beacon | 5 min | ~9 | 7 min |
 | 2: Start Zone | 3 min | ~5 | 10 min |
 | 3: Breadcrumbs | 5 min | ~14 | 15 min |
-| 4: Objective Widget | 3 min | ~4 | 18 min |
-| 5: Demo Complete Widget | 3 min | ~4 | 21 min |
-| 6: Portal Trigger BP | 8 min | ~20 | 29 min |
-| 7: HUD Display | 3 min | ~6 | 32 min |
-| 8: Verification | 2 min | 2-3 | 34 min |
-| **Total** | **~34 min** | **~65-70 calls** | |
+| 4: C++ Implementation | 20 min | 0 (code edit + rebuild) | 35 min |
+| 5: MCP Wiring | 5 min | ~4 | 40 min |
+| 6: Verification | 3 min | 2-3 | 43 min |
+| **Total** | **~43 min** | **~37-40 calls** | |
 
 ## Actor Inventory (Created by This Skill)
 
@@ -740,7 +828,3 @@ Tell user to test in Play-In-Editor (Alt+P):
 | Breadcrumb_Light_01 | PointLight | X=2000, Y=200, Z=GROUND+150 |
 | Breadcrumb_Light_02 | PointLight | X=4500, Y=-150, Z=GROUND+150 |
 | Breadcrumb_Light_03 | PointLight | X=6000, Y=100, Z=GROUND+150 |
-| WBP_Objective | Widget Blueprint | /Game/UI/ |
-| WBP_DemoComplete | Widget Blueprint | /Game/UI/ |
-| BP_PortalTrigger | Blueprint Actor | /Game/Gameplay/ |
-| PortalTrigger_01 | BP_PortalTrigger instance | X=7500, Y=0, Z=PORTAL_Z+200 |

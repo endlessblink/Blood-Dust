@@ -52,11 +52,102 @@
 | **TASK-012** | **Add materials to all vegetation meshes** | **P2** | OPEN | - |
 | **TASK-013** | **Fix floating vegetation - snap to ground** | **P2** | OPEN | - |
 | ~~**TASK-014**~~ | ~~**Fix floating enemies - snap to ground**~~ | **P0** | ✅ DONE (2026-02-14) | - |
-| **BUG-015** | **Enemies float/sink/clip — need reliable grounding** | **P0** | IN PROGRESS | - |
+| ~~**BUG-015**~~ | ✅ **Enemies float/sink/clip — need reliable grounding** | **P0** | ✅ **DONE** (2026-02-15) | - |
 | ~~**BUG-016**~~ | ~~**Player can't move until attack button is pressed**~~ | **P0** | ~~DONE (2026-02-15)~~ | - |
 | **TASK-017** | **Custom health bar graphic in HUD** | **P2** | OPEN | - |
+| **FEATURE-018** | **Checkpoint game flow — light trail to gate, end-level sequence** | **P1** | ✅ DONE (2026-02-15) | - |
+| ~~TASK-018A~~ | ~~Design & place checkpoint actors along level path~~ | P1 | ✅ DONE | - |
+| ~~TASK-018B~~ | ~~Checkpoint activation VFX (golden flash + directional light dim)~~ | P1 | ✅ DONE | TASK-018A |
+| ~~TASK-018C~~ | ~~Next-checkpoint beacon/indicator (pulsing golden glow)~~ | P1 | ✅ DONE | TASK-018A |
+| ~~TASK-018D~~ | ~~Build end gate (Portal_Light at tower gate)~~ | P1 | ✅ DONE | - |
+| ~~TASK-018E~~ | ~~End-level sequence — "THE ESCAPE" overlay, input lock, restart~~ | P1 | ✅ DONE | TASK-018D |
+| ~~TASK-018F~~ | ~~Wire full flow: spawn → 6 checkpoints → gate → victory~~ | P1 | ✅ DONE | TASK-018B, TASK-018C, TASK-018E |
+
+| ~~**TASK-033**~~ | ~~**Ambient enemy behaviors: patrol, fight, react to player**~~ | **P2** | ✅ DONE (2026-02-15) | FEATURE-032 |
+| ~~TASK-033A~~ | ~~Add `bIgnorePlayer` flag to UpdateEnemyAI~~ | P2 | ✅ DONE | - |
+| ~~TASK-033B~~ | ~~Add patrol radius behavior (random waypoints near spawn)~~ | P2 | ✅ DONE | TASK-033A |
+| ~~TASK-033C~~ | ~~Add combat partner visual fighting (paired enemies)~~ | P2 | ✅ DONE | TASK-033B |
+| ~~**TASK-034**~~ | ~~**Realistic wind animation for vegetation (WPO)**~~ | **P1** | ✅ DONE (2026-02-15) | - |
+| ~~TASK-034A~~ | ~~Create M_Grass_Wind base PBR material (diffuse+normal+rough+alpha)~~ | P1 | ✅ DONE | - |
+| ~~TASK-034B~~ | ~~Add wind WPO Phase 1: params + base sway (10 nodes)~~ | P1 | ✅ DONE | TASK-034A |
+| ~~TASK-034C~~ | ~~Add wind WPO Phase 2: gusts + secondary sway (10 nodes)~~ | P1 | ✅ DONE | TASK-034B |
+| ~~TASK-034D~~ | ~~Add wind WPO Phase 3: height mask + combine + output (12 nodes)~~ | P1 | ✅ DONE | TASK-034C |
+| ~~TASK-034E~~ | ~~Apply M_Grass_Wind to all 8 grass mesh assets~~ | P1 | ✅ DONE | TASK-034D |
+| ~~TASK-034F~~ | ~~Visual tuning + screenshot verification~~ | P1 | ✅ DONE | TASK-034E |
+| **FEATURE-032** | **Enemy Animation Pipeline: Mixamo import + AnimBP architecture** | **P0** | IN PROGRESS | - |
+| TASK-032A | Import KingBot Mixamo animations (16 FBXes) | P0 | IN PROGRESS | - |
+| TASK-032B | Import Bell Mixamo model + animations (1 mesh + 26 FBXes) | P0 | OPEN | - |
+| TASK-032C | Research UE5 AnimBP architecture for smooth transitions | P0 | IN PROGRESS | - |
+| TASK-032D | Rewrite UpdateEnemyAI C++ — replace SingleNode with AnimBP | P0 | OPEN | TASK-032C |
+| TASK-032E | Create AnimBPs for KingBot + Bell (state machine + Slot) | P0 | OPEN | TASK-032A, TASK-032B, TASK-032D |
+| TASK-032F | Create attack montages + wire into enemy BPs | P0 | OPEN | TASK-032E |
+| TASK-032G | Update `/enemy-ai` skill with new AnimBP architecture | P1 | OPEN | TASK-032F |
 
 ## Active Work
+
+---
+
+### TASK-033: Ambient Enemy Behaviors — Patrol, Fight, React to Player
+
+**Status**: IN PROGRESS (2026-02-15)
+**Priority**: P2
+**Goal**: Enemies perform ambient activities (patrolling, fighting each other, idling) before the player arrives. Some stop and attack, some keep doing their thing.
+
+#### Architecture (Extending UpdateEnemyAI C++ — NO Behavior Trees)
+
+All changes in `GameplayHelperLibrary.h/.cpp`. Three new params to `UpdateEnemyAI`:
+
+1. **`bIgnorePlayer`** (bool, default false) — Enemy never aggros player. Used for background "atmosphere" enemies.
+2. **`PatrolRadius`** (float, default 0) — If >0, enemy patrols random waypoints within this radius of spawn. 0 = no patrol (current behavior).
+3. **`CombatPartner`** (AActor*, default nullptr) — If set, enemy faces this actor and plays attack montages on cooldown. Creates visual "fighting each other" pairs.
+
+#### State Machine Extension
+```
+Priority: Return > Chase > Attack > Patrol > Idle
+New state: EEnemyAIState::Patrol
+  - Picks random point within PatrolRadius of spawn
+  - Walks to point at PatrolSpeed (0.4x MoveSpeed)
+  - Pauses 2-5s at point, picks new point
+  - Cancelled when player enters aggro range (unless bIgnorePlayer)
+```
+
+#### Subtasks
+
+- **TASK-033A**: Add `bIgnorePlayer` flag — one-line guard at aggro check (ZERO risk)
+- **TASK-033B**: Add `PatrolRadius` + Patrol state — new waypoint cycling behavior (LOW risk)
+- **TASK-033C**: Add `CombatPartner` visual combat — paired enemies play attack montages at each other (LOW risk)
+
+#### Risk Assessment
+- `bIgnorePlayer`: ZERO risk (bool guard, doesn't touch existing transitions)
+- Patrol: LOW risk (new state with lower priority than Chase)
+- CombatPartner: LOW risk (idle-like behavior, cancelled by aggro)
+- All changes are additive — default params preserve existing behavior
+
+---
+
+### FEATURE-032: Enemy Animation Pipeline — Mixamo Import + AnimBP Architecture
+
+**Status**: IN PROGRESS (2026-02-15)
+**Priority**: P0
+**Goal**: Import all Mixamo animations for KingBot and Bell, then rewrite the animation system to use AnimBP + state machine + montages for smooth, glitch-free transitions.
+
+#### Problem
+Current `UpdateEnemyAI` uses `EAnimationMode::AnimationSingleNode` which:
+- Hard-resets animations on state change (no crossfade)
+- Conflicts with `PlayAnimationOneShot` montage system
+- Causes visible animation loop restarts
+
+#### Solution Architecture
+```
+AnimBP AnimGraph:
+  Root → Slot(DefaultSlot) → StateMachine
+  StateMachine: Idle ←→ Walk (Speed threshold, crossfade 0.2s)
+
+C++ UpdateEnemyAI:
+  - Set "Speed" variable on AnimInstance each tick
+  - Use PlayAnimMontage() for attacks (plays on DefaultSlot)
+  - SingleNode ONLY for death freeze-frame
+```
 
 ---
 
@@ -455,6 +546,93 @@ Reusable skill for importing any character with the full pipeline:
   - Forward speed halved: 0.15 → 0.07 units/frame
   - Eliminated upward drift (Z no longer rises from -3.19 to 0)
 - **Remaining**: Verify foot sliding at new speed, fine-tune stride matching if needed
+
+---
+
+### FEATURE-018: Checkpoint Game Flow — Light Trail to Gate, End-Level Sequence
+
+**Status**: ✅ DONE (2026-02-15)
+**Priority**: P1
+**Goal**: Create a linear checkpoint system where the robot progresses through the level by reaching glowing checkpoints. Each checkpoint triggers a visual effect and dims the ambient light, building tension. A beacon guides the player to the next checkpoint. The final destination is a large gate — reaching it completes the level with an end-level message.
+
+#### Implementation (2026-02-15)
+Extended existing `ManageGameFlow()` C++ system in GameplayHelperLibrary:
+- **6 checkpoint lights** (Breadcrumb_Light_01 through _06) along path from spawn to gate
+- **Pulsing golden beacon** on next checkpoint (5x intensity, 3x attenuation, sinusoidal pulse)
+- **Directional light dims 15%** per checkpoint collected (minimum 15% of original)
+- **Portal_Light_01** at gate tower — victory trigger within 500 units
+- **Victory screen**: "THE ESCAPE / LEVEL COMPLETE" overlay with soul count, input lock, 5s restart
+- Sorted checkpoints by distance from player start for correct collection order
+- Fixed portal detection to match both "Portal_Light" and "Portal_Beacon" patterns
+
+#### Game Flow
+
+```
+[Spawn] → [Checkpoint 1] → [Checkpoint 2] → ... → [Checkpoint N] → [Gate] → [Level Complete]
+```
+
+**At each checkpoint:**
+1. Player enters trigger volume
+2. Niagara burst VFX plays (golden energy pulse matching Rembrandt palette)
+3. Directional light dims slightly (progressive darkening across the level)
+4. Current checkpoint's glow deactivates
+5. Next checkpoint's beacon activates (visible light column / particle trail)
+6. Optional: brief camera shake or post-process flash
+
+**At the gate:**
+1. Player enters gate trigger
+2. Gate VFX plays (large golden light burst)
+3. Light dims to near-darkness
+4. Input is locked (player can't move)
+5. "Level Complete" message fades in on screen
+6. Optional: fade to black after a few seconds
+
+#### Subtasks
+
+##### TASK-018A: Design & place checkpoint actors along level path
+- Create `BP_Checkpoint` Blueprint (Actor with trigger volume + point light + Niagara slot)
+- Place 4-6 checkpoints along a path across the landscape
+- Each checkpoint stores its index (order) and a reference to the next one
+- First checkpoint's beacon is active on level start
+
+##### TASK-018B: Checkpoint activation VFX (Niagara burst + light dim)
+- Niagara system: golden energy burst (warm ochre/amber particles, short-lived)
+- On overlap: play VFX, dim DirectionalLight intensity by ~10-15% per checkpoint
+- Deactivate current checkpoint glow, mark as "reached"
+- Sound cue placeholder (optional)
+
+##### TASK-018C: Next-checkpoint beacon/indicator
+- Vertical light pillar or particle column at the next checkpoint (visible from distance)
+- Warm golden color matching the Rembrandt palette (#B37233)
+- Deactivates when player arrives, next one activates
+- Optional: subtle HUD arrow or compass indicator pointing to next checkpoint
+
+##### TASK-018D: Build end gate actor
+- `BP_EndGate` Blueprint — large gate mesh (can use primitive shapes or existing rock meshes as pillars)
+- Trigger volume in front of the gate
+- Gate-specific VFX (larger golden burst than checkpoints)
+- Gate only "opens" (activates trigger) after all checkpoints are reached
+
+##### TASK-018E: End-level sequence
+- Lock player input on gate trigger
+- Fade directional light to near-zero
+- Display "Level Complete" UMG widget (fade in, centered text, Rembrandt-style typography)
+- After 3-4 seconds: fade screen to black
+- Optional: show stats (time taken, enemies defeated)
+
+##### TASK-018F: Wire full flow
+- GameMode or LevelBlueprint manages checkpoint progression state
+- Tracks which checkpoints are reached (array or counter)
+- Gate validates all checkpoints complete before allowing trigger
+- Handles edge cases: player skipping checkpoints, dying mid-flow
+- Integration test: full run from spawn to end screen
+
+#### Visual Style Notes
+- All effects should use the Rembrandt palette: warm golds (#B37233), deep ochre (#8C6D46), dark earth (#2D261E)
+- Progressive light dimming creates chiaroscuro tension — the world gets darker as you progress
+- End gate should feel monumental — tall pillars framing a bright golden glow
+
+---
 
 ## Completed
 

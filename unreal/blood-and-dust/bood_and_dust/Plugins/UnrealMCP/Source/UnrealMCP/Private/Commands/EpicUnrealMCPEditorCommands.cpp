@@ -4521,11 +4521,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSnapActorToGround(co
             FString::Printf(TEXT("Actor not found: %s"), *ActorName));
     }
 
-    // Get actor bounds for Z offset
-    FVector Origin, BoxExtent;
-    TargetActor->GetActorBounds(false, Origin, BoxExtent);
-
     FVector ActorLocation = TargetActor->GetActorLocation();
+
+    // Calculate VisualBottomOffset: distance from actor origin down to the lowest point.
+    // For ACharacter: use CapsuleComponent directly (GetActorBounds includes SpringArm/Camera
+    // which massively inflates bounds and causes characters to float).
+    // For other actors: use GetActorBounds as before.
+    float VisualBottomOffset;
+    ACharacter* AsCharacter = Cast<ACharacter>(TargetActor);
+    if (AsCharacter && AsCharacter->GetCapsuleComponent())
+    {
+        // ACharacter origin = capsule center. Capsule bottom = origin - ScaledHalfHeight.
+        VisualBottomOffset = AsCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+    }
+    else
+    {
+        FVector Origin, BoxExtent;
+        TargetActor->GetActorBounds(false, Origin, BoxExtent);
+        VisualBottomOffset = ActorLocation.Z - (Origin.Z - BoxExtent.Z);
+    }
 
     // Trace from high above the actor straight down
     FVector Start(ActorLocation.X, ActorLocation.Y, 100000.0);
@@ -4547,16 +4561,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSnapActorToGround(co
 
     if (bHit)
     {
-        // Place actor so its visual bottom sits on the surface.
-        // Uses GetActorBounds (computed at line 4526) which includes ALL components
-        // (capsule + skeletal mesh). This correctly handles meshes whose pivot
-        // isn't at the feet (common with Meshy AI exports).
+        // Place actor so its bottom sits on the surface.
         FVector NewLocation = ActorLocation;
-        NewLocation.Z = HitResult.Location.Z;
-
-        // Distance from actor origin down to the lowest visual point
-        float VisualBottomOffset = ActorLocation.Z - (Origin.Z - BoxExtent.Z);
-        NewLocation.Z += VisualBottomOffset;
+        NewLocation.Z = HitResult.Location.Z + VisualBottomOffset;
 
         TargetActor->SetActorLocation(NewLocation);
 

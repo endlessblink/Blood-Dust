@@ -271,7 +271,14 @@
       "Bash(git ls-files:*)",
       "Bash(git log:*)",
       "Bash(strings:*)",
-      "Bash(ps:*)"
+      "Bash(ps:*)",
+      "WebFetch(domain:tomlooman.com)",
+      "WebFetch(domain:jambax.co.uk)",
+      "mcp__unrealMCP__auto_fit_capsule",
+      "Bash(git checkout:*)",
+      "WebFetch(domain:alinloghin.com)",
+      "WebFetch(domain:jesshiderue4.wordpress.com)",
+      "WebFetch(domain:developer.nvidia.com)"
     ]
   },
   "enableAllProjectMcpServers": true,

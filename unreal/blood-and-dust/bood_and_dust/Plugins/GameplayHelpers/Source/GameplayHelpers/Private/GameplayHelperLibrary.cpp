@@ -4,7 +4,6 @@
 #include "GameFramework/PlayerController.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
-#include "Animation/AnimSingleNodeInstance.h"
 #include "TimerManager.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputMappingContext.h"
@@ -19,10 +18,14 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Engine/GameViewportClient.h"
 #include "Styling/CoreStyle.h"
+#include "Widgets/Images/SImage.h"
+#include "Engine/Texture2D.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "Engine/PointLight.h"
 #include "Components/PointLightComponent.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/DirectionalLightComponent.h"
 #include "EngineUtils.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
@@ -41,7 +44,7 @@ void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float 
 	MovementComp->MaxWalkSpeed = NewSpeed;
 }
 
-void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate, float BlendIn, float BlendOut, bool bStopMovement)
+void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSequence* AnimSequence, float PlayRate, float BlendIn, float BlendOut, bool bStopMovement, bool bForceInterrupt)
 {
 	if (!Character || !AnimSequence)
 	{
@@ -60,9 +63,16 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		return;
 	}
 
-	// If a montage is already playing in the DefaultSlot, ignore the new request
-	if (AnimInst->Montage_IsPlaying(nullptr))
+	if (bForceInterrupt)
 	{
+		// Instantly stop any playing montage so the new one can start immediately.
+		// Used for hit-react, scream, and other interrupting animations.
+		AnimInst->Montage_Stop(0.0f);
+	}
+	else if (AnimInst->Montage_IsPlaying(nullptr))
+	{
+		// Non-interrupt mode: if a montage is already playing, ignore the new request.
+		// This prevents attack animations from restarting on rapid triggers.
 		return;
 	}
 
@@ -151,10 +161,14 @@ struct FPlayerHUDState
 {
 	TWeakObjectPtr<UWorld> OwnerWorld;
 	TSharedPtr<SWidget> RootWidget;
-	TSharedPtr<SBox> HealthFillBox;
-	TSharedPtr<SBorder> HealthFillBorder;
-	TSharedPtr<STextBlock> HealthText;
 	TSharedPtr<SWidget> DeathOverlay;
+
+	// Texture-based health bar
+	TStrongObjectPtr<UTexture2D> EmptyBarTexture;
+	TStrongObjectPtr<UTexture2D> FullBarTexture;
+	FSlateBrush EmptyBarBrush;
+	FSlateBrush FullBarBrush;
+	TSharedPtr<SBox> HealthClipBox;
 	TSharedPtr<SBorder> DamageFlashBorder;
 	float MaxHealth = 100.0f;
 	double DamageFlashStartTime = 0.0;
@@ -185,6 +199,8 @@ struct FCheckpointData
 	ECheckpointState State = ECheckpointState::Active;
 	double CollectStartTime = 0.0;
 	float OriginalIntensity = 3000.0f;
+	float OriginalAttenuationRadius = 1000.0f;
+	bool bIsBeacon = false; // true if this is the current "next" checkpoint beacon
 };
 
 struct FGameFlowState
@@ -201,6 +217,11 @@ struct FGameFlowState
 	double CheckpointTextStartTime = 0.0;
 	double VictoryStartTime = 0.0;
 	FString CheckpointDisplayText;
+
+	// Directional light dimming
+	TWeakObjectPtr<AActor> DirectionalLightActor;
+	float OriginalDirLightIntensity = 1.0f;
+	float DimPerCheckpoint = 0.15f; // 15% dimmer per checkpoint
 };
 static FGameFlowState GameFlow;
 
@@ -213,7 +234,8 @@ enum class EEnemyAIState : uint8
 	Attack,
 	Return,
 	HitReact,
-	Dead
+	Dead,
+	Patrol
 };
 
 enum class EEnemyPersonality : uint8
@@ -241,12 +263,10 @@ struct FEnemyAIStateData
 	double DeathStartTime = 0.0;
 	float PreviousHealth = -1.f; // -1 = uninitialized
 	EEnemyAIState CurrentState = EEnemyAIState::Idle;
-	EEnemyAIState PrevAnimState = EEnemyAIState::Return; // Sentinel: differs from initial Idle to trigger first-frame anim
 	EEnemyAIState PreHitReactState = EEnemyAIState::Idle; // state to restore after hit react
 	bool bInitialized = false;
 	bool bHealthInitialized = false;
 	bool bDeathAnimStarted = false;
-	UAnimSequence* CurrentPlayingAnim = nullptr; // avoid redundant SetAnimation calls
 
 	// Per-instance randomization for organic behavior
 	float SpeedMultiplier = 1.0f;
@@ -265,7 +285,6 @@ struct FEnemyAIStateData
 
 	// Per-instance selected animations (chosen from available pool on init)
 	UAnimSequence* ChosenAttackAnim = nullptr;
-	UAnimSequence* ChosenMoveAnim = nullptr;
 	UAnimSequence* ChosenDeathAnim = nullptr;
 
 	// Idle behavior
@@ -275,6 +294,16 @@ struct FEnemyAIStateData
 	FVector IdleWanderTarget = FVector::ZeroVector;
 	bool bIdleBehaviorActive = false;
 	float IdleScreamEndTime = 0.0f;
+
+	// Patrol behavior
+	FVector PatrolTarget = FVector::ZeroVector;
+	float PatrolPauseTimer = 0.0f;
+	float PatrolPauseDuration = 0.0f;
+	bool bPatrolPausing = false;
+
+	// Combat partner (visual fighting)
+	double LastPartnerAttackTime = 0.0;
+	float PartnerAttackCooldown = 0.0f;
 };
 static TMap<TWeakObjectPtr<AActor>, FEnemyAIStateData> EnemyAIStates;
 
@@ -486,11 +515,10 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, float AttackRange,
 	float LeashDistance, float MoveSpeed, float AttackCooldown,
 	float AttackDamage, float AttackRadius, UAnimSequence* AttackAnim,
-	UAnimSequence* IdleAnim, UAnimSequence* WalkAnim,
 	UAnimSequence* DeathAnim, UAnimSequence* HitReactAnim,
 	UAnimSequence* AttackAnim2, UAnimSequence* AttackAnim3,
-	UAnimSequence* RunAnim, UAnimSequence* CrawlAnim,
-	UAnimSequence* ScreamAnim, UAnimSequence* DeathAnim2)
+	UAnimSequence* ScreamAnim, UAnimSequence* DeathAnim2,
+	bool bIgnorePlayer, float PatrolRadius, AActor* CombatPartner)
 {
 	if (!Enemy) return;
 	UWorld* World = Enemy->GetWorld();
@@ -586,14 +614,6 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 					break;
 				}
 			}
-
-			// Select movement animation based on personality
-			if (State.Personality == EEnemyPersonality::Crawler && CrawlAnim)
-				State.ChosenMoveAnim = CrawlAnim;
-			else if (State.Personality == EEnemyPersonality::Berserker && RunAnim)
-				State.ChosenMoveAnim = RunAnim;
-			else
-				State.ChosenMoveAnim = WalkAnim;
 
 			// Select death animation variety
 			TArray<UAnimSequence*> AvailableDeaths;
@@ -706,13 +726,13 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	// DEBUG: Show per-instance values with personality
 	if (GEngine && DistToPlayer < 4000.f)
 	{
-		const TCHAR* StateNames[] = { TEXT("Idle"), TEXT("Chase"), TEXT("Attack"), TEXT("Return"), TEXT("HitReact"), TEXT("Dead") };
+		const TCHAR* StateNames[] = { TEXT("Idle"), TEXT("Chase"), TEXT("Attack"), TEXT("Return"), TEXT("HitReact"), TEXT("Dead"), TEXT("Patrol") };
 		const TCHAR* PersonalityNames[] = { TEXT("NORMAL"), TEXT("BERSERKER"), TEXT("STALKER"), TEXT("BRUTE"), TEXT("CRAWLER") };
-		int32 StateIdx = FMath::Clamp((int32)State.CurrentState, 0, 5);
+		int32 StateIdx = FMath::Clamp((int32)State.CurrentState, 0, 6);
 		int32 PersIdx = FMath::Clamp((int32)State.Personality, 0, 4);
 		GEngine->AddOnScreenDebugMessage(
 			(int32)Enemy->GetUniqueID(), 0.0f, FColor::Cyan,
-			FString::Printf(TEXT("%s [%s] Spd=%.0f Aggro=%.0f Dmg=x%.1f State=%s Dist=%.0f Atk=%s Move=%s"),
+			FString::Printf(TEXT("%s [%s] Spd=%.0f Aggro=%.0f Dmg=x%.1f State=%s Dist=%.0f Atk=%s"),
 				*Enemy->GetName(),
 				PersonalityNames[PersIdx],
 				MoveSpeed * State.SpeedMultiplier,
@@ -720,8 +740,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				State.DamageMultiplier,
 				StateNames[StateIdx],
 				DistToPlayer,
-				State.ChosenAttackAnim ? *State.ChosenAttackAnim->GetName() : TEXT("NONE"),
-				State.ChosenMoveAnim ? *State.ChosenMoveAnim->GetName() : TEXT("NONE")));
+				State.ChosenAttackAnim ? *State.ChosenAttackAnim->GetName() : TEXT("NONE")));
 	}
 
 	// --- DEATH STATE ---
@@ -776,20 +795,8 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			State.CurrentState = EEnemyAIState::HitReact;
 			State.HitReactStartTime = CurrentTime;
 
-			// Cancel any playing attack montage so hit react base anim is visible
-			if (MeshComp)
-			{
-				if (UAnimInstance* AnimInst = MeshComp->GetAnimInstance())
-				{
-					AnimInst->Montage_Stop(0.1f); // Quick blend out
-				}
-			}
-
-			// Play hit react as montage overlay (blends back to AnimBP locomotion when done)
-			if (HitReactAnim)
-			{
-				PlayAnimationOneShot(Enemy, HitReactAnim, 1.0f, 0.1f, 0.15f, false);
-			}
+			// Play hit react — bForceInterrupt instantly stops any attack montage
+			PlayAnimationOneShot(Enemy, HitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
 		}
 	}
 	State.PreviousHealth = HP;
@@ -827,9 +834,31 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		}
 
 		// IDLE -> CHASE when player enters aggro range (with per-instance variation)
-		if (State.CurrentState == EEnemyAIState::Idle && DistToPlayer < AggroRange * State.AggroRangeMultiplier)
+		if (!bIgnorePlayer && State.CurrentState == EEnemyAIState::Idle && DistToPlayer < AggroRange * State.AggroRangeMultiplier)
 		{
 			State.bIdleBehaviorActive = false; // Cancel any idle behavior
+			State.AggroStartTime = CurrentTime;
+			State.bAggroReactionDone = false;
+			State.CurrentState = EEnemyAIState::Chase;
+		}
+
+		// IDLE -> PATROL when patrol is configured (with random delay)
+		if (State.CurrentState == EEnemyAIState::Idle && PatrolRadius > 0.0f && !State.bIdleBehaviorActive)
+		{
+			if (State.IdleBehaviorTimer > State.NextIdleBehaviorTime)
+			{
+				// Pick random point within patrol radius of spawn
+				FVector2D RandDir2D = FVector2D(FMath::FRandRange(-1.f, 1.f), FMath::FRandRange(-1.f, 1.f)).GetSafeNormal();
+				float WanderDist = FMath::FRandRange(PatrolRadius * 0.3f, PatrolRadius);
+				State.PatrolTarget = State.SpawnLocation + FVector(RandDir2D.X * WanderDist, RandDir2D.Y * WanderDist, 0.f);
+				State.bPatrolPausing = false;
+				State.CurrentState = EEnemyAIState::Patrol;
+			}
+		}
+
+		// PATROL -> CHASE when player enters aggro range (if not ignoring)
+		if (!bIgnorePlayer && State.CurrentState == EEnemyAIState::Patrol && DistToPlayer < AggroRange * State.AggroRangeMultiplier)
+		{
 			State.AggroStartTime = CurrentTime;
 			State.bAggroReactionDone = false;
 			State.CurrentState = EEnemyAIState::Chase;
@@ -965,10 +994,84 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		break;
 	}
 
+	case EEnemyAIState::Patrol:
+	{
+		if (State.bPatrolPausing)
+		{
+			// Pausing at patrol point
+			State.PatrolPauseTimer += DeltaTime;
+			if (State.PatrolPauseTimer >= State.PatrolPauseDuration)
+			{
+				// Done pausing — return to Idle (will re-enter Patrol next idle timeout)
+				State.bPatrolPausing = false;
+				State.CurrentState = EEnemyAIState::Idle;
+				State.IdleBehaviorTimer = 0.0f;
+				State.NextIdleBehaviorTime = FMath::FRandRange(1.0f, 3.0f); // Short wait before next patrol
+			}
+		}
+		else
+		{
+			// Walking to patrol point
+			FVector Dir = State.PatrolTarget - Enemy->GetActorLocation();
+			FVector HDir = FVector(Dir.X, Dir.Y, 0.0f);
+			float Dist = HDir.Size();
+
+			if (Dist > 80.f)
+			{
+				FVector Normal = HDir.GetSafeNormal();
+				Enemy->AddMovementInput(Normal, 0.4f); // Slow patrol walk
+				FRotator TargetRot = FRotator(0.f, Normal.Rotation().Yaw, 0.f);
+				Enemy->SetActorRotation(FMath::RInterpTo(Enemy->GetActorRotation(), TargetRot, DeltaTime, 3.0f));
+			}
+			else
+			{
+				// Reached patrol point — pause
+				State.bPatrolPausing = true;
+				State.PatrolPauseTimer = 0.0f;
+				State.PatrolPauseDuration = FMath::FRandRange(2.0f, 5.0f);
+			}
+		}
+		break;
+	}
+
 	case EEnemyAIState::Idle:
 	default:
 	{
 		State.IdleBehaviorTimer += DeltaTime;
+
+		// Combat partner behavior — face partner and attack periodically
+		if (CombatPartner && IsValid(CombatPartner))
+		{
+			FVector DirToPartner = CombatPartner->GetActorLocation() - Enemy->GetActorLocation();
+			FVector HorizDir = FVector(DirToPartner.X, DirToPartner.Y, 0.0f).GetSafeNormal();
+			if (!HorizDir.IsNearlyZero())
+			{
+				FRotator TargetRot = FRotator(0.f, HorizDir.Rotation().Yaw, 0.f);
+				Enemy->SetActorRotation(FMath::RInterpTo(Enemy->GetActorRotation(), TargetRot, DeltaTime, 6.0f));
+			}
+
+			// Initialize cooldown on first tick
+			if (State.PartnerAttackCooldown == 0.0f)
+			{
+				State.PartnerAttackCooldown = FMath::FRandRange(2.0f, 4.0f);
+				State.LastPartnerAttackTime = CurrentTime - FMath::FRandRange(0.0f, State.PartnerAttackCooldown); // Stagger start
+			}
+
+			// Play attack montage on cooldown
+			if ((CurrentTime - State.LastPartnerAttackTime) >= State.PartnerAttackCooldown)
+			{
+				State.LastPartnerAttackTime = CurrentTime;
+				State.PartnerAttackCooldown = FMath::FRandRange(2.5f, 5.0f); // Randomize next cooldown
+
+				UAnimSequence* UsedAttackAnim = State.ChosenAttackAnim ? State.ChosenAttackAnim : AttackAnim;
+				if (UsedAttackAnim)
+				{
+					PlayAnimationOneShot(Enemy, UsedAttackAnim, State.AnimPlayRateVariation, 0.15f, 0.15f, false);
+				}
+			}
+
+			break; // Skip normal idle behaviors — combat partner takes over
+		}
 
 		// Pick a new idle behavior when timer expires
 		if (!State.bIdleBehaviorActive && State.IdleBehaviorTimer >= State.NextIdleBehaviorTime)
@@ -980,8 +1083,8 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				State.bIdleBehaviorActive = true;
 				State.IdleScreamEndTime = CurrentTime + ScreamAnim->GetPlayLength();
 				State.IdleBehaviorTimer = 0.0f;
-				// Play scream as montage overlay on AnimBP
-				PlayAnimationOneShot(Enemy, ScreamAnim, 1.0f, 0.15f, 0.15f, false);
+				// Play scream — bForceInterrupt ensures it starts even if another montage lingers
+				PlayAnimationOneShot(Enemy, ScreamAnim, 1.0f, 0.15f, 0.15f, false, /*bForceInterrupt=*/true);
 			}
 			else if (Roll < 0.35f)
 			{
@@ -1120,131 +1223,76 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			PlayerHUD.MaxHealth = 100.f;
 		}
 
+		// Load health bar textures
+		const float HealthBarWidth = 500.0f;
+		const float HealthBarHeight = HealthBarWidth * (1536.0f / 2816.0f); // ~273px, preserves 2816:1536 aspect
+
+		UTexture2D* EmptyTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HealthBar_Empty.T_HealthBar_Empty"));
+		UTexture2D* FullTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HealthBar_Full.T_HealthBar_Full"));
+
+		if (EmptyTex && FullTex)
+		{
+			PlayerHUD.EmptyBarTexture = TStrongObjectPtr<UTexture2D>(EmptyTex);
+			PlayerHUD.FullBarTexture = TStrongObjectPtr<UTexture2D>(FullTex);
+
+			PlayerHUD.EmptyBarBrush.SetResourceObject(EmptyTex);
+			PlayerHUD.EmptyBarBrush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
+			PlayerHUD.EmptyBarBrush.DrawAs = ESlateBrushDrawType::Image;
+			PlayerHUD.EmptyBarBrush.Tiling = ESlateBrushTileType::NoTile;
+
+			PlayerHUD.FullBarBrush.SetResourceObject(FullTex);
+			PlayerHUD.FullBarBrush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
+			PlayerHUD.FullBarBrush.DrawAs = ESlateBrushDrawType::Image;
+			PlayerHUD.FullBarBrush.Tiling = ESlateBrushTileType::NoTile;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ManagePlayerHUD: Failed to load health bar textures"));
+		}
+
 		// Font styles — Dutch Golden Age aesthetic
-		FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle("Bold", 11);
-		FSlateFontInfo HealthNumFont = FCoreStyle::GetDefaultFontStyle("Bold", 14);
 		FSlateFontInfo DeathTitleFont = FCoreStyle::GetDefaultFontStyle("Bold", 58);
 		FSlateFontInfo DeathSubFont = FCoreStyle::GetDefaultFontStyle("Regular", 18);
 		FSlateFontInfo DeathRuleFont = FCoreStyle::GetDefaultFontStyle("Regular", 14);
 
 		// Palette constants
 		const FLinearColor DarkUmber(0.03f, 0.02f, 0.01f, 0.92f);
-		const FLinearColor MidOchre(0.27f, 0.15f, 0.06f, 1.0f);
-		const FLinearColor GoldHighlight(0.55f, 0.35f, 0.10f, 1.0f);
-		const FLinearColor WarmParchment(0.75f, 0.60f, 0.38f, 1.0f);
 		const FLinearColor GildedEdge(0.40f, 0.28f, 0.10f, 0.80f);
 		const FLinearColor DeepCrimson(0.45f, 0.06f, 0.03f, 1.0f);
-		const FLinearColor BurntSienna(0.50f, 0.15f, 0.05f, 1.0f);
 
 		// Build Slate widget tree — Dutch Golden Age ornate style
 		TSharedRef<SOverlay> Root = SNew(SOverlay)
 
-			// Health bar (bottom-left, gilded frame style)
+			// Health bar (bottom-left, painted texture overlay)
 			+ SOverlay::Slot()
 			.HAlign(HAlign_Left)
 			.VAlign(VAlign_Bottom)
-			.Padding(36.0f, 0.0f, 0.0f, 48.0f)
+			.Padding(20.0f, 0.0f, 0.0f, 20.0f)
 			[
-				SNew(SVerticalBox)
-
-				// Label row: decorative rule + "VITAE" + decorative rule
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.HAlign(HAlign_Left)
-				.Padding(0.0f, 0.0f, 0.0f, 4.0f)
+				SNew(SBox)
+				.WidthOverride(HealthBarWidth)
+				.HeightOverride(HealthBarHeight)
 				[
-					SNew(SHorizontalBox)
+					SNew(SOverlay)
 
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
+					// Layer 1: Empty bar (always full size — empty glass tube visible)
+					+ SOverlay::Slot()
 					[
-						SNew(STextBlock)
-						.Text(FText::FromString(FString::Printf(TEXT("\x2500\x2500\x2500  "))))
-						.Font(DeathRuleFont)
-						.ColorAndOpacity(FSlateColor(GildedEdge))
+						SNew(SImage)
+						.Image(&PlayerHUD.EmptyBarBrush)
 					]
 
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
+					// Layer 2: Full bar (clipped by HP% — golden fill)
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Left)
 					[
-						SNew(STextBlock)
-						.Text(FText::FromString(TEXT("V I T A E")))
-						.Font(LabelFont)
-						.ColorAndOpacity(FSlateColor(GoldHighlight))
-					]
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(FString::Printf(TEXT("  \x2500\x2500\x2500"))))
-						.Font(DeathRuleFont)
-						.ColorAndOpacity(FSlateColor(GildedEdge))
-					]
-				]
-
-				// Health bar with gilded frame (outer border → inner border → fill)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					// Outer gilded frame
-					SNew(SBorder)
-					.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-					.BorderBackgroundColor(GildedEdge)
-					.Padding(FMargin(2.0f))
-					[
-						// Inner dark frame
-						SNew(SBorder)
-						.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-						.BorderBackgroundColor(DarkUmber)
-						.Padding(FMargin(2.0f))
+						SAssignNew(PlayerHUD.HealthClipBox, SBox)
+						.WidthOverride(HealthBarWidth)
+						.Clipping(EWidgetClipping::ClipToBounds)
 						[
-							SNew(SBox)
-							.WidthOverride(240.0f)
-							.HeightOverride(16.0f)
-							[
-								SNew(SOverlay)
-
-								// Dark background
-								+ SOverlay::Slot()
-								[
-									SNew(SBorder)
-									.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-									.BorderBackgroundColor(FLinearColor(0.05f, 0.03f, 0.02f, 0.95f))
-									.Padding(0)
-								]
-
-								// Health fill
-								+ SOverlay::Slot()
-								.HAlign(HAlign_Left)
-								[
-									SAssignNew(PlayerHUD.HealthFillBox, SBox)
-									.WidthOverride(240.0f)
-									.HeightOverride(16.0f)
-									[
-										SAssignNew(PlayerHUD.HealthFillBorder, SBorder)
-										.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-										.BorderBackgroundColor(BurntSienna)
-										.Padding(0)
-									]
-								]
-
-								// Overlay: health number centered on bar
-								+ SOverlay::Slot()
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								[
-									SAssignNew(PlayerHUD.HealthText, STextBlock)
-									.Text(FText::FromString(FString::Printf(TEXT("%d / %d"), (int32)PlayerHUD.MaxHealth, (int32)PlayerHUD.MaxHealth)))
-									.Font(HealthNumFont)
-									.ColorAndOpacity(FSlateColor(WarmParchment))
-									.ShadowOffset(FVector2D(1.0f, 1.0f))
-									.ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.7f))
-								]
-							]
+							SNew(SImage)
+							.Image(&PlayerHUD.FullBarBrush)
+							.DesiredSizeOverride(FVector2D(HealthBarWidth, HealthBarHeight))
 						]
 					]
 				]
@@ -1481,29 +1529,15 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 	// Update health bar
 	float Pct = FMath::Clamp(HP / PlayerHUD.MaxHealth, 0.0f, 1.0f);
 
-	if (PlayerHUD.HealthFillBox.IsValid())
-	{
-		PlayerHUD.HealthFillBox->SetWidthOverride(240.0f * Pct);
-	}
+	// Tube mapping: portrait=left 39%, tube=39-94%, right ornaments=94-100%
+	// Map HP% to clip from tube-start to full-width
+	const float HBDisplayWidth = 500.0f;
+	const float TubeLeftRatio = 0.39f;
+	float ClipRatio = TubeLeftRatio + (1.0f - TubeLeftRatio) * Pct;
 
-	if (PlayerHUD.HealthFillBorder.IsValid())
+	if (PlayerHUD.HealthClipBox.IsValid())
 	{
-		// Dutch Golden Age palette: burnt sienna → golden ochre → warm amber
-		FLinearColor BarColor;
-		if (Pct > 0.6f)
-			BarColor = FLinearColor(0.45f, 0.30f, 0.08f, 0.95f);  // Warm amber/ochre
-		else if (Pct > 0.3f)
-			BarColor = FLinearColor(0.55f, 0.25f, 0.06f, 0.95f);  // Golden ochre
-		else
-			BarColor = FLinearColor(0.50f, 0.10f, 0.04f, 0.95f);  // Burnt sienna
-
-		PlayerHUD.HealthFillBorder->SetBorderBackgroundColor(BarColor);
-	}
-
-	if (PlayerHUD.HealthText.IsValid())
-	{
-		PlayerHUD.HealthText->SetText(FText::FromString(
-			FString::Printf(TEXT("%d / %d"), FMath::Max((int32)HP, 0), (int32)PlayerHUD.MaxHealth)));
+		PlayerHUD.HealthClipBox->SetWidthOverride(HBDisplayWidth * ClipRatio);
 	}
 
 	// Damage flash fade (0.3s)
@@ -1543,8 +1577,11 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			{
 				if (WeakWorld.IsValid())
 				{
-					// Reset HUD state before level transition
+					// Reset all state before level transition
 					PlayerHUD = FPlayerHUDState();
+					GameFlow = FGameFlowState();
+					EnemyAIStates.Empty();
+					BlockingActors.Empty();
 
 					FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
 					UGameplayStatics::OpenLevel(WeakWorld.Get(), FName(*LevelName));
@@ -1612,16 +1649,17 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 				CP.Location = Light->GetActorLocation();
 				CP.State = ECheckpointState::Active;
 
-				// Read current intensity
-				UPointLightComponent* LightComp = Light->GetPointLightComponent();
+				// Read current intensity and attenuation
+				UPointLightComponent* LightComp = Cast<UPointLightComponent>(Light->GetLightComponent());
 				if (LightComp)
 				{
 					CP.OriginalIntensity = LightComp->Intensity;
+					CP.OriginalAttenuationRadius = LightComp->AttenuationRadius;
 				}
 
 				GameFlow.Checkpoints.Add(CP);
 			}
-			else if (Name.Contains(TEXT("Portal_Light")))
+			else if (Name.Contains(TEXT("Portal_Light")) || Name.Contains(TEXT("Portal_Beacon")))
 			{
 				GameFlow.PortalLightActor = Light;
 				GameFlow.PortalLocation = Light->GetActorLocation();
@@ -1630,9 +1668,54 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 
 		GameFlow.TotalCheckpoints = GameFlow.Checkpoints.Num();
 
-		UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: Found %d breadcrumb lights, portal=%s"),
+		// Sort checkpoints by distance from PlayerStart for correct order
+		FVector PlayerStartLoc = Player->GetActorLocation();
+		GameFlow.Checkpoints.Sort([&PlayerStartLoc](const FCheckpointData& A, const FCheckpointData& B)
+		{
+			return FVector::Dist(A.Location, PlayerStartLoc) < FVector::Dist(B.Location, PlayerStartLoc);
+		});
+
+		// Find directional light for progressive dimming
+		for (TActorIterator<ADirectionalLight> DirIt(World); DirIt; ++DirIt)
+		{
+			ADirectionalLight* DirLight = *DirIt;
+			if (IsValid(DirLight))
+			{
+				GameFlow.DirectionalLightActor = DirLight;
+				UDirectionalLightComponent* DirComp = Cast<UDirectionalLightComponent>(DirLight->GetLightComponent());
+				if (DirComp)
+				{
+					GameFlow.OriginalDirLightIntensity = DirComp->Intensity;
+				}
+				break;
+			}
+		}
+
+		// Activate beacon on the first checkpoint (so player knows where to go)
+		for (FCheckpointData& CP : GameFlow.Checkpoints)
+		{
+			if (CP.State == ECheckpointState::Active && CP.LightActor.IsValid())
+			{
+				CP.bIsBeacon = true;
+				APointLight* Light = Cast<APointLight>(CP.LightActor.Get());
+				if (Light)
+				{
+					UPointLightComponent* LC = Cast<UPointLightComponent>(Light->GetLightComponent());
+					if (LC)
+					{
+						LC->SetIntensity(CP.OriginalIntensity * 5.0f);
+						LC->SetAttenuationRadius(CP.OriginalAttenuationRadius * 3.0f);
+						LC->SetLightColor(FLinearColor(0.70f, 0.43f, 0.12f)); // Warm golden beacon
+					}
+				}
+				break;
+			}
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: Found %d breadcrumb lights, portal=%s, dirlight=%s"),
 			GameFlow.TotalCheckpoints,
-			GameFlow.PortalLightActor.IsValid() ? *GameFlow.PortalLightActor->GetName() : TEXT("NONE"));
+			GameFlow.PortalLightActor.IsValid() ? *GameFlow.PortalLightActor->GetName() : TEXT("NONE"),
+			GameFlow.DirectionalLightActor.IsValid() ? *GameFlow.DirectionalLightActor->GetName() : TEXT("NONE"));
 	}
 
 	// Skip if already won or dead
@@ -1640,6 +1723,26 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 
 	double CurrentTime = World->GetTimeSeconds();
 	FVector PlayerLoc = Player->GetActorLocation();
+
+	// --- Beacon pulse on next active checkpoint (sinusoidal glow) ---
+	for (FCheckpointData& CP : GameFlow.Checkpoints)
+	{
+		if (CP.State == ECheckpointState::Active && CP.bIsBeacon && CP.LightActor.IsValid())
+		{
+			APointLight* Light = Cast<APointLight>(CP.LightActor.Get());
+			if (Light)
+			{
+				UPointLightComponent* LC = Cast<UPointLightComponent>(Light->GetLightComponent());
+				if (LC)
+				{
+					float BaseIntensity = CP.OriginalIntensity * 5.0f;
+					float Pulse = FMath::Sin((float)CurrentTime * 2.5f) * 0.3f + 0.7f; // Oscillates 0.4..1.0
+					LC->SetIntensity(BaseIntensity * Pulse);
+				}
+			}
+			break; // Only pulse the current beacon
+		}
+	}
 
 	// --- Checkpoint collection logic ---
 	for (FCheckpointData& CP : GameFlow.Checkpoints)
@@ -1673,11 +1776,11 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 					APointLight* Light = Cast<APointLight>(CP.LightActor.Get());
 					if (Light)
 					{
-						UPointLightComponent* LightComp = Light->GetPointLightComponent();
+						UPointLightComponent* LightComp = Cast<UPointLightComponent>(Light->GetLightComponent());
 						if (LightComp)
 						{
 							float Alpha = Elapsed / 0.3f;
-							float NewIntensity = FMath::Lerp(CP.OriginalIntensity, CP.OriginalIntensity * 10.0f, Alpha);
+							float NewIntensity = FMath::InterpEaseOut(CP.OriginalIntensity, CP.OriginalIntensity * 10.0f, Alpha, 2.0f);
 							LightComp->SetIntensity(NewIntensity);
 						}
 					}
@@ -1691,6 +1794,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 					CP.LightActor->Destroy();
 				}
 				CP.State = ECheckpointState::Collected;
+				CP.bIsBeacon = false;
 				GameFlow.CheckpointsCollected++;
 
 				// Trigger golden flash
@@ -1702,8 +1806,46 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 					TEXT("S O U L   R E C O V E R E D   ( %d / %d )"),
 					GameFlow.CheckpointsCollected, GameFlow.TotalCheckpoints);
 
-				UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: Checkpoint collected %d/%d"),
-					GameFlow.CheckpointsCollected, GameFlow.TotalCheckpoints);
+				// --- Dim directional light progressively ---
+				if (GameFlow.DirectionalLightActor.IsValid())
+				{
+					ADirectionalLight* DirLight = Cast<ADirectionalLight>(GameFlow.DirectionalLightActor.Get());
+					if (DirLight)
+					{
+						UDirectionalLightComponent* DirComp = Cast<UDirectionalLightComponent>(DirLight->GetLightComponent());
+						if (DirComp)
+						{
+							float DimFraction = 1.0f - GameFlow.DimPerCheckpoint * GameFlow.CheckpointsCollected;
+							DimFraction = FMath::Max(DimFraction, 0.15f); // Don't go below 15%
+							DirComp->SetIntensity(GameFlow.OriginalDirLightIntensity * DimFraction);
+						}
+					}
+				}
+
+				// --- Activate beacon on next uncollected checkpoint ---
+				for (FCheckpointData& NextCP : GameFlow.Checkpoints)
+				{
+					if (NextCP.State == ECheckpointState::Active && NextCP.LightActor.IsValid())
+					{
+						NextCP.bIsBeacon = true;
+						APointLight* NextLight = Cast<APointLight>(NextCP.LightActor.Get());
+						if (NextLight)
+						{
+							UPointLightComponent* NextLC = Cast<UPointLightComponent>(NextLight->GetLightComponent());
+							if (NextLC)
+							{
+								NextLC->SetIntensity(NextCP.OriginalIntensity * 5.0f);
+								NextLC->SetAttenuationRadius(NextCP.OriginalAttenuationRadius * 3.0f);
+								NextLC->SetLightColor(FLinearColor(0.70f, 0.43f, 0.12f));
+							}
+						}
+						break; // Only the next one
+					}
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: Checkpoint collected %d/%d, dimming light to %.0f%%"),
+					GameFlow.CheckpointsCollected, GameFlow.TotalCheckpoints,
+					(1.0f - GameFlow.DimPerCheckpoint * GameFlow.CheckpointsCollected) * 100.0f);
 			}
 		}
 	}

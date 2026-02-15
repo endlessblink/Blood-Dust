@@ -1843,7 +1843,7 @@ def set_character_properties(
     blueprint_path: str,
     anim_blueprint_path: str = "",
     skeletal_mesh_path: str = "",
-    mesh_offset_z: float = None,
+    mesh_offset_z: Optional[float] = None,
     capsule_half_height: float = 0,
     capsule_radius: float = 0,
     auto_fit_capsule: bool = False,
@@ -1895,6 +1895,33 @@ def set_character_properties(
     except Exception as e:
         logger.error(f"set_character_properties error: {e}")
         return {"success": False, "message": str(e)}
+
+@mcp.tool()
+def auto_fit_capsule(
+    blueprint_path: str,
+) -> Dict[str, Any]:
+    """
+    Auto-fit capsule component and mesh Z offset to match the skeletal mesh bounds.
+
+    Uses GetImportedBounds() for accurate mesh geometry sizing. Calculates proper
+    capsule half-height, radius, and mesh Z offset so the character stands on ground
+    without floating.
+
+    Parameters:
+    - blueprint_path: Content path to Character Blueprint (e.g., "/Game/Characters/Enemies/Bell/BP_Bell")
+
+    Returns:
+        Dictionary with auto-fit results including capsule dimensions and mesh offset.
+    """
+    unreal = get_unreal_connection()
+    try:
+        params = {"blueprint_path": blueprint_path, "auto_fit_capsule": True}
+        response = unreal.send_command("set_character_properties", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"auto_fit_capsule error: {e}")
+        return {"success": False, "message": str(e)}
+
 
 @mcp.tool()
 def add_enhanced_input_action_event(
