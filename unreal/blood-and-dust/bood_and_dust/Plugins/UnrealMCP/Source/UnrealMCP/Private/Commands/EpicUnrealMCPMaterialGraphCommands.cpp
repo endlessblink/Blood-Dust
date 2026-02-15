@@ -51,6 +51,7 @@
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionNoise.h"
 #include "Materials/MaterialExpressionTwoSidedSign.h"
+#include "Materials/MaterialExpressionPerInstanceRandom.h"
 #include "UObject/SavePackage.h"
 
 FEpicUnrealMCPMaterialGraphCommands::FEpicUnrealMCPMaterialGraphCommands()
@@ -290,6 +291,10 @@ UMaterialExpression* FEpicUnrealMCPMaterialGraphCommands::CreateExpression(UMate
     else if (ExpressionType == TEXT("Noise"))
     {
         NewExpression = NewObject<UMaterialExpressionNoise>(Material);
+    }
+    else if (ExpressionType == TEXT("PerInstanceRandom"))
+    {
+        NewExpression = NewObject<UMaterialExpressionPerInstanceRandom>(Material);
     }
 
     if (NewExpression)
