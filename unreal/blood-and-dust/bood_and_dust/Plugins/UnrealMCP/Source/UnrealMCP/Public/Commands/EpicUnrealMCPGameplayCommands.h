@@ -41,4 +41,7 @@ private:
 
 	// Set runtime parameter on a spawned NiagaraActor's component
 	TSharedPtr<FJsonObject> HandleSetNiagaraParameter(const TSharedPtr<FJsonObject>& Params);
+
+	// Create atmospheric FX Niagara system with correct module stack
+	TSharedPtr<FJsonObject> HandleCreateAtmosphericFX(const TSharedPtr<FJsonObject>& Params);
 };

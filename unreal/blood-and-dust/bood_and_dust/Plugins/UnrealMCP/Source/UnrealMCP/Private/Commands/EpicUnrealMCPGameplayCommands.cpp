@@ -42,6 +42,15 @@
 #include "NiagaraSystemFactoryNew.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraEmitter.h"
+#include "NiagaraEmitterHandle.h"
+#include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraGraph.h"
+#include "NiagaraNodeOutput.h"
+#include "NiagaraNodeFunctionCall.h"
+#include "NiagaraSpriteRendererProperties.h"
+#include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "NiagaraCommon.h"
 
 FEpicUnrealMCPGameplayCommands::FEpicUnrealMCPGameplayCommands()
 {
@@ -80,6 +89,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleCommand(const FStr
 	else if (CommandType == TEXT("set_niagara_parameter"))
 	{
 		return HandleSetNiagaraParameter(Params);
+	}
+	else if (CommandType == TEXT("create_atmospheric_fx"))
+	{
+		return HandleCreateAtmosphericFX(Params);
 	}
 	else if (CommandType == TEXT("set_skeletal_animation"))
 	{
@@ -1412,6 +1425,253 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleSetNiagaraParamete
 	ResultObj->SetStringField(TEXT("parameter_name"), ParamName);
 	ResultObj->SetStringField(TEXT("parameter_type"), ParamType);
 	ResultObj->SetStringField(TEXT("value_set"), ValueSet);
+
+	return ResultObj;
+}
+
+// ============================================================================
+// 10. HandleCreateAtmosphericFX
+// ============================================================================
+TSharedPtr<FJsonObject> FEpicUnrealMCPGameplayCommands::HandleCreateAtmosphericFX(const TSharedPtr<FJsonObject>& Params)
+{
+	// Required: system_name
+	FString SystemName;
+	if (!Params->TryGetStringField(TEXT("system_name"), SystemName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_name' parameter"));
+	}
+
+	// Required: preset
+	FString Preset;
+	if (!Params->TryGetStringField(TEXT("preset"), Preset))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'preset' parameter"));
+	}
+
+	// Validate preset
+	if (Preset != TEXT("sandstorm") && Preset != TEXT("ground_mist") && Preset != TEXT("floating_dust"))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Invalid preset '%s'. Must be one of: sandstorm, ground_mist, floating_dust"), *Preset));
+	}
+
+	// Optional: destination_path (default /Game/FX)
+	FString DestinationPath = TEXT("/Game/FX");
+	Params->TryGetStringField(TEXT("destination_path"), DestinationPath);
+
+	// Build full asset path
+	FString FullAssetPath = DestinationPath / SystemName;
+
+	// Load Minimal template emitter
+	FString TemplatePath = TEXT("/Niagara/DefaultAssets/Templates/Emitters/Minimal");
+	UNiagaraEmitter* TemplateEmitter = Cast<UNiagaraEmitter>(
+		StaticLoadObject(UNiagaraEmitter::StaticClass(), nullptr, *TemplatePath));
+
+	if (!IsValid(TemplateEmitter))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to load Minimal template emitter at path: %s"), *TemplatePath));
+	}
+
+	// Create package
+	UPackage* Package = CreatePackage(*FullAssetPath);
+	if (!Package)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to create package at: %s"), *FullAssetPath));
+	}
+
+	// Create the Niagara system
+	UNiagaraSystem* NewSystem = NewObject<UNiagaraSystem>(
+		Package, FName(*SystemName), RF_Public | RF_Standalone);
+
+	if (!NewSystem)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create UNiagaraSystem object"));
+	}
+
+	// Initialize the system
+	UNiagaraSystemFactoryNew::InitializeSystem(NewSystem, true /* bCanBeInCluster */);
+
+	// Add emitter to system (UE 5.7 API: emitter + version GUID as separate params)
+	FNiagaraEditorUtilities::AddEmitterToSystem(*NewSystem, *TemplateEmitter, TemplateEmitter->GetExposedVersion().VersionGuid, true /* bCopy */);
+
+	// Get emitter handle from system
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = NewSystem->GetEmitterHandles();
+	if (EmitterHandles.Num() == 0)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No emitter handles found in system after adding emitter"));
+	}
+
+	// Get the emitter we just added
+	FVersionedNiagaraEmitter VersionedEmitter = EmitterHandles[0].GetInstance();
+	UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
+	if (!Emitter)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter from handle"));
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = Emitter->GetLatestEmitterData();
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+	}
+
+	UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
+	if (!ScriptSource)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get script source from emitter"));
+	}
+
+	UNiagaraGraph* Graph = ScriptSource->NodeGraph;
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get node graph from script source"));
+	}
+
+	// Mark graph as modified
+	Graph->Modify();
+
+	// Find output nodes for each script stage (using FindEquivalentOutputNode which is exported)
+	UNiagaraNodeOutput* EmitterUpdateOutput = Graph->FindEquivalentOutputNode(ENiagaraScriptUsage::EmitterUpdateScript);
+	UNiagaraNodeOutput* ParticleSpawnOutput = Graph->FindEquivalentOutputNode(ENiagaraScriptUsage::ParticleSpawnScript);
+	UNiagaraNodeOutput* ParticleUpdateOutput = Graph->FindEquivalentOutputNode(ENiagaraScriptUsage::ParticleUpdateScript);
+
+	if (!EmitterUpdateOutput)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to find EmitterUpdateScript output node"));
+	}
+	if (!ParticleSpawnOutput)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to find ParticleSpawnScript output node"));
+	}
+	if (!ParticleUpdateOutput)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to find ParticleUpdateScript output node"));
+	}
+
+	// Helper lambda to load and add a module script
+	TArray<FString> ModulesAdded;
+	TArray<FString> ModulesFailed;
+
+	auto AddModule = [&](const TCHAR* ModulePath, UNiagaraNodeOutput* OutputNode, const FString& Name) -> bool
+	{
+		UNiagaraScript* Script = Cast<UNiagaraScript>(
+			StaticLoadObject(UNiagaraScript::StaticClass(), nullptr, ModulePath));
+		if (!Script)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Failed to load Niagara module: %s"), ModulePath);
+			ModulesFailed.Add(Name);
+			return false;
+		}
+
+		UNiagaraNodeFunctionCall* Node = FNiagaraStackGraphUtilities::AddScriptModuleToStack(
+			Script, *OutputNode, INDEX_NONE, Name);
+
+		if (!Node)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Failed to add module to stack: %s"), *Name);
+			ModulesFailed.Add(Name);
+			return false;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("Successfully added module: %s"), *Name);
+		ModulesAdded.Add(Name);
+		return true;
+	};
+
+	// Add modules based on preset
+	if (Preset == TEXT("sandstorm"))
+	{
+		// EmitterUpdate: SpawnRate
+		AddModule(TEXT("/Niagara/Modules/Emitter/SpawnRate"), EmitterUpdateOutput, TEXT("SpawnRate"));
+
+		// ParticleSpawn: InitializeParticle, BoxLocation, AddVelocity
+		AddModule(TEXT("/Niagara/Modules/Spawn/Initialization/InitializeParticle"), ParticleSpawnOutput, TEXT("InitializeParticle"));
+		AddModule(TEXT("/Niagara/Modules/Spawn/Location/BoxLocation"), ParticleSpawnOutput, TEXT("BoxLocation"));
+		AddModule(TEXT("/Niagara/Modules/Spawn/Velocity/AddVelocity"), ParticleSpawnOutput, TEXT("AddVelocity"));
+
+		// ParticleUpdate: CurlNoiseForce, Drag, GravityForce, SolveForcesAndVelocity
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/CurlNoiseForce"), ParticleUpdateOutput, TEXT("CurlNoiseForce"));
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/Drag"), ParticleUpdateOutput, TEXT("Drag"));
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/GravityForce"), ParticleUpdateOutput, TEXT("GravityForce"));
+		AddModule(TEXT("/Niagara/Modules/Solvers/SolveForcesAndVelocity"), ParticleUpdateOutput, TEXT("SolveForcesAndVelocity"));
+	}
+	else if (Preset == TEXT("ground_mist"))
+	{
+		// EmitterUpdate: SpawnRate
+		AddModule(TEXT("/Niagara/Modules/Emitter/SpawnRate"), EmitterUpdateOutput, TEXT("SpawnRate"));
+
+		// ParticleSpawn: InitializeParticle, BoxLocation, AddVelocity
+		AddModule(TEXT("/Niagara/Modules/Spawn/Initialization/InitializeParticle"), ParticleSpawnOutput, TEXT("InitializeParticle"));
+		AddModule(TEXT("/Niagara/Modules/Spawn/Location/BoxLocation"), ParticleSpawnOutput, TEXT("BoxLocation"));
+		AddModule(TEXT("/Niagara/Modules/Spawn/Velocity/AddVelocity"), ParticleSpawnOutput, TEXT("AddVelocity"));
+
+		// ParticleUpdate: CurlNoiseForce, Drag, SolveForcesAndVelocity
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/CurlNoiseForce"), ParticleUpdateOutput, TEXT("CurlNoiseForce"));
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/Drag"), ParticleUpdateOutput, TEXT("Drag"));
+		AddModule(TEXT("/Niagara/Modules/Solvers/SolveForcesAndVelocity"), ParticleUpdateOutput, TEXT("SolveForcesAndVelocity"));
+	}
+	else if (Preset == TEXT("floating_dust"))
+	{
+		// EmitterUpdate: SpawnRate
+		AddModule(TEXT("/Niagara/Modules/Emitter/SpawnRate"), EmitterUpdateOutput, TEXT("SpawnRate"));
+
+		// ParticleSpawn: InitializeParticle, BoxLocation
+		AddModule(TEXT("/Niagara/Modules/Spawn/Initialization/InitializeParticle"), ParticleSpawnOutput, TEXT("InitializeParticle"));
+		AddModule(TEXT("/Niagara/Modules/Spawn/Location/BoxLocation"), ParticleSpawnOutput, TEXT("BoxLocation"));
+
+		// ParticleUpdate: CurlNoiseForce, GravityForce, SolveForcesAndVelocity
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/CurlNoiseForce"), ParticleUpdateOutput, TEXT("CurlNoiseForce"));
+		AddModule(TEXT("/Niagara/Modules/Update/Forces/GravityForce"), ParticleUpdateOutput, TEXT("GravityForce"));
+		AddModule(TEXT("/Niagara/Modules/Solvers/SolveForcesAndVelocity"), ParticleUpdateOutput, TEXT("SolveForcesAndVelocity"));
+	}
+
+	// Notify graph changed
+	Graph->NotifyGraphChanged();
+
+	// Request compile
+	NewSystem->RequestCompile(false);
+
+	// Wait for compilation to complete
+	NewSystem->WaitForCompilationComplete();
+
+	// Register with asset registry
+	FAssetRegistryModule::AssetCreated(NewSystem);
+
+	// Mark package dirty and save
+	Package->MarkPackageDirty();
+
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		FullAssetPath, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Package, NewSystem, *PackageFilename, SaveArgs);
+
+	UE_LOG(LogTemp, Log, TEXT("Created atmospheric FX system '%s' at '%s' with preset '%s'"),
+		*SystemName, *FullAssetPath, *Preset);
+
+	// Build response
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("system_path"), FullAssetPath);
+	ResultObj->SetStringField(TEXT("system_name"), SystemName);
+	ResultObj->SetStringField(TEXT("preset"), Preset);
+
+	// Add modules arrays
+	TArray<TSharedPtr<FJsonValue>> AddedArray;
+	for (const FString& ModuleName : ModulesAdded)
+	{
+		AddedArray.Add(MakeShared<FJsonValueString>(ModuleName));
+	}
+	ResultObj->SetArrayField(TEXT("modules_added"), AddedArray);
+
+	TArray<TSharedPtr<FJsonValue>> FailedArray;
+	for (const FString& ModuleName : ModulesFailed)
+	{
+		FailedArray.Add(MakeShared<FJsonValueString>(ModuleName));
+	}
+	ResultObj->SetArrayField(TEXT("modules_failed"), FailedArray);
 
 	return ResultObj;
 }

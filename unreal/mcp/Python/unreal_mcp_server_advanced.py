@@ -115,6 +115,7 @@ class UnrealConnection:
         "create_behavior_tree",
         "take_screenshot",
         "create_niagara_system",
+        "create_atmospheric_fx",
     }
 
     # Commands that need a post-execution cooldown to let the engine
@@ -137,6 +138,7 @@ class UnrealConnection:
         "create_blackboard": 1.0,         # BB asset creation + save
         "take_screenshot": 1.0,          # SceneCapture2D render + ReadPixels + PNG encode
         "create_niagara_system": 2.0,    # Niagara system creation + compile + save
+        "create_atmospheric_fx": 3.0,   # Niagara system with module stack + compile
     }
     
     def __init__(self):
@@ -1064,6 +1066,54 @@ def import_sound(
         return response or {"success": False, "message": "No response from Unreal"}
     except Exception as e:
         logger.error(f"import_sound error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def add_anim_notify(
+    animation_path: str,
+    time_seconds: float,
+    sound_path: str,
+    volume: float = 1.0,
+    clear_existing: bool = False
+) -> Dict[str, Any]:
+    """
+    Add a PlaySound AnimNotify to an animation at a specific time.
+
+    This is the professional way to sync sounds to animations. The notify fires
+    at the exact frame during playback — frame-perfect synchronization.
+    Works automatically with dynamic montages (PlaySlotAnimationAsDynamicMontage).
+
+    Parameters:
+    - animation_path: Content browser path to the UAnimSequence
+    - time_seconds: Time in seconds when the notify should fire
+    - sound_path: Content browser path to the USoundBase to play
+    - volume: Volume multiplier (default: 1.0)
+    - clear_existing: If true, removes all existing notifies before adding (default: False)
+
+    Returns:
+        Dictionary with success status, animation length, and total notify count.
+
+    Example usage:
+        add_anim_notify("/Game/Characters/Enemies/Bell/Animations/Bell_ZombieAttack",
+                        0.3, "/Game/Audio/SFX/Bell/S_Bell_Hit")
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "animation_path": animation_path,
+            "time_seconds": time_seconds,
+            "sound_path": sound_path,
+            "volume": volume,
+            "clear_existing": clear_existing
+        }
+        response = unreal.send_command("add_anim_notify", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"add_anim_notify error: {e}")
         return {"success": False, "message": str(e)}
 
 
@@ -5958,6 +6008,42 @@ def set_niagara_parameter(
     }
     try:
         response = unreal.send_command("set_niagara_parameter", params)
+        return response.get("result", response)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
+def create_atmospheric_fx(
+    system_name: str,
+    preset: str,
+    destination_path: str = "/Game/FX"
+) -> Dict[str, Any]:
+    """
+    Create a Niagara particle system with the correct module stack for atmospheric effects.
+
+    Unlike create_niagara_system (which copies a template as-is), this tool builds the proper
+    module stack for the requested effect type. The system is ready to spawn and the user can
+    fine-tune parameter values in the Niagara editor.
+
+    Presets and their module stacks:
+    - "sandstorm": SpawnRate + InitializeParticle + BoxLocation + AddVelocity + CurlNoiseForce + Drag + GravityForce + SolveForcesAndVelocity
+    - "ground_mist": SpawnRate + InitializeParticle + BoxLocation + AddVelocity + CurlNoiseForce + Drag + SolveForcesAndVelocity
+    - "floating_dust": SpawnRate + InitializeParticle + BoxLocation + CurlNoiseForce + GravityForce + SolveForcesAndVelocity
+
+    Parameters:
+    - system_name: Name for the new system asset (e.g., "NS_SandStorm_v2")
+    - preset: One of "sandstorm", "ground_mist", "floating_dust"
+    - destination_path: Content directory (default: "/Game/FX")
+    """
+    unreal = get_unreal_connection()
+    params = {
+        "system_name": system_name,
+        "preset": preset,
+        "destination_path": destination_path
+    }
+    try:
+        response = unreal.send_command("create_atmospheric_fx", params)
         return response.get("result", response)
     except Exception as e:
         return {"success": False, "message": str(e)}

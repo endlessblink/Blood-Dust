@@ -554,7 +554,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("delete_asset") ||
                      CommandType == TEXT("set_nanite_enabled") ||
                      CommandType == TEXT("scatter_foliage") ||
-                     CommandType == TEXT("import_sound"))
+                     CommandType == TEXT("import_sound") ||
+                     CommandType == TEXT("add_anim_notify"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -637,6 +638,7 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("spawn_niagara_system") ||
                      CommandType == TEXT("create_niagara_system") ||
                      CommandType == TEXT("set_niagara_parameter") ||
+                     CommandType == TEXT("create_atmospheric_fx") ||
                      CommandType == TEXT("set_skeletal_animation"))
             {
                 ResultJson = GameplayCommands->HandleCommand(CommandType, Params);
