@@ -3249,9 +3249,73 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 		ChangesApplied.Add(FString::Printf(TEXT("Mesh Z offset set to %.1f"), MeshOffsetZ));
 	}
 
+	// Set capsule half height if provided
+	double CapsuleHH = 0;
+	if (Params->TryGetNumberField(TEXT("capsule_half_height"), CapsuleHH))
+	{
+		UCapsuleComponent* Capsule = CDO->GetCapsuleComponent();
+		if (Capsule)
+		{
+			Capsule->SetCapsuleHalfHeight(CapsuleHH);
+			ChangesApplied.Add(FString::Printf(TEXT("CapsuleHalfHeight set to %.1f"), CapsuleHH));
+		}
+	}
+
+	double CapsuleR = 0;
+	if (Params->TryGetNumberField(TEXT("capsule_radius"), CapsuleR))
+	{
+		UCapsuleComponent* Capsule = CDO->GetCapsuleComponent();
+		if (Capsule)
+		{
+			Capsule->SetCapsuleRadius(CapsuleR);
+			ChangesApplied.Add(FString::Printf(TEXT("CapsuleRadius set to %.1f"), CapsuleR));
+		}
+	}
+
+	// Auto-fit capsule to mesh bounds
+	bool bAutoFit = false;
+	if (Params->TryGetBoolField(TEXT("auto_fit_capsule"), bAutoFit) && bAutoFit)
+	{
+		USkeletalMesh* SkelMesh = MeshComp->GetSkeletalMeshAsset();
+		if (SkelMesh)
+		{
+			FBoxSphereBounds MeshBounds = SkelMesh->GetBounds();
+			// BoxExtent is half-extents
+			float MeshHeight = MeshBounds.BoxExtent.Z * 2.0f; // Full height
+			float MeshWidth = FMath::Max(MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y) * 2.0f;
+
+			// Standard UE sizing: capsule encloses the mesh
+			float FitHalfHeight = MeshHeight / 2.0f;
+			float FitRadius = FMath::Min(MeshWidth / 2.0f, FitHalfHeight); // Radius can't exceed half-height
+
+			// Apply with a small margin (5%)
+			FitHalfHeight *= 1.05f;
+			FitRadius *= 1.05f;
+
+			UCapsuleComponent* Capsule = CDO->GetCapsuleComponent();
+			if (Capsule)
+			{
+				Capsule->SetCapsuleHalfHeight(FitHalfHeight);
+				Capsule->SetCapsuleRadius(FitRadius);
+				ChangesApplied.Add(FString::Printf(TEXT("Auto-fit capsule: HalfHeight=%.1f, Radius=%.1f (from mesh bounds: H=%.1f, W=%.1f)"),
+					FitHalfHeight, FitRadius, MeshHeight, MeshWidth));
+			}
+
+			// Also auto-set mesh Z offset = -HalfHeight (standard UE practice)
+			FVector Loc = MeshComp->GetRelativeLocation();
+			Loc.Z = -FitHalfHeight;
+			MeshComp->SetRelativeLocation(Loc);
+			ChangesApplied.Add(FString::Printf(TEXT("Mesh Z offset auto-set to %.1f"), -FitHalfHeight));
+		}
+		else
+		{
+			ChangesApplied.Add(TEXT("auto_fit_capsule: No skeletal mesh assigned, skipped"));
+		}
+	}
+
 	if (ChangesApplied.Num() == 0)
 	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties provided to change (use anim_blueprint_path, skeletal_mesh_path, or mesh_offset_z)"));
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties provided to change (use anim_blueprint_path, skeletal_mesh_path, mesh_offset_z, capsule_half_height, capsule_radius, or auto_fit_capsule)"));
 	}
 
 	// Compile and mark dirty

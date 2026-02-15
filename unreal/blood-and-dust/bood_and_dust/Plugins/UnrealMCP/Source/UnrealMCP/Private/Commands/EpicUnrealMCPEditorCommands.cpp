@@ -4547,17 +4547,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSnapActorToGround(co
 
     if (bHit)
     {
-        // Place actor so its bottom sits on the surface
+        // Place actor so its visual bottom sits on the surface.
+        // Uses GetActorBounds (computed at line 4526) which includes ALL components
+        // (capsule + skeletal mesh). This correctly handles meshes whose pivot
+        // isn't at the feet (common with Meshy AI exports).
         FVector NewLocation = ActorLocation;
         NewLocation.Z = HitResult.Location.Z;
 
-        // For ACharacter, the actor origin is at the capsule CENTER.
-        // We need to offset by the scaled capsule half-height so feet touch the ground.
-        ACharacter* Character = Cast<ACharacter>(TargetActor);
-        if (Character && Character->GetCapsuleComponent())
-        {
-            NewLocation.Z += Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-        }
+        // Distance from actor origin down to the lowest visual point
+        float VisualBottomOffset = ActorLocation.Z - (Origin.Z - BoxExtent.Z);
+        NewLocation.Z += VisualBottomOffset;
 
         TargetActor->SetActorLocation(NewLocation);
 

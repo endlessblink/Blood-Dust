@@ -1844,19 +1844,25 @@ def set_character_properties(
     anim_blueprint_path: str = "",
     skeletal_mesh_path: str = "",
     mesh_offset_z: float = None,
+    capsule_half_height: float = 0,
+    capsule_radius: float = 0,
+    auto_fit_capsule: bool = False,
 ) -> Dict[str, Any]:
     """
     Update properties on an existing Character Blueprint's CDO (Class Default Object).
 
-    Sets AnimBlueprint, SkeletalMesh, and/or mesh offset on the character's
-    inherited SkeletalMeshComponent. Use this to assign an AnimBP to a character
-    that was created without one.
+    Sets AnimBlueprint, SkeletalMesh, mesh offset, and/or capsule dimensions on the character's
+    inherited SkeletalMeshComponent and CapsuleComponent. Use this to assign an AnimBP to a character
+    that was created without one, or to resize the collision capsule.
 
     Parameters:
     - blueprint_path: Content path to Character Blueprint (e.g., "/Game/Characters/Robot/BP_RobotCharacter")
     - anim_blueprint_path: Content path to AnimBlueprint to assign (e.g., "/Game/Characters/Robot/ABP_Robot")
     - skeletal_mesh_path: Content path to SkeletalMesh to assign
     - mesh_offset_z: Z offset for the mesh component (useful for centering in capsule)
+    - capsule_half_height: CapsuleComponent half-height (0 means don't change)
+    - capsule_radius: CapsuleComponent radius (0 means don't change)
+    - auto_fit_capsule: If True, automatically calculates capsule size from skeletal mesh bounds and sets mesh Z offset
 
     Returns:
         Dictionary with list of changes applied.
@@ -1864,7 +1870,8 @@ def set_character_properties(
     Example:
         set_character_properties(
             blueprint_path="/Game/Characters/Robot/BP_RobotCharacter",
-            anim_blueprint_path="/Game/Characters/Robot/ABP_Robot"
+            anim_blueprint_path="/Game/Characters/Robot/ABP_Robot",
+            auto_fit_capsule=True
         )
     """
     unreal = get_unreal_connection()
@@ -1876,6 +1883,12 @@ def set_character_properties(
             params["skeletal_mesh_path"] = skeletal_mesh_path
         if mesh_offset_z is not None:
             params["mesh_offset_z"] = mesh_offset_z
+        if capsule_half_height > 0:
+            params["capsule_half_height"] = capsule_half_height
+        if capsule_radius > 0:
+            params["capsule_radius"] = capsule_radius
+        if auto_fit_capsule:
+            params["auto_fit_capsule"] = True
 
         response = unreal.send_command("set_character_properties", params)
         return response or {"success": False, "message": "No response from Unreal"}

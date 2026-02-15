@@ -52,6 +52,9 @@
 | **TASK-012** | **Add materials to all vegetation meshes** | **P2** | OPEN | - |
 | **TASK-013** | **Fix floating vegetation - snap to ground** | **P2** | OPEN | - |
 | ~~**TASK-014**~~ | ~~**Fix floating enemies - snap to ground**~~ | **P0** | ✅ DONE (2026-02-14) | - |
+| **BUG-015** | **Enemies float/sink/clip — need reliable grounding** | **P0** | IN PROGRESS | - |
+| ~~**BUG-016**~~ | ~~**Player can't move until attack button is pressed**~~ | **P0** | ~~DONE (2026-02-15)~~ | - |
+| **TASK-017** | **Custom health bar graphic in HUD** | **P2** | OPEN | - |
 
 ## Active Work
 

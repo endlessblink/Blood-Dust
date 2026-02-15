@@ -52,7 +52,7 @@ public:
 
 	/**
 	 * Tick-based enemy AI: chase player, attack in range, return when leashed.
-	 * Controls animations directly (no AnimBP slot needed).
+	 * Locomotion driven by AnimBP (reads CMC velocity). One-shots use montages.
 	 * State stored internally (static TMap). Call from Event Tick on each enemy.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Gameplay|AI", meta=(DefaultToSelf="Enemy"))
@@ -67,7 +67,15 @@ public:
 		float AttackRadius = 150.0f,
 		UAnimSequence* AttackAnim = nullptr,
 		UAnimSequence* IdleAnim = nullptr,
-		UAnimSequence* WalkAnim = nullptr
+		UAnimSequence* WalkAnim = nullptr,
+		UAnimSequence* DeathAnim = nullptr,
+		UAnimSequence* HitReactAnim = nullptr,
+		UAnimSequence* AttackAnim2 = nullptr,
+		UAnimSequence* AttackAnim3 = nullptr,
+		UAnimSequence* RunAnim = nullptr,
+		UAnimSequence* CrawlAnim = nullptr,
+		UAnimSequence* ScreamAnim = nullptr,
+		UAnimSequence* DeathAnim2 = nullptr
 	);
 
 	/**
@@ -90,4 +98,12 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category="Gameplay|Combat", meta=(DefaultToSelf="Character"))
 	static bool IsPlayerBlocking(ACharacter* Character);
+
+	/**
+	 * Manage game flow: checkpoint light collection + victory screen.
+	 * Call from EventTick on the player character, after ManagePlayerHUD.
+	 * Discovers PointLights named "Breadcrumb_Light*" and "Portal_Light*" on first call.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|GameFlow", meta=(DefaultToSelf="Player"))
+	static void ManageGameFlow(ACharacter* Player);
 };
