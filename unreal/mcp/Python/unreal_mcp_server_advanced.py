@@ -1118,6 +1118,47 @@ def add_anim_notify(
 
 
 @mcp.tool()
+def get_editor_log(
+    num_lines: int = 200,
+    filter: str = ""
+) -> Dict[str, Any]:
+    """
+    Read lines from the Unreal Editor log file.
+
+    Reads the current session's log file and returns the last N lines,
+    optionally filtered by a substring match. Useful for verifying plugin
+    load messages, checking for errors, and debugging runtime issues.
+
+    Parameters:
+    - num_lines: Number of lines to return (default: 200, max: 5000)
+    - filter: Optional substring filter — only lines containing this string are returned
+
+    Returns:
+        Dictionary with log_file path, total_lines, returned_lines count, and lines (newline-joined string).
+
+    Example usage:
+        get_editor_log(filter="BELL SKELETON FIX")
+        get_editor_log(filter="BUILD_ID", num_lines=50)
+        get_editor_log(filter="Error", num_lines=500)
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "num_lines": num_lines,
+        }
+        if filter:
+            params["filter"] = filter
+        response = unreal.send_command("get_editor_log", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"get_editor_log error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@mcp.tool()
 def set_texture_properties(
     texture_path: str,
     compression_type: str = "",
@@ -1971,6 +2012,7 @@ def set_character_properties(
     capsule_half_height: float = 0,
     capsule_radius: float = 0,
     auto_fit_capsule: bool = False,
+    mesh_scale: float = 0,
 ) -> Dict[str, Any]:
     """
     Update properties on an existing Character Blueprint's CDO (Class Default Object).
@@ -1987,6 +2029,7 @@ def set_character_properties(
     - capsule_half_height: CapsuleComponent half-height (0 means don't change)
     - capsule_radius: CapsuleComponent radius (0 means don't change)
     - auto_fit_capsule: If True, automatically calculates capsule size from skeletal mesh bounds and sets mesh Z offset
+    - mesh_scale: Uniform scale for the SkeletalMeshComponent (e.g., 3.0 for 3x size). Processed BEFORE auto_fit_capsule so the capsule fits the scaled mesh. Use this instead of actor scale to keep CharacterMovementComponent working correctly.
 
     Returns:
         Dictionary with list of changes applied.
@@ -2011,6 +2054,8 @@ def set_character_properties(
             params["capsule_half_height"] = capsule_half_height
         if capsule_radius > 0:
             params["capsule_radius"] = capsule_radius
+        if mesh_scale > 0:
+            params["mesh_scale"] = mesh_scale
         if auto_fit_capsule:
             params["auto_fit_capsule"] = True
 

@@ -27,6 +27,7 @@ Complete pipeline for adding enemy AI behavior via a single C++ tick function. E
 
 1. **ALL MCP calls STRICTLY SEQUENTIAL** — never parallel.
 2. **Build C++ FIRST, restart editor, THEN wire BPs.**
+2b. **BEFORE debugging ANY runtime issue, check binary vs source timestamps.** Linux UE5 does NOT hot-reload .so files. Run `stat -c %Y` on the `.so` and on all modified `.cpp`/`.h` files. If binary is OLDER than source → STOP, rebuild, restart editor, THEN test. This has wasted 4+ sessions debugging "phantom bugs" that were already fixed in source but not compiled.
 3. **AnimBP + Slot(DefaultSlot) + montages** is the ONLY correct animation pattern.
 4. **NEVER use OverrideAnimationData or SingleNode mode for runtime AI** — resets CurrentTime to 0, destroys AnimBP, no crossfade.
 5. **ALWAYS auto-fit capsule BEFORE wiring AI** — enemies float if capsule doesn't match mesh.
@@ -34,6 +35,10 @@ Complete pipeline for adding enemy AI behavior via a single C++ tick function. E
 7. **`set_node_property action=set_pin_default` for anim pins**: `default_value="/Game/Path/Anim.Anim"` (with `.Anim` suffix)
 8. **NEVER use SingleNode/PlayAnimation for ANY purpose** — it destroys the AnimBP. Death uses montage + bPauseAnims.
 9. **BlendSpace1D replaces state machines** — `UEnemyAnimInstance` provides smoothed Speed. NEVER use state machines for locomotion (they restart anims on state re-entry).
+10. **CRITICAL: `bAlwaysUpdateSourcePose = true` on ALL Slot nodes** — without this, the first montage PERMANENTLY stops BlendSpace evaluation. The slot freezes on the last BlendSpace frame (idle) and NEVER resumes. This is the #1 cause of "enemies don't walk" bugs.
+11. **ALWAYS call `Montage_Stop(0.15f)` when exiting HitReact state** — without this, hit-react montage blocks DefaultSlot indefinitely, preventing BlendSpace locomotion from showing.
+12. **Stagger immunity: 0.5s cooldown after HitReact ends** — prevents infinite stagger lock from rapid player attacks.
+13. **Init: MOVE_Walking, NOT MOVE_Falling** — MOVE_Falling causes a one-frame fall after ground snap, undoing the snap position. Use MOVE_Walking + `FindFloor()` instead.
 
 ## Animation Architecture Rules (CRITICAL)
 
@@ -41,13 +46,37 @@ Complete pipeline for adding enemy AI behavior via a single C++ tick function. E
 
 - **UEnemyAnimInstance** (C++ class in GameplayHelpers) provides smoothed `Speed` variable via `FInterpTo`
 - **BlendSpace1D** drives locomotion — Speed 0=Idle, ~300=Walk. NO state machine, NO animation resets
-- **Slot(DefaultSlot)** allows montage overlays for one-shot actions (attacks, hit-react, scream)
+- **Slot(DefaultSlot, bAlwaysUpdateSourcePose=true)** allows montage overlays for one-shot actions (attacks, hit-react, scream)
 - **Death** uses montage + `bIsDead=true` on AnimInstance + `bPauseAnims=true` to freeze final pose, then break-apart debris
 
 The AnimGraph for each enemy:
 ```
-[BlendSpace1D (Speed param)] → [Slot(DefaultSlot)] → Output
+[BlendSpace1D (Speed param)] → [Slot(DefaultSlot, bAlwaysUpdateSourcePose=true)] → Output
 ```
+
+### CRITICAL: bAlwaysUpdateSourcePose on Slot Nodes
+
+**Without this flag, BlendSpace → Slot → Output is ARCHITECTURALLY BROKEN in UE5.**
+
+When `bAlwaysUpdateSourcePose = false` (the default):
+1. First montage plays on DefaultSlot → BlendSpace source STOPS EVALUATING
+2. Montage ends → Slot shows FROZEN last frame of BlendSpace (idle)
+3. BlendSpace NEVER resumes → enemy appears permanently stuck in idle pose
+
+With `bAlwaysUpdateSourcePose = true`:
+1. BlendSpace continues evaluating even while montages play
+2. When montage ends, Slot seamlessly reverts to current BlendSpace pose
+3. Locomotion works correctly after attacks/hit-reacts
+
+The `setup_blendspace_locomotion` MCP tool sets this flag automatically. If manually creating Slot nodes, ALWAYS set `SlotNode->Node.bAlwaysUpdateSourcePose = true;`
+
+### CRITICAL: Montage Cleanup on State Transitions
+
+When the AI state exits HitReact, the C++ code MUST call `Montage_Stop(0.15f)` to release the DefaultSlot. Without this:
+- Hit-react montage plays for its full length (1-3s) even though AI state transitions after 0.5s
+- The orphaned montage blocks BlendSpace on DefaultSlot
+- Enemy appears frozen in hit-react pose while "logically" chasing the player
+- During montage blend-out (0.15s), skeleton interpolation between incompatible poses creates visual "scaling" artifacts (limbs stretching/deforming)
 
 ### PlayAnimationOneShot: bForceInterrupt Parameter
 
@@ -195,11 +224,19 @@ DEAD: Play death montage → bPauseAnims freeze → rock debris break-apart → 
 
 ### Hit Reaction Trigger
 
-When enemy takes damage via `ReceiveAnyDamage` event:
+When enemy takes damage (HP decrease detected via reflection):
+- Check stagger immunity (0.5s cooldown since last HitReact ended) — skip if immune
 - Play HitReactAnim with `bForceInterrupt=true` (instantly stops current montage)
 - Store current state (Chase/Attack/Idle)
-- Enter HitReact state (duration = anim length)
-- After anim finishes, return to stored state
+- Enter HitReact state (duration = min(anim length, 0.5s))
+- After duration expires:
+  1. Restore previous AI state
+  2. **CRITICAL: Call `Montage_Stop(0.15f)` to release DefaultSlot** — without this, montage blocks BlendSpace
+  3. Record `LastHitReactEndTime` for stagger immunity cooldown
+
+**WHY Montage_Stop is critical**: The HitReact AI state lasts 0.5s, but the montage plays for its full animation length (1-3s). Without stopping it, the enemy appears frozen in hit-react pose even after AI recovers. The 0.15s blend-out ensures a smooth visual transition back to locomotion.
+
+**WHY stagger immunity is critical**: Without a cooldown, every player hit (every 0.3s) re-enters HitReact and restarts the montage from frame 0. This creates infinite stagger lock — the enemy can NEVER act.
 
 ### Death Trigger
 
@@ -246,7 +283,20 @@ set_character_properties(
 )
 ```
 
-### After Auto-Fit: Snap All Placed Instances to Ground
+### CRITICAL: CDO Changes Do NOT Propagate to Placed Instances
+
+`auto_fit_capsule` updates the Blueprint CDO (Class Default Object), but **instances already placed in the level keep their OLD serialized capsule values**. `MarkBlueprintAsStructurallyModified` + `CompileBlueprint` does NOT reliably reconstruct placed instances.
+
+**The ONLY reliable fix: DELETE all placed instances, then RE-SPAWN fresh.**
+
+1. Save all instance positions/rotations via `find_actors_by_name`
+2. Delete all instances via `delete_actors_by_pattern`
+3. Spawn fresh instances at saved positions via `spawn_blueprint_actor_in_level`
+4. Snap each to ground via `snap_actor_to_ground`
+
+Fresh instances inherit the correct CDO capsule values automatically.
+
+### After Re-Spawn: Snap All Instances to Ground
 
 ```
 For each enemy actor in the level:
@@ -563,10 +613,15 @@ LogTemp: Enemy BP_KingBot_C_0 died, playing death animation
 - Verify MoveSpeed > 0 in UpdateEnemyAI pin defaults
 - Check Output Log for "Enemy assigned personality" — if missing, UpdateEnemyAI isn't being called
 
-### "Enemy slides instead of walking animation"
-- **Ensure AnimBP is assigned to skeletal mesh**: `set_character_properties(anim_blueprint=...)`
-- AnimBP locomotion state machine reads `Speed` variable (from CharacterMovementComponent velocity)
-- Use `setup_locomotion_state_machine` to create AnimBP (automatic Idle ↔ Walk state machine)
+### "Enemy slides instead of walking animation" / "Enemy stuck in idle"
+**Root cause is almost always `bAlwaysUpdateSourcePose = false` on the Slot node.** When this flag is false (UE5 default), the first montage that plays on DefaultSlot permanently stops the BlendSpace from evaluating. The BlendSpace freezes on its last frame (idle) and never resumes.
+
+**Fix**: Recreate AnimBPs using `setup_blendspace_locomotion` (which now sets `bAlwaysUpdateSourcePose = true`).
+
+Other causes:
+- AnimBP not assigned: `set_character_properties(anim_blueprint=...)`
+- Orphaned hit-react montage blocking DefaultSlot: Ensure `Montage_Stop(0.15f)` is called on HitReact exit
+- UEnemyAnimInstance reflection lookup failed: Check log for `"EnemyAnimInstance: No BlendSpace node found on generated class"`
 - If no AnimBP: enemy will T-pose slide (still functional AI, just no anim)
 
 ### "Enemy doesn't animate attacks"
@@ -585,6 +640,22 @@ LogTemp: Enemy BP_KingBot_C_0 died, playing death animation
 - AnimBP not assigned to skeletal mesh component
 - Wrong skeleton in AnimBP (must match skeletal mesh skeleton)
 - AnimBP not compiled — check for Blueprint compile errors
+
+### "Enemy glides / stuck in idle despite correct AnimBP and BlendSpace" (SKELETON MISMATCH)
+**Root cause (4+ sessions to find):** The skeletal mesh, AnimBP, BlendSpace, and animations must ALL reference the **exact same USkeleton pointer**. If the mesh uses `SK_Bell_New_Skeleton` but animations use `SK_Bell_Skeleton`, UE5 silently fails to map bone transforms — character freezes in idle at runtime. Editor preview works fine (uses animation's own skeleton).
+
+**How to detect:**
+1. Check skeleton names: `get_asset_info` on mesh, AnimBP, BlendSpace, and each animation
+2. If names differ (e.g., `SK_Bell_New_Skeleton` vs `SK_Bell_Skeleton`), that's the bug
+3. Even if bone hierarchies are identical, different USkeleton objects are incompatible
+
+**How to fix:**
+1. `SetSkeleton()` on the mesh to use the same skeleton as animations
+2. `TargetSkeleton` on AnimBP to match
+3. Recreate BlendSpace (it inherits skeleton from AnimBP)
+4. Rebuild + restart editor
+
+**Prevention:** When importing Meshy AI characters, always specify an existing skeleton during skeletal mesh import to avoid creating duplicate USkeleton assets from separate FBX imports.
 
 ### "Enemy attacks too fast / too slow"
 - Adjust `AttackCooldown` pin default (seconds between attacks)
@@ -615,6 +686,26 @@ LogTemp: Enemy BP_KingBot_C_0 died, playing death animation
 - Old UpdateEnemyAI signature used OverrideAnimationData (breaks AnimBP) — DELETE old node, recreate with new signature
 - Ensure AnimBP is assigned (not overridden by SingleNode mode during runtime)
 - Check that you're NOT manually calling `MeshComp->PlayAnimation()` except for death
+
+### "Enemy stays in stagger / hit-react too long"
+**Root cause: Missing `Montage_Stop()` on HitReact exit.** The AI state transitions after 0.5s, but the hit-react montage keeps playing for its full length (1-3s). The montage blocks DefaultSlot, making the enemy appear frozen in the hit-react pose.
+**Fix**: Ensure `Montage_Stop(0.15f)` is called when `State.CurrentState` transitions FROM HitReact.
+
+### "Enemy appears to scale / deform when recovering from hit"
+**Root cause: Skeleton interpolation artifact during montage blend-out.** When the hit-react montage blends out (0.15s), UE5 lerps between the hit-react pose (arms up/blocking) and the locomotion pose (walking). If these poses are dramatically different, bones stretch and deform during the blend, creating a visual "scaling" effect.
+**Fix**: This is resolved by properly stopping the montage with `Montage_Stop(0.15f)` on HitReact exit.
+
+### "Enemy floats above ground"
+**5 potential causes** (check in order):
+1. **Capsule too large**: Run `set_character_properties(auto_fit_capsule=true)` on all enemy BPs
+2. **Init race condition**: `SetMovementMode(MOVE_Falling)` after snap undoes the snap. Use `MOVE_Walking` + `FindFloor()` instead.
+3. **No periodic ground re-snap**: CMC may lose floor contact during gameplay. Add safety check.
+4. **Wrong mesh on BP**: Bell has SK_Bell vs SK_Bell_New — auto_fit uses whichever mesh is currently set
+5. **Animation root bone offset**: Different Mixamo characters have root bone at different positions
+
+### "Infinite stagger lock — enemy can never act"
+**Root cause: No stagger immunity cooldown.** After HitReact exits (0.5s), the enemy immediately becomes eligible for another HitReact on the next damage tick. Rapid player attacks restart the hit-react montage from frame 0 every 0.5s.
+**Fix**: Add `LastHitReactEndTime` tracking with 0.5s cooldown. Enemy cannot enter HitReact if `(CurrentTime - LastHitReactEndTime) < 0.5`.
 
 ---
 

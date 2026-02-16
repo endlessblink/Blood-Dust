@@ -279,6 +279,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     {
         return HandleAddAnimNotify(Params);
     }
+    // Editor log reading
+    else if (CommandType == TEXT("get_editor_log"))
+    {
+        return HandleGetEditorLog(Params);
+    }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
@@ -6292,6 +6297,89 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleAddAnimNotify(const 
     Result->SetNumberField(TEXT("total_notifies"), AnimSeq->Notifies.Num());
     Result->SetNumberField(TEXT("animation_length"), AnimSeq->GetPlayLength());
     Result->SetStringField(TEXT("message"), TEXT("AnimNotify_PlaySound added successfully"));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetEditorLog(const TSharedPtr<FJsonObject>& Params)
+{
+    // Parameters: num_lines (default 200), filter (optional substring match)
+    int32 NumLines = 200;
+    double NumLinesDouble = 0;
+    if (Params->TryGetNumberField(TEXT("num_lines"), NumLinesDouble))
+    {
+        NumLines = FMath::Clamp(static_cast<int32>(NumLinesDouble), 1, 5000);
+    }
+
+    FString Filter;
+    Params->TryGetStringField(TEXT("filter"), Filter);
+
+    // Find the current log file
+    FString LogDir = FPaths::ProjectLogDir();
+    FString LogFilePath = LogDir / FApp::GetProjectName() + TEXT(".log");
+
+    if (!FPaths::FileExists(LogFilePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Log file not found at: %s"), *LogFilePath));
+    }
+
+    // Read the entire log file
+    FString LogContent;
+    if (!FFileHelper::LoadFileToString(LogContent, *LogFilePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to read log file: %s"), *LogFilePath));
+    }
+
+    // Split into lines
+    TArray<FString> AllLines;
+    LogContent.ParseIntoArrayLines(AllLines);
+
+    // Apply filter if provided
+    TArray<FString> FilteredLines;
+    if (Filter.IsEmpty())
+    {
+        // No filter — take last N lines
+        int32 StartIdx = FMath::Max(0, AllLines.Num() - NumLines);
+        for (int32 i = StartIdx; i < AllLines.Num(); i++)
+        {
+            FilteredLines.Add(AllLines[i]);
+        }
+    }
+    else
+    {
+        // Filter matching lines, then take last N
+        TArray<FString> MatchingLines;
+        for (const FString& Line : AllLines)
+        {
+            if (Line.Contains(Filter))
+            {
+                MatchingLines.Add(Line);
+            }
+        }
+        int32 StartIdx = FMath::Max(0, MatchingLines.Num() - NumLines);
+        for (int32 i = StartIdx; i < MatchingLines.Num(); i++)
+        {
+            FilteredLines.Add(MatchingLines[i]);
+        }
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("log_file"), LogFilePath);
+    Result->SetNumberField(TEXT("total_lines"), AllLines.Num());
+    Result->SetNumberField(TEXT("returned_lines"), FilteredLines.Num());
+
+    if (!Filter.IsEmpty())
+    {
+        Result->SetStringField(TEXT("filter"), Filter);
+    }
+
+    // Join filtered lines into a single string (more compact than JSON array)
+    FString JoinedLines = FString::Join(FilteredLines, TEXT("\n"));
+    Result->SetStringField(TEXT("lines"), JoinedLines);
 
     return Result;
 }

@@ -555,7 +555,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("set_nanite_enabled") ||
                      CommandType == TEXT("scatter_foliage") ||
                      CommandType == TEXT("import_sound") ||
-                     CommandType == TEXT("add_anim_notify"))
+                     CommandType == TEXT("add_anim_notify") ||
+                     CommandType == TEXT("get_editor_log"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

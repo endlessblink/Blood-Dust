@@ -83,4 +83,7 @@ private:
 
     // Animation notify
     TSharedPtr<FJsonObject> HandleAddAnimNotify(const TSharedPtr<FJsonObject>& Params);
+
+    // Editor log reading
+    TSharedPtr<FJsonObject> HandleGetEditorLog(const TSharedPtr<FJsonObject>& Params);
 };

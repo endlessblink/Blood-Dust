@@ -302,7 +302,13 @@
       "WebFetch(domain:timengelke.medium.com)",
       "mcp__unrealMCP__create_atmospheric_fx",
       "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture checkout -- \"unreal/blood-and-dust/bood_and_dust/Content/FX/NS_FloatingDust.uasset\")",
-      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture status -- \"unreal/blood-and-dust/bood_and_dust/Content/FX/NS_FloatingDust.uasset\")"
+      "Bash(git -C /media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture status -- \"unreal/blood-and-dust/bood_and_dust/Content/FX/NS_FloatingDust.uasset\")",
+      "mcp__unrealMCP__set_widget_property",
+      "WebFetch(domain:community.gamedev.tv)",
+      "Bash(while pgrep:*)",
+      "Bash(for f in \"/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Saved/Logs/\"*.log)",
+      "Bash(do grep \"setup_blendspace.*idle\\\\|setup_blendspace.*walk\\\\|setup_blendspace.*Sample\" \"$f\")",
+      "mcp__unrealMCP__get_editor_log"
     ]
   },
   "enableAllProjectMcpServers": true,

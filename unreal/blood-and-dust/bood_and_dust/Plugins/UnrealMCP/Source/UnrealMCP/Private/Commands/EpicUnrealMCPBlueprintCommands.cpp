@@ -2577,6 +2577,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupLocomotionSt
 	// Create Slot node between SM and Root for montage playback
 	UAnimGraphNode_Slot* SlotNode = NewObject<UAnimGraphNode_Slot>(AnimGraph);
 	SlotNode->Node.SlotName = FName("DefaultSlot");
+	SlotNode->Node.bAlwaysUpdateSourcePose = true; // CRITICAL: Keep source evaluating while montages play
 	SlotNode->NodePosX = RootNode->NodePosX - 200;
 	SlotNode->NodePosY = RootNode->NodePosY;
 	AnimGraph->AddNode(SlotNode, true, false);
@@ -3639,6 +3640,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetupBlendspaceLo
 	// Slot node (montage overlay for attacks, hit-react, death)
 	UAnimGraphNode_Slot* SlotNode = NewObject<UAnimGraphNode_Slot>(AnimGraph);
 	SlotNode->Node.SlotName = FName("DefaultSlot");
+	SlotNode->Node.bAlwaysUpdateSourcePose = true; // CRITICAL: Keep BlendSpace evaluating while montages play
 	SlotNode->NodePosX = RootNode->NodePosX - 200;
 	SlotNode->NodePosY = RootNode->NodePosY;
 	AnimGraph->AddNode(SlotNode, true, false);
@@ -3824,8 +3826,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 			UAnimBlueprint* AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
 			if (AnimBP && AnimBP->GeneratedClass)
 			{
+				MeshComp->SetAnimationMode(EAnimationMode::AnimationBlueprint);
 				MeshComp->SetAnimInstanceClass(AnimBP->GeneratedClass);
-				ChangesApplied.Add(FString::Printf(TEXT("AnimBP set to %s"), *AnimBPPath));
+				ChangesApplied.Add(FString::Printf(TEXT("AnimBP set to %s (mode=AnimationBlueprint)"), *AnimBPPath));
 			}
 			else
 			{
@@ -3883,7 +3886,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 		}
 	}
 
-	// Auto-fit capsule to mesh bounds
+	// Set mesh relative scale if provided (process BEFORE auto_fit so fit uses new scale)
+	double MeshScale = 0;
+	if (Params->TryGetNumberField(TEXT("mesh_scale"), MeshScale) && MeshScale > 0)
+	{
+		MeshComp->SetRelativeScale3D(FVector(MeshScale));
+		ChangesApplied.Add(FString::Printf(TEXT("Mesh scale set to %.2f"), MeshScale));
+	}
+
+	// Auto-fit capsule to mesh bounds (accounts for mesh component scale)
 	bool bAutoFit = false;
 	if (Params->TryGetBoolField(TEXT("auto_fit_capsule"), bAutoFit) && bAutoFit)
 	{
@@ -3902,13 +3913,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 				ChangesApplied.Add(TEXT("auto_fit: ImportedBounds was zero, fell back to GetBounds"));
 			}
 
-			// Full mesh dimensions
-			float MeshHeight = MeshBounds.BoxExtent.Z * 2.0f;
-			float MeshWidth = FMath::Max(MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y) * 2.0f;
+			// Account for mesh component's relative scale (e.g., mesh_scale=3 for huge enemies)
+			FVector MeshRelScale = MeshComp->GetRelativeScale3D();
+			float ScaleZ = MeshRelScale.Z;
+			float ScaleXY = FMath::Max(MeshRelScale.X, MeshRelScale.Y);
 
-			// The mesh's lowest and highest points in local space
-			float MeshMinZ = MeshBounds.Origin.Z - MeshBounds.BoxExtent.Z;
-			float MeshMaxZ = MeshBounds.Origin.Z + MeshBounds.BoxExtent.Z;
+			// Full mesh dimensions (scaled)
+			float MeshHeight = MeshBounds.BoxExtent.Z * 2.0f * ScaleZ;
+			float MeshWidth = FMath::Max(MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y) * 2.0f * ScaleXY;
+
+			// The mesh's lowest and highest points in local space (scaled)
+			float MeshMinZ = (MeshBounds.Origin.Z - MeshBounds.BoxExtent.Z) * ScaleZ;
+			float MeshMaxZ = (MeshBounds.Origin.Z + MeshBounds.BoxExtent.Z) * ScaleZ;
 
 			// Capsule half-height = half the mesh height with 5% margin
 			float FitHalfHeight = (MeshHeight / 2.0f) * 1.05f;
@@ -3950,7 +3966,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 
 	if (ChangesApplied.Num() == 0)
 	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties provided to change (use anim_blueprint_path, skeletal_mesh_path, mesh_offset_z, capsule_half_height, capsule_radius, or auto_fit_capsule)"));
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties provided to change (use anim_blueprint_path, skeletal_mesh_path, mesh_offset_z, capsule_half_height, capsule_radius, mesh_scale, or auto_fit_capsule)"));
 	}
 
 	// Compile and mark dirty

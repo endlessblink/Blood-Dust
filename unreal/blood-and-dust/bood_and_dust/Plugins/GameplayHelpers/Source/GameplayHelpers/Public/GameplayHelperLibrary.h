@@ -110,6 +110,14 @@ public:
 	static void ManageGameFlow(ACharacter* Player);
 
 	/**
+	 * Manage minimap display: AI-generated map background with player + enemy markers.
+	 * Call from EventTick on the player character, after ManagePlayerHUD.
+	 * Auto-creates minimap widget on first call. Hides when player is dead.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Gameplay|HUD", meta=(DefaultToSelf="Player"))
+	static void ManageMinimap(ACharacter* Player);
+
+	/**
 	 * Start intro camera sequence: 1st-person head-bone POV during getting-up animation,
 	 * fade from black, then smooth camera drift back to 3rd-person.
 	 * Dynamically creates UIntroSequenceComponent on the Character.

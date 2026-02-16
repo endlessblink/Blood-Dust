@@ -38,6 +38,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -115,6 +116,22 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 	// Fire AnimNotify_PlaySound events from the source AnimSequence via timers.
 	// Dynamic montages do NOT copy notifies from source sequences, so we manually
 	// read notify events and schedule UGameplayStatics::PlaySoundAtLocation calls.
+
+	// Hero hit sound random selection: load both variants once, swap randomly at runtime.
+	static USoundBase* HeroHit1 = nullptr;
+	static USoundBase* HeroHit2 = nullptr;
+	static bool bHeroHitsLoaded = false;
+	if (!bHeroHitsLoaded)
+	{
+		bHeroHitsLoaded = true;
+		HeroHit1 = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_1.S_Hero_Hit_1")));
+		HeroHit2 = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_2.S_Hero_Hit_2")));
+	}
+
 	for (const FAnimNotifyEvent& NotifyEvent : AnimSequence->Notifies)
 	{
 		UAnimNotify_PlaySound* SoundNotify = Cast<UAnimNotify_PlaySound>(NotifyEvent.Notify);
@@ -125,6 +142,12 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 			USoundBase* Sound = SoundNotify->Sound;
 			float Volume = SoundNotify->VolumeMultiplier;
 			float Pitch = SoundNotify->PitchMultiplier;
+
+			// If this is a hero hit sound, randomly pick between both variants
+			if (HeroHit1 && HeroHit2 && (Sound == HeroHit1 || Sound == HeroHit2))
+			{
+				Sound = FMath::RandBool() ? HeroHit1 : HeroHit2;
+			}
 
 			FTimerHandle SoundTimerHandle;
 			Character->GetWorldTimerManager().SetTimer(
@@ -274,6 +297,158 @@ struct FGameFlowState
 };
 static FGameFlowState GameFlow;
 
+// --- Minimap ---
+
+// Custom Slate widget that draws markers directly via OnPaint.
+// No RenderTransform, no layout-based positioning — just direct draw calls.
+// This guarantees markers stay within the widget's painted geometry.
+class SMinimapMarkerLayer : public SLeafWidget
+{
+public:
+	struct FMarkerData
+	{
+		FVector2D Position; // pixel position within widget
+		float Size;
+		const FSlateBrush* Brush;
+		bool bVisible;
+	};
+
+	SLATE_BEGIN_ARGS(SMinimapMarkerLayer) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		SetCanTick(false);
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D::ZeroVector; // fills parent
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
+		const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements,
+		int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		for (const FMarkerData& M : Markers)
+		{
+			if (!M.bVisible || !M.Brush) continue;
+
+			FSlateDrawElement::MakeBox(
+				OutDrawElements,
+				LayerId,
+				AllottedGeometry.ToPaintGeometry(
+					FVector2D(M.Size, M.Size),
+					FSlateLayoutTransform(M.Position)),
+				M.Brush,
+				ESlateDrawEffect::None,
+				FLinearColor::White
+			);
+		}
+		return LayerId;
+	}
+
+	void SetMarkerCount(int32 Count)
+	{
+		Markers.SetNum(Count);
+	}
+
+	void SetMarker(int32 Index, const FVector2D& Pos, float Size, const FSlateBrush* Brush, bool bVisible)
+	{
+		if (Index < Markers.Num())
+		{
+			Markers[Index] = { Pos, Size, Brush, bVisible };
+		}
+	}
+
+	void RequestRepaint()
+	{
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+
+private:
+	TArray<FMarkerData> Markers;
+};
+
+struct FMinimapState
+{
+	TWeakObjectPtr<UWorld> OwnerWorld;
+	bool bCreated = false;
+
+	// Textures
+	TStrongObjectPtr<UTexture2D> MapTexture;
+	FSlateBrush MapBrush;
+
+	// Dot brushes (rounded circles)
+	FSlateBrush PlayerDotBrush;
+	FSlateBrush CheckpointActiveBrush;
+	FSlateBrush CheckpointCollectedBrush;
+
+	// Widget references
+	TSharedPtr<SOverlay> RootWidget;
+	TSharedPtr<SMinimapMarkerLayer> MarkerLayer;
+
+	// Marker slot layout: [checkpoints 0..15] [player 16]
+	static constexpr int32 MaxCheckpointMarkers = 16;
+	static constexpr int32 PlayerSlot = MaxCheckpointMarkers; // 16
+	static constexpr int32 TotalMarkers = PlayerSlot + 1;     // 17
+
+	// World bounds for coordinate mapping (auto-detected from landscape)
+	FVector2D WorldMin = FVector2D(-15000, -15000);
+	FVector2D WorldMax = FVector2D(15000, 15000);
+};
+static FMinimapState MinimapState;
+
+// Minimap display constants (2x size)
+static constexpr float MinimapWidth = 700.0f;
+static constexpr float MinimapHeight = 436.0f;  // 700 * (637/1024) preserving aspect ratio
+static constexpr float MinimapPlayerMarkerSize = 16.0f;
+static constexpr float MinimapCheckpointMarkerSize = 14.0f;
+
+// Inner map area (fraction of widget where markers move, inside the ornate frame)
+// Tightened inward to keep markers well within the painted map, off the frame border
+static constexpr float MinimapInnerLeft   = 0.175f;
+static constexpr float MinimapInnerRight  = 0.825f;
+static constexpr float MinimapInnerTop    = 0.150f;
+static constexpr float MinimapInnerBottom = 0.660f;
+
+// Coordinate mapping: adjust these to match map orientation to world
+static constexpr bool bMinimapSwapXY = false;
+static constexpr bool bMinimapFlipX  = false;
+static constexpr bool bMinimapFlipY  = true;  // world Y+ typically = screen down, so flip
+
+static FVector2D WorldToMinimapPos(const FVector& WorldPos, float MarkerSize)
+{
+	float NormX = (WorldPos.X - MinimapState.WorldMin.X) /
+		FMath::Max(MinimapState.WorldMax.X - MinimapState.WorldMin.X, 1.0);
+	float NormY = (WorldPos.Y - MinimapState.WorldMin.Y) /
+		FMath::Max(MinimapState.WorldMax.Y - MinimapState.WorldMin.Y, 1.0);
+
+	NormX = FMath::Clamp(NormX, 0.f, 1.f);
+	NormY = FMath::Clamp(NormY, 0.f, 1.f);
+
+	if (bMinimapSwapXY) Swap(NormX, NormY);
+	if (bMinimapFlipX) NormX = 1.0f - NormX;
+	if (bMinimapFlipY) NormY = 1.0f - NormY;
+
+	// Absolute pixel coords within the full minimap widget (includes frame offset)
+	float FrameL = MinimapWidth * MinimapInnerLeft;
+	float FrameT = MinimapHeight * MinimapInnerTop;
+	float FrameR = MinimapWidth * MinimapInnerRight;
+	float FrameB = MinimapHeight * MinimapInnerBottom;
+	float InnerW = FrameR - FrameL;
+	float InnerH = FrameB - FrameT;
+
+	float PixelX = FrameL + NormX * InnerW - MarkerSize * 0.5f;
+	float PixelY = FrameT + NormY * InnerH - MarkerSize * 0.5f;
+
+	// Clamp so marker stays entirely within the inner frame area
+	PixelX = FMath::Clamp(PixelX, FrameL, FrameR - MarkerSize);
+	PixelY = FMath::Clamp(PixelY, FrameT, FrameB - MarkerSize);
+
+	return FVector2D(PixelX, PixelY);
+}
+
 // --- Enemy AI State Machine ---
 
 enum class EEnemyAIState : uint8
@@ -309,6 +484,7 @@ struct FEnemyAIStateData
 	FVector SpawnLocation;
 	double LastAttackTime = 0.0;
 	double HitReactStartTime = 0.0;
+	double LastHitReactEndTime = 0.0; // Stagger immunity: cooldown after hit-react ends
 	double DeathStartTime = 0.0;
 	float PreviousHealth = -1.f; // -1 = uninitialized
 	EEnemyAIState CurrentState = EEnemyAIState::Idle;
@@ -368,6 +544,9 @@ struct FEnemyAIStateData
 	double PendingDamageTime = 0.0;
 	float PendingDamageAmount = 0.f;
 	float PendingDamageRadius = 0.f;
+
+	// Diagnostic frame counter for periodic logging
+	int32 DiagFrameCounter = 0;
 };
 static TMap<TWeakObjectPtr<AActor>, FEnemyAIStateData> EnemyAIStates;
 
@@ -551,6 +730,8 @@ struct FPlayerFootstepState
 	double LastStepTime = 0.0;
 	USoundBase* WalkL = nullptr;
 	USoundBase* WalkR = nullptr;
+	USoundBase* HitSound1 = nullptr;
+	USoundBase* HitSound2 = nullptr;
 	USoundBase* DeathSound = nullptr;
 	bool bSoundsLoaded = false;
 };
@@ -578,13 +759,21 @@ static void UpdatePlayerFootsteps(ACharacter* Player)
 		PlayerFootsteps.WalkR = Cast<USoundBase>(StaticLoadObject(
 			USoundBase::StaticClass(), nullptr,
 			TEXT("/Game/Audio/SFX/Hero/S_Hero_Walk_R.S_Hero_Walk_R")));
+		PlayerFootsteps.HitSound1 = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_1.S_Hero_Hit_1")));
+		PlayerFootsteps.HitSound2 = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_2.S_Hero_Hit_2")));
 		PlayerFootsteps.DeathSound = Cast<USoundBase>(StaticLoadObject(
 			USoundBase::StaticClass(), nullptr,
 			TEXT("/Game/Audio/SFX/Hero/S_Hero_Death.S_Hero_Death")));
 
-		UE_LOG(LogTemp, Log, TEXT("PlayerFootsteps: WalkL=%s WalkR=%s Death=%s"),
+		UE_LOG(LogTemp, Log, TEXT("PlayerFootsteps: WalkL=%s WalkR=%s Hit1=%s Hit2=%s Death=%s"),
 			PlayerFootsteps.WalkL ? TEXT("OK") : TEXT("MISSING"),
 			PlayerFootsteps.WalkR ? TEXT("OK") : TEXT("MISSING"),
+			PlayerFootsteps.HitSound1 ? TEXT("OK") : TEXT("MISSING"),
+			PlayerFootsteps.HitSound2 ? TEXT("OK") : TEXT("MISSING"),
 			PlayerFootsteps.DeathSound ? TEXT("OK") : TEXT("MISSING"));
 	}
 
@@ -1029,21 +1218,42 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			// --- ANIMATION OVERRIDE BY NAME CONVENTION ---
 			// Load correct animations from enemy's folder, overriding Blueprint params if found.
 			// This ensures the right anim plays even if the Blueprint has wrong assignments.
+			// Supports multiple naming conventions:
+			//   Bell/KingBot:  {Type}/Animations/{Type}_{AnimName}
+			//   Giganto-style: {Type}/Anim_{AnimName} (root folder, Anim_ prefix)
 			{
 				FString AnimClassName = Enemy->GetClass()->GetName();
 				AnimClassName.RemoveFromEnd(TEXT("_C"));
 				FString AnimEnemyType = AnimClassName;
 				AnimEnemyType.RemoveFromStart(TEXT("BP_"));
-				FString AnimBasePath = FString::Printf(TEXT("/Game/Characters/Enemies/%s/Animations/"), *AnimEnemyType);
 
-				auto TryLoadAnimSeq = [&](const FString& Name) -> UAnimSequence* {
-					FString FullPath = AnimBasePath + Name + TEXT(".") + Name;
-					return LoadObject<UAnimSequence>(nullptr, *FullPath);
+				// Base paths: standard subfolder + root folder
+				FString AnimSubPath = FString::Printf(TEXT("/Game/Characters/Enemies/%s/Animations/"), *AnimEnemyType);
+				FString AnimRootPath = FString::Printf(TEXT("/Game/Characters/Enemies/%s/"), *AnimEnemyType);
+
+				// Try loading from multiple naming conventions
+				auto TryLoadAnimMulti = [&](const FString& AnimSuffix) -> UAnimSequence* {
+					// 1. Standard: {Type}/Animations/{Type}_{Suffix}
+					FString Name1 = AnimEnemyType + TEXT("_") + AnimSuffix;
+					FString Path1 = AnimSubPath + Name1 + TEXT(".") + Name1;
+					UAnimSequence* Anim = LoadObject<UAnimSequence>(nullptr, *Path1);
+					if (Anim) return Anim;
+
+					// 2. Giganto-style: {Type}/Anim_{Suffix}
+					FString Name2 = TEXT("Anim_") + AnimSuffix;
+					FString Path2 = AnimRootPath + Name2 + TEXT(".") + Name2;
+					Anim = LoadObject<UAnimSequence>(nullptr, *Path2);
+					if (Anim) return Anim;
+
+					// 3. Root folder with Type prefix: {Type}/{Type}_{Suffix}
+					FString Path3 = AnimRootPath + Name1 + TEXT(".") + Name1;
+					Anim = LoadObject<UAnimSequence>(nullptr, *Path3);
+					return Anim;
 				};
 
-				// Hit-react: prefer BodyBlock (impact reaction), then TakingPunch
-				UAnimSequence* HitReactCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_BodyBlock"));
-				if (!HitReactCandidate) HitReactCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_TakingPunch"));
+				// Hit-react: prefer BodyBlock, then TakingPunch
+				UAnimSequence* HitReactCandidate = TryLoadAnimMulti(TEXT("BodyBlock"));
+				if (!HitReactCandidate) HitReactCandidate = TryLoadAnimMulti(TEXT("TakingPunch"));
 				if (HitReactCandidate)
 				{
 					State.ChosenHitReactAnim = HitReactCandidate;
@@ -1053,14 +1263,30 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 					State.ChosenHitReactAnim = HitReactAnim; // fallback to BP param
 				}
 
-				// Death: ALWAYS try name convention (overrides BP params for correctness)
+				// Death: try multiple naming variants
 				{
-					UAnimSequence* DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_Death"));
-					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_Dying"));
-					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_ZombieDying"));
-					if (!DeathCandidate) DeathCandidate = TryLoadAnimSeq(AnimEnemyType + TEXT("_RifleHitBack"));
+					UAnimSequence* DeathCandidate = TryLoadAnimMulti(TEXT("Death"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimMulti(TEXT("Dying"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimMulti(TEXT("ZombieDying"));
+					if (!DeathCandidate) DeathCandidate = TryLoadAnimMulti(TEXT("RifleHitBack"));
 					if (DeathCandidate) State.ChosenDeathAnim = DeathCandidate;
 				}
+
+				// Attack: override BP param if convention finds one
+				{
+					UAnimSequence* AttackCandidate = TryLoadAnimMulti(TEXT("ZombieAttack"));
+					if (!AttackCandidate) AttackCandidate = TryLoadAnimMulti(TEXT("Punching"));
+					if (!AttackCandidate) AttackCandidate = TryLoadAnimMulti(TEXT("Biting"));
+					if (!AttackCandidate) AttackCandidate = TryLoadAnimMulti(TEXT("NeckBite"));
+					if (!AttackCandidate) AttackCandidate = TryLoadAnimMulti(TEXT("ZombieStandUp")); // Giganto: use standup as attack
+					if (AttackCandidate) State.ChosenAttackAnim = AttackCandidate;
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("UpdateEnemyAI [%s]: Anim discovery — HitReact=%s, Death=%s, Attack=%s"),
+					*AnimEnemyType,
+					State.ChosenHitReactAnim ? *State.ChosenHitReactAnim->GetName() : TEXT("NONE"),
+					State.ChosenDeathAnim ? *State.ChosenDeathAnim->GetName() : TEXT("NONE"),
+					State.ChosenAttackAnim ? *State.ChosenAttackAnim->GetName() : TEXT("NONE"));
 			}
 
 			// Initialize idle behavior timer (staggered per instance)
@@ -1070,13 +1296,14 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 		// Snap to ground on first tick using WorldStatic trace (hits landscape, ignores HISM grass)
 		{
-			// Use visual bounds (capsule + mesh combined) to correctly ground
-			// skeletal meshes whose pivot isn't at feet (e.g. Meshy AI exports)
-			FVector BoundsOrigin, BoundsExtent;
-			Enemy->GetActorBounds(false, BoundsOrigin, BoundsExtent);
+			// Use capsule half-height for ground offset — NOT GetActorBounds().
+			// GetActorBounds includes mesh scale (e.g. 3x Bell mesh) which produces
+			// a massive offset and floats the character far above the terrain.
+			// For ACharacter, actor location = capsule center, so feet = surface + HalfHeight.
+			UCapsuleComponent* SnapCapsule = Enemy->GetCapsuleComponent();
+			float SnapOffset = SnapCapsule ? SnapCapsule->GetScaledCapsuleHalfHeight() : 90.0f;
 
 			FVector Loc = Enemy->GetActorLocation();
-			float VisualBottomOffset = Loc.Z - (BoundsOrigin.Z - BoundsExtent.Z);
 
 			FHitResult SnapHit;
 			FVector SnapStart = FVector(Loc.X, Loc.Y, Loc.Z + 5000.0f);
@@ -1086,8 +1313,16 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 			if (World->LineTraceSingleByChannel(SnapHit, SnapStart, SnapEnd, ECC_WorldStatic, SnapParams))
 			{
-				FVector SnappedLoc = FVector(Loc.X, Loc.Y, SnapHit.Location.Z + VisualBottomOffset);
+				FVector SnappedLoc = FVector(Loc.X, Loc.Y, SnapHit.Location.Z + SnapOffset);
 				Enemy->SetActorLocation(SnappedLoc, false, nullptr, ETeleportType::TeleportPhysics);
+				UE_LOG(LogTemp, Warning, TEXT("EnemyAI INIT [%s]: SnapOffset=%.1f SurfaceZ=%.1f NewZ=%.1f CapsuleHH=%.1f CapsuleR=%.1f"),
+					*Enemy->GetName(), SnapOffset, SnapHit.Location.Z, SnappedLoc.Z,
+					SnapCapsule ? SnapCapsule->GetScaledCapsuleHalfHeight() : -1.f,
+					SnapCapsule ? SnapCapsule->GetScaledCapsuleRadius() : -1.f);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("EnemyAI INIT [%s]: Ground trace MISSED! No landscape below."), *Enemy->GetName());
 			}
 		}
 
@@ -1117,41 +1352,54 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			InitMoveComp->bOrientRotationToMovement = false;    // We handle rotation manually
 			InitMoveComp->SetAvoidanceEnabled(true);             // RVO avoidance
 			InitMoveComp->AvoidanceWeight = 0.5f;
-			InitMoveComp->SetMovementMode(MOVE_Falling);        // Gravity settles onto ground
+			InitMoveComp->SetMovementMode(MOVE_Walking);        // Start on ground (snap already placed us)
+			// Force CMC to recognize floor immediately (prevents one-frame fall after snap)
+			InitMoveComp->FindFloor(Enemy->GetActorLocation(), InitMoveComp->CurrentFloor, false);
 		}
 
-		// Ensure AnimBP is assigned for locomotion state machine + montage slot.
-		// If set_skeletal_animation was ever called, it may have cleared the AnimBP class.
+		// === Perplexity-recommended proactive fixes (2026-02-16) ===
+		// Force-fix ALL known non-animation causes of gliding on spawned instances.
+		UE_LOG(LogTemp, Warning, TEXT("UpdateEnemyAI INIT BUILD_ID=2026-02-16-v16 enemy=%s"), *Enemy->GetName());
 		USkeletalMeshComponent* InitMesh = Enemy->GetMesh();
 		if (InitMesh)
 		{
-			UAnimInstance* ExistingAnim = InitMesh->GetAnimInstance();
-			if (!ExistingAnim || InitMesh->GetAnimationMode() != EAnimationMode::AnimationBlueprint)
+			// FIX 1: Force VisibilityBasedAnimTickOption to always tick.
+			// Default can be ONLY_TICK_POSE_WHEN_RENDERED which culls anim updates.
+			InitMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+
+			// FIX 2: Ensure anims are not paused
+			InitMesh->bPauseAnims = false;
+
+			// FIX 3: Ensure component tick is enabled
+			InitMesh->SetComponentTickEnabled(true);
+
+			// FIX 4: ALWAYS force SetAnimInstanceClass on spawned instances.
+			// CDO component defaults may not propagate AnimClass reliably.
+			// SetAnimInstanceClass clears+reinits the anim instance and sets mode to AnimationBlueprint.
+			FString ClassName = Enemy->GetClass()->GetName();
+			ClassName.RemoveFromEnd(TEXT("_C"));
+			FString EnemyType = ClassName;
+			EnemyType.RemoveFromStart(TEXT("BP_"));
+
+			FString AnimBPPath = FString::Printf(
+				TEXT("/Game/Characters/Enemies/%s/ABP_BG_%s.ABP_BG_%s_C"),
+				*EnemyType, *EnemyType, *EnemyType
+			);
+
+			UClass* AnimBPClass = LoadObject<UClass>(nullptr, *AnimBPPath);
+			if (AnimBPClass)
 			{
-				// Derive AnimBP path from Blueprint class name: BP_Bell -> ABP_BG_Bell
-				FString ClassName = Enemy->GetClass()->GetName();
-				// Strip _C suffix if present (generated class name)
-				ClassName.RemoveFromEnd(TEXT("_C"));
-				// Extract enemy type: BP_Bell -> Bell, BP_KingBot -> KingBot
-				FString EnemyType = ClassName;
-				EnemyType.RemoveFromStart(TEXT("BP_"));
-
-				FString AnimBPPath = FString::Printf(
-					TEXT("/Game/Characters/Enemies/%s/ABP_BG_%s.ABP_BG_%s_C"),
-					*EnemyType, *EnemyType, *EnemyType
-				);
-
-				UClass* AnimBPClass = LoadObject<UClass>(nullptr, *AnimBPPath);
-				if (AnimBPClass)
-				{
-					InitMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-					InitMesh->SetAnimInstanceClass(AnimBPClass);
-					UE_LOG(LogTemp, Log, TEXT("UpdateEnemyAI: Assigned AnimBP %s to %s"), *AnimBPPath, *Enemy->GetName());
-				}
-				else
-				{
-					UE_LOG(LogTemp, Warning, TEXT("UpdateEnemyAI: Could not load AnimBP at %s for %s"), *AnimBPPath, *Enemy->GetName());
-				}
+				// Always force-assign — don't trust CDO propagation
+				InitMesh->SetAnimInstanceClass(AnimBPClass);
+				UE_LOG(LogTemp, Warning, TEXT("EnemyAI INIT [%s]: Force-assigned AnimBP %s, Mode=%d, bPauseAnims=%d, VisTick=%d"),
+					*Enemy->GetName(), *AnimBPPath,
+					(int32)InitMesh->GetAnimationMode(),
+					(int32)InitMesh->bPauseAnims,
+					(int32)InitMesh->VisibilityBasedAnimTickOption);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("EnemyAI INIT [%s]: FAILED to load AnimBP at %s"), *Enemy->GetName(), *AnimBPPath);
 			}
 		}
 	}
@@ -1177,6 +1425,60 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	double CurrentTime = World->GetTimeSeconds();
 	float DeltaTime = World->GetDeltaSeconds();
 
+	// === DIAGNOSTIC LOGGING (every 120 frames per enemy) ===
+	if (++State.DiagFrameCounter >= 120)
+	{
+		State.DiagFrameCounter = 0;
+		UCharacterMovementComponent* DiagCMC = Enemy->GetCharacterMovement();
+		USkeletalMeshComponent* DiagMesh = Enemy->GetMesh();
+		UAnimInstance* DiagAnim = DiagMesh ? DiagMesh->GetAnimInstance() : nullptr;
+
+		static const TCHAR* StateNames[] = { TEXT("Idle"), TEXT("Chase"), TEXT("Attack"), TEXT("Return"), TEXT("HitReact"), TEXT("Dead"), TEXT("Patrol") };
+		int32 StateIdx = FMath::Clamp((int32)State.CurrentState, 0, 6);
+
+		float DiagVel = Enemy->GetVelocity().Size();
+		float DiagVel2D = Enemy->GetVelocity().Size2D();
+		float DiagMaxSpeed = DiagCMC ? DiagCMC->MaxWalkSpeed : -1.f;
+		int32 DiagMoveMode = DiagCMC ? (int32)DiagCMC->MovementMode : -1;
+		bool DiagHasFloor = DiagCMC ? DiagCMC->CurrentFloor.bBlockingHit : false;
+		bool DiagAnimValid = DiagAnim != nullptr;
+		FString DiagAnimClass = DiagAnim ? DiagAnim->GetClass()->GetName() : TEXT("NULL");
+
+		// Check AnimInstance Speed property via reflection
+		float DiagAnimSpeed = -1.f;
+		if (DiagAnim)
+		{
+			FProperty* SpeedProp = DiagAnim->GetClass()->FindPropertyByName(FName("Speed"));
+			if (SpeedProp)
+			{
+				void* SpeedPtr = SpeedProp->ContainerPtrToValuePtr<void>(DiagAnim);
+				if (FFloatProperty* FP = CastField<FFloatProperty>(SpeedProp))
+					DiagAnimSpeed = FP->GetPropertyValue(SpeedPtr);
+				else if (FDoubleProperty* DP = CastField<FDoubleProperty>(SpeedProp))
+					DiagAnimSpeed = (float)DP->GetPropertyValue(SpeedPtr);
+			}
+		}
+
+		// Perplexity-recommended diagnostics: AnimationMode, bPauseAnims, VisibilityBasedAnimTickOption, AnimClass
+		int32 DiagAnimMode = DiagMesh ? (int32)DiagMesh->GetAnimationMode() : -1;
+		bool DiagPauseAnims = DiagMesh ? DiagMesh->bPauseAnims : false;
+		int32 DiagVisTick = DiagMesh ? (int32)DiagMesh->VisibilityBasedAnimTickOption : -1;
+		FString DiagAnimBPClass = (DiagMesh && DiagMesh->GetAnimClass()) ? DiagMesh->GetAnimClass()->GetName() : TEXT("NONE");
+		bool DiagMeshTickEnabled = DiagMesh ? DiagMesh->IsComponentTickEnabled() : false;
+		bool DiagHasController = Enemy->GetController() != nullptr;
+
+		// Location delta tracking for CMC vs actual movement comparison
+		FVector CurLoc = Enemy->GetActorLocation();
+		float LocDelta = FVector::Dist(CurLoc, State.SpawnLocation); // rough distance from spawn
+
+		UE_LOG(LogTemp, Warning, TEXT("DIAG [%s] State=%s MoveMode=%d HasFloor=%d Vel=%.1f Vel2D=%.1f MaxSpeed=%.1f AnimMode=%d AnimClass=%s AnimBP=%s AnimSpeed=%.1f bPause=%d VisTick=%d MeshTick=%d HasCtrl=%d Dist=%.0f"),
+			*Enemy->GetName(), StateNames[StateIdx], DiagMoveMode, DiagHasFloor,
+			DiagVel, DiagVel2D, DiagMaxSpeed,
+			DiagAnimMode, *DiagAnimClass, *DiagAnimBPClass, DiagAnimSpeed,
+			(int32)DiagPauseAnims, DiagVisTick, (int32)DiagMeshTickEnabled,
+			(int32)DiagHasController, DistToPlayer);
+	}
+
 	// Check Health, auto-init if 0, handle death + hit reactions
 	FProperty* HealthProp = Enemy->GetClass()->FindPropertyByName(FName("Health"));
 	float HP = 100.f;
@@ -1187,9 +1489,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		if (FFloatProperty* FP = CastField<FFloatProperty>(HealthProp)) HP = FP->GetPropertyValue(ValPtr);
 		else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp)) HP = (float)DP->GetPropertyValue(ValPtr);
 
-		// Auto-initialize: Health==0 on first tick means CDO default didn't propagate
-		// Scale HP by enemy type: bigger enemies are tougher
-		if (HP == 0.f && !State.bHealthInitialized)
+		// Always override HP on first tick based on enemy type.
+		// Blueprint default (100) is ignored — C++ controls type-based HP scaling.
+		if (!State.bHealthInitialized)
 		{
 			State.bHealthInitialized = true;
 			HP = 60.f; // Bell: swarmer, dies fast
@@ -1204,6 +1506,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			}
 			if (FFloatProperty* FP = CastField<FFloatProperty>(HealthProp)) FP->SetPropertyValue(ValPtr, HP);
 			else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp)) DP->SetPropertyValue(ValPtr, (double)HP);
+			UE_LOG(LogTemp, Log, TEXT("UpdateEnemyAI: %s HP initialized to %.0f"), *ClassName, HP);
 		}
 	}
 
@@ -1271,26 +1574,6 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 	USkeletalMeshComponent* MeshComp = Enemy->GetMesh();
 	UCharacterMovementComponent* MoveComp = Enemy->GetCharacterMovement();
-
-	// DEBUG: Show per-instance values with personality
-	if (GEngine && DistToPlayer < 4000.f)
-	{
-		const TCHAR* StateNames[] = { TEXT("Idle"), TEXT("Chase"), TEXT("Attack"), TEXT("Return"), TEXT("HitReact"), TEXT("Dead"), TEXT("Patrol") };
-		const TCHAR* PersonalityNames[] = { TEXT("NORMAL"), TEXT("BERSERKER"), TEXT("STALKER"), TEXT("BRUTE"), TEXT("CRAWLER") };
-		int32 StateIdx = FMath::Clamp((int32)State.CurrentState, 0, 6);
-		int32 PersIdx = FMath::Clamp((int32)State.Personality, 0, 4);
-		GEngine->AddOnScreenDebugMessage(
-			(int32)Enemy->GetUniqueID(), 0.0f, FColor::Cyan,
-			FString::Printf(TEXT("%s [%s] Spd=%.0f Aggro=%.0f Dmg=x%.1f State=%s Dist=%.0f Atk=%s"),
-				*Enemy->GetName(),
-				PersonalityNames[PersIdx],
-				MoveSpeed * State.SpeedMultiplier,
-				AggroRange * State.AggroRangeMultiplier,
-				State.DamageMultiplier,
-				StateNames[StateIdx],
-				DistToPlayer,
-				State.ChosenAttackAnim ? *State.ChosenAttackAnim->GetName() : TEXT("NONE")));
-	}
 
 	// --- DEATH STATE ---
 	if (HP <= 0.f)
@@ -1496,7 +1779,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 		// Took damage — trigger hit react
 		UAnimSequence* UsedHitReactAnim = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
-		if (State.CurrentState != EEnemyAIState::HitReact && UsedHitReactAnim)
+		// Stagger immunity: 0.5s cooldown after last hit-react to prevent infinite stagger lock
+		bool bStaggerImmune = (State.LastHitReactEndTime > 0.0 && (CurrentTime - State.LastHitReactEndTime) < 0.5);
+		if (State.CurrentState != EEnemyAIState::HitReact && UsedHitReactAnim && !bStaggerImmune)
 		{
 			State.PreHitReactState = State.CurrentState;
 			State.CurrentState = EEnemyAIState::HitReact;
@@ -1516,10 +1801,23 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	if (State.CurrentState == EEnemyAIState::HitReact)
 	{
 		UAnimSequence* HitReactForLen = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
-		float HitReactLen = HitReactForLen ? FMath::Min(HitReactForLen->GetPlayLength(), 0.3f) : 0.3f;
+		float HitReactLen = HitReactForLen ? FMath::Min(HitReactForLen->GetPlayLength(), 0.5f) : 0.5f;
 		if ((CurrentTime - State.HitReactStartTime) > HitReactLen)
 		{
 			State.CurrentState = State.PreHitReactState;
+			State.LastHitReactEndTime = CurrentTime;
+
+			// CRITICAL: Stop the hit-react montage so the Slot node releases
+			// back to BlendSpace locomotion. Without this, the montage blocks
+			// the BlendSpace output on DefaultSlot indefinitely.
+			USkeletalMeshComponent* HRMesh = Enemy->GetMesh();
+			if (HRMesh)
+			{
+				if (UAnimInstance* HRAnim = HRMesh->GetAnimInstance())
+				{
+					HRAnim->Montage_Stop(0.15f);
+				}
+			}
 		}
 	}
 
@@ -1997,9 +2295,21 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			PlayerHUD.MaxHealth = 50.f;
 		}
 
-		// Load health bar textures
+		// Load health bar textures — UVRegion crops out black padding at render time
+		// Content bounds measured from 2816x1536 source PNGs (getbbox)
+		const float SrcW = 2816.0f, SrcH = 1536.0f;
+		const float ContentL = 120.0f, ContentT = 116.0f;
+		const float ContentR = 2746.0f, ContentB = 1239.0f;
+		const float ContentW = ContentR - ContentL;  // 2626px actual content
+		const float ContentH = ContentB - ContentT;  // 1123px actual content
+
 		const float HealthBarWidth = 500.0f;
-		const float HealthBarHeight = HealthBarWidth * (1536.0f / 2816.0f); // ~273px, preserves 2816:1536 aspect
+		const float HealthBarHeight = HealthBarWidth * (ContentH / ContentW); // ~214px, content-only aspect
+
+		// UV sub-region tells Slate to render ONLY the content area, ignoring padding
+		const FBox2f ContentUV(
+			FVector2f(ContentL / SrcW, ContentT / SrcH),   // top-left  (0.0426, 0.0755)
+			FVector2f(ContentR / SrcW, ContentB / SrcH));   // bot-right (0.9751, 0.8066)
 
 		UTexture2D* BaseTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HB_Base.T_HB_Base"));
 		UTexture2D* FillTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_HB_Fill.T_HB_Fill"));
@@ -2016,6 +2326,7 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 				Brush.ImageSize = FVector2D(HealthBarWidth, HealthBarHeight);
 				Brush.DrawAs = ESlateBrushDrawType::Image;
 				Brush.Tiling = ESlateBrushTileType::NoTile;
+				Brush.SetUVRegion(ContentUV);
 			};
 			SetupBrush(PlayerHUD.BaseBrush, BaseTex);
 			SetupBrush(PlayerHUD.FillBrush, FillTex);
@@ -2047,7 +2358,7 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 			.Padding(20.0f, 0.0f, 0.0f, 20.0f)
 			[
 				SNew(SBox)
-				.WidthOverride(HealthBarWidth * 0.87f)
+				.WidthOverride(HealthBarWidth)
 				.HeightOverride(HealthBarHeight)
 				.Clipping(EWidgetClipping::ClipToBounds)
 				[
@@ -2315,10 +2626,10 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 	float Pct = FMath::Clamp(HP / PlayerHUD.MaxHealth, 0.0f, 1.0f);
 
 	// Tube mapping: liquid occupies cols 1335-2440 of 2816px source
-	// Map HP% linearly to the tube region only
+	// With UVRegion crop at col 120-2746 (2626px content), tube is at content-local 1215-2320
 	const float HBDisplayWidth = 500.0f;
-	const float TubeLeftPx = (1335.0f / 2816.0f) * HBDisplayWidth;   // ~237px
-	const float TubeRightPx = (2440.0f / 2816.0f) * HBDisplayWidth;  // ~433px
+	const float TubeLeftPx = ((1335.0f - 120.0f) / 2626.0f) * HBDisplayWidth;   // ~231px
+	const float TubeRightPx = ((2440.0f - 120.0f) / 2626.0f) * HBDisplayWidth;  // ~442px
 	float ClipWidth = TubeLeftPx + (TubeRightPx - TubeLeftPx) * Pct;
 
 	if (PlayerHUD.HealthClipBox.IsValid())
@@ -2379,6 +2690,7 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 					// Reset all state before level transition
 					PlayerHUD = FPlayerHUDState();
 					GameFlow = FGameFlowState();
+					MinimapState = FMinimapState();
 					EnemyAIStates.Empty();
 					BlockingActors.Empty();
 					MusicSystem = FMusicState();
@@ -2850,4 +3162,177 @@ void UGameplayHelperLibrary::StartIntroSequence(ACharacter* Character, UAnimSequ
 			WeakComp->StartSequence();
 		}
 	}, 0.5f, false);
+}
+
+// ==================== MINIMAP ====================
+
+void UGameplayHelperLibrary::ManageMinimap(ACharacter* Player)
+{
+	if (!Player) return;
+	UWorld* World = Player->GetWorld();
+	if (!World) return;
+
+	// Reset if world changed (level restart)
+	if (MinimapState.bCreated && (!MinimapState.OwnerWorld.IsValid() || MinimapState.OwnerWorld.Get() != World))
+	{
+		MinimapState = FMinimapState();
+	}
+
+	// Create minimap on first call
+	if (!MinimapState.bCreated)
+	{
+		UGameViewportClient* GVC = World->GetGameViewport();
+		if (!GVC) return;
+
+		MinimapState.OwnerWorld = World;
+
+		// Auto-detect world bounds from landscape actors
+		bool bFoundLandscape = false;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (It->GetClass()->GetName().Contains(TEXT("Landscape")))
+			{
+				FBox Bounds = It->GetComponentsBoundingBox();
+				if (!bFoundLandscape)
+				{
+					MinimapState.WorldMin = FVector2D(Bounds.Min.X, Bounds.Min.Y);
+					MinimapState.WorldMax = FVector2D(Bounds.Max.X, Bounds.Max.Y);
+					bFoundLandscape = true;
+				}
+				else
+				{
+					MinimapState.WorldMin.X = FMath::Min(MinimapState.WorldMin.X, Bounds.Min.X);
+					MinimapState.WorldMin.Y = FMath::Min(MinimapState.WorldMin.Y, Bounds.Min.Y);
+					MinimapState.WorldMax.X = FMath::Max(MinimapState.WorldMax.X, Bounds.Max.X);
+					MinimapState.WorldMax.Y = FMath::Max(MinimapState.WorldMax.Y, Bounds.Max.Y);
+				}
+			}
+		}
+
+		if (bFoundLandscape)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ManageMinimap: Landscape bounds X[%.0f..%.0f] Y[%.0f..%.0f]"),
+				MinimapState.WorldMin.X, MinimapState.WorldMax.X,
+				MinimapState.WorldMin.Y, MinimapState.WorldMax.Y);
+		}
+
+		// Load minimap texture
+		UTexture2D* MapTex = LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Textures/T_Minimap.T_Minimap"));
+		if (MapTex)
+		{
+			MinimapState.MapTexture = TStrongObjectPtr<UTexture2D>(MapTex);
+			MinimapState.MapBrush.SetResourceObject(MapTex);
+			MinimapState.MapBrush.ImageSize = FVector2D(MinimapWidth, MinimapHeight);
+			MinimapState.MapBrush.DrawAs = ESlateBrushDrawType::Image;
+			MinimapState.MapBrush.Tiling = ESlateBrushTileType::NoTile;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ManageMinimap: Failed to load /Game/UI/Textures/T_Minimap"));
+		}
+
+		// Create circular dot brushes (player + soul checkpoints only)
+		MinimapState.PlayerDotBrush = FSlateRoundedBoxBrush(
+			FLinearColor(0.90f, 0.70f, 0.15f, 1.0f), MinimapPlayerMarkerSize * 0.5f);
+		MinimapState.CheckpointActiveBrush = FSlateRoundedBoxBrush(
+			FLinearColor(0.95f, 0.80f, 0.30f, 1.0f), MinimapCheckpointMarkerSize * 0.5f);
+		MinimapState.CheckpointCollectedBrush = FSlateRoundedBoxBrush(
+			FLinearColor(0.30f, 0.22f, 0.10f, 0.4f), MinimapCheckpointMarkerSize * 0.5f);
+
+		// Create custom marker layer (draws markers directly via OnPaint — no RenderTransform)
+		TSharedRef<SMinimapMarkerLayer> Markers = SNew(SMinimapMarkerLayer);
+		Markers->SetMarkerCount(FMinimapState::TotalMarkers);
+		MinimapState.MarkerLayer = Markers;
+
+		// Assemble root widget (anchored top-right)
+		TSharedRef<SOverlay> Root = SNew(SOverlay)
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Right)
+			.VAlign(VAlign_Top)
+			.Padding(0, 20, 20, 0)
+			[
+				SNew(SBox)
+				.WidthOverride(MinimapWidth)
+				.HeightOverride(MinimapHeight)
+				[
+					SNew(SOverlay)
+					// Layer 0: Map background image
+					+ SOverlay::Slot()
+					[
+						SNew(SImage)
+						.Image(&MinimapState.MapBrush)
+					]
+					// Layer 1: Custom paint marker layer (draws circles at pixel positions)
+					+ SOverlay::Slot()
+					[
+						Markers
+					]
+				]
+			];
+
+		MinimapState.RootWidget = Root;
+		GVC->AddViewportWidgetContent(TSharedRef<SWidget>(Root));
+		MinimapState.bCreated = true;
+
+		UE_LOG(LogTemp, Log, TEXT("ManageMinimap: Created minimap widget (%.0fx%.0f)"),
+			MinimapWidth, MinimapHeight);
+	}
+
+	// Hide minimap when player is dead
+	{
+		FProperty* HealthProp = Player->GetClass()->FindPropertyByName(FName("Health"));
+		if (HealthProp)
+		{
+			void* ValPtr = HealthProp->ContainerPtrToValuePtr<void>(Player);
+			float HP = 0.f;
+			if (FFloatProperty* FP = CastField<FFloatProperty>(HealthProp))
+				HP = FP->GetPropertyValue(ValPtr);
+			else if (FDoubleProperty* DP = CastField<FDoubleProperty>(HealthProp))
+				HP = (float)DP->GetPropertyValue(ValPtr);
+
+			if (HP <= 0.f)
+			{
+				if (MinimapState.RootWidget.IsValid())
+					MinimapState.RootWidget->SetVisibility(EVisibility::Collapsed);
+				return;
+			}
+		}
+	}
+
+	// Ensure visible
+	if (MinimapState.RootWidget.IsValid())
+		MinimapState.RootWidget->SetVisibility(EVisibility::Visible);
+
+	if (!MinimapState.MarkerLayer.IsValid()) return;
+	SMinimapMarkerLayer& ML = *MinimapState.MarkerLayer;
+
+	// --- Update markers: soul checkpoints + player only ---
+
+	// Checkpoint (soul) markers — slots 0..15
+	if (GameFlow.bInitialized)
+	{
+		int32 CPCount = FMath::Min(GameFlow.Checkpoints.Num(), (int32)FMinimapState::MaxCheckpointMarkers);
+		for (int32 i = 0; i < CPCount; i++)
+		{
+			const FCheckpointData& CP = GameFlow.Checkpoints[i];
+			FVector2D Pos = WorldToMinimapPos(CP.Location, MinimapCheckpointMarkerSize);
+			const FSlateBrush* Brush = (CP.State == ECheckpointState::Collected)
+				? &MinimapState.CheckpointCollectedBrush
+				: &MinimapState.CheckpointActiveBrush;
+			ML.SetMarker(i, Pos, MinimapCheckpointMarkerSize, Brush, true);
+		}
+		for (int32 i = CPCount; i < FMinimapState::MaxCheckpointMarkers; i++)
+			ML.SetMarker(i, FVector2D::ZeroVector, 0, nullptr, false);
+	}
+	else
+	{
+		for (int32 i = 0; i < FMinimapState::MaxCheckpointMarkers; i++)
+			ML.SetMarker(i, FVector2D::ZeroVector, 0, nullptr, false);
+	}
+
+	// Player marker — slot 16 (drawn last = on top)
+	FVector2D PlayerPos = WorldToMinimapPos(Player->GetActorLocation(), MinimapPlayerMarkerSize);
+	ML.SetMarker(FMinimapState::PlayerSlot, PlayerPos, MinimapPlayerMarkerSize, &MinimapState.PlayerDotBrush, true);
+
+	ML.RequestRepaint();
 }

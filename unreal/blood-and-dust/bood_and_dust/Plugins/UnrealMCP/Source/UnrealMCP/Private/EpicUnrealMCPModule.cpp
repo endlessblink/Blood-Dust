@@ -8,6 +8,7 @@
 
 void FEpicUnrealMCPModule::StartupModule()
 {
+	UE_LOG(LogTemp, Warning, TEXT("=== UnrealMCP BUILD_ID=2026-02-16-v14 LOADED ==="));
 	UE_LOG(LogTemp, Display, TEXT("Epic Unreal MCP Module has started"));
 }
 

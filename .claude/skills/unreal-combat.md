@@ -29,6 +29,7 @@ Before running this skill, verify these exist:
 ## CRITICAL RULES
 
 1. **ALL MCP calls STRICTLY SEQUENTIAL** — never parallel. Each creates FTSTicker callback; parallel = crash.
+1b. **BEFORE debugging ANY runtime issue, check binary vs source timestamps.** Linux UE5 does NOT hot-reload .so files. Run `stat -c %Y` on the `.so` and on all modified `.cpp`/`.h` files. If binary is OLDER than source → STOP, rebuild, restart editor, THEN test. This has wasted 4+ sessions debugging "phantom bugs" that were already fixed in source but not compiled.
 2. **connect_nodes APPENDS connections** — MakeLinkTo adds to existing links. Does NOT replace. If you wire wrong, DELETE the node and recreate.
 3. **Always capture node IDs** from `add_node` responses. NEVER predict or guess node IDs.
 4. **Compile after each major section** — catches errors early before they cascade.
@@ -40,13 +41,16 @@ Before running this skill, verify these exist:
 10. **PlayAnimationOneShot blocks re-entry** — silently ignores new calls while montage is playing.
 
 ## Animation Architecture Rules (CRITICAL)
-- **AnimBP + Slot(DefaultSlot) + montages** is the ONLY correct animation pattern for enemies
+- **AnimBP + Slot(DefaultSlot, bAlwaysUpdateSourcePose=true) + montages** is the ONLY correct animation pattern for enemies
+- **`bAlwaysUpdateSourcePose = true` is MANDATORY on Slot nodes** — without this, montages permanently stop BlendSpace evaluation (enemies stuck in idle)
 - **NEVER use OverrideAnimationData or SingleNode mode for runtime AI** — resets CurrentTime to 0, destroys AnimBP, no crossfade
 - **PlayAnimationOneShot** has `bForceInterrupt` param:
   - `false` (default): for attacks — prevents rapid restart, skips if montage playing
   - `true`: for hit-react, scream, death transitions — instantly stops current montage first
 - **Death** uses montage via `PlaySlotAnimationAsDynamicMontage(DefaultSlot, BlendOut=0.0)` + `bPauseAnims=true` — NEVER use PlayAnimation/SingleNode (destroys AnimBP)
 - **Montage_Stop(0.0f)** must be called BEFORE PlayAnimation for death (prevents blend overlap)
+- **Montage_Stop(0.15f)** must be called when EXITING HitReact state — releases DefaultSlot back to BlendSpace
+- **Stagger immunity: 0.5s cooldown** after HitReact ends before next HitReact can trigger — prevents infinite stagger lock
 - Enemy personalities (Normal/Berserker/Stalker/Brute/Crawler) affect stats + attack anim selection, NOT locomotion anims (UEnemyAnimInstance + BlendSpace1D handles locomotion smoothly)
 
 ---
