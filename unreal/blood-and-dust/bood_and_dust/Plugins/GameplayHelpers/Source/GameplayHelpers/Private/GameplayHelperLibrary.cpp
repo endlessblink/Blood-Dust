@@ -13,6 +13,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Sound/SoundBase.h"
 #include "Components/AudioComponent.h"
 #include "Widgets/SOverlay.h"
@@ -41,6 +42,7 @@
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "InputCoreTypes.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
@@ -254,6 +256,7 @@ struct FPlayerHUDState
 	TSharedPtr<STextBlock> CheckpointText;
 	TSharedPtr<SWidget> VictoryOverlay;
 	TSharedPtr<STextBlock> VictoryCheckpointText;
+	TSharedPtr<STextBlock> VictoryActionText;
 };
 static FPlayerHUDState PlayerHUD;
 
@@ -286,7 +289,9 @@ struct FGameFlowState
 	int32 CheckpointsCollected = 0;
 	int32 TotalCheckpoints = 0;
 	TWeakObjectPtr<AActor> PortalLightActor;
+	TWeakObjectPtr<AActor> PortalTriggerActor;
 	FVector PortalLocation = FVector::ZeroVector;
+	float PortalTriggerRadius = 500.0f;
 	double GoldenFlashStartTime = 0.0;
 	double CheckpointTextStartTime = 0.0;
 	double VictoryStartTime = 0.0;
@@ -578,27 +583,42 @@ static FString GetEnemyTypeKey(AActor* Actor)
 
 enum class EEnemySoundType : uint8 { Hit, GettingHit, Steps };
 
-static void LoadSoundVariants(TArray<USoundBase*>& OutArray, const FString& TypeKey, const FString& Category)
+static void AddSoundIfExists(TArray<USoundBase*>& OutArray, const TCHAR* ObjectPath)
 {
-	// Try numbered variants first: S_{Type}_{Category}_1, _2, _3, ...
-	for (int32 i = 1; i <= 8; ++i)
+	USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, ObjectPath));
+	if (Sound)
 	{
-		FString Path = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_%s_%d.S_%s_%s_%d"),
-			*TypeKey, *TypeKey, *Category, i, *TypeKey, *Category, i);
-		USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path));
-		if (Sound)
-			OutArray.Add(Sound);
-		else
-			break; // Stop at first missing number
+		OutArray.Add(Sound);
 	}
-	// Fall back to unnumbered if no variants found
-	if (OutArray.Num() == 0)
+}
+
+static void LoadNoamTrimEnemySounds(FEnemyTypeSounds& OutSounds, const FString& TypeKey)
+{
+	// Policy: enemy SFX must come from the noam-trim set.
+	// In Content, those correspond to the numbered variants in each enemy folder.
+	if (TypeKey == TEXT("Bell"))
 	{
-		FString Path = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_%s.S_%s_%s"),
-			*TypeKey, *TypeKey, *Category, *TypeKey, *Category);
-		USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path));
-		if (Sound)
-			OutArray.Add(Sound);
+		AddSoundIfExists(OutSounds.HitSounds, TEXT("/Game/Audio/SFX/Bell/S_Bell_Hit_1.S_Bell_Hit_1"));
+		AddSoundIfExists(OutSounds.GettingHitSounds, TEXT("/Game/Audio/SFX/Bell/S_Bell_GettingHit_1.S_Bell_GettingHit_1"));
+		AddSoundIfExists(OutSounds.GettingHitSounds, TEXT("/Game/Audio/SFX/Bell/S_Bell_GettingHit_2.S_Bell_GettingHit_2"));
+		AddSoundIfExists(OutSounds.StepsSounds, TEXT("/Game/Audio/SFX/Bell/S_Bell_Steps_1.S_Bell_Steps_1"));
+		return;
+	}
+
+	if (TypeKey == TEXT("Kingbot"))
+	{
+		AddSoundIfExists(OutSounds.HitSounds, TEXT("/Game/Audio/SFX/Kingbot/S_Kingbot_Hit_1.S_Kingbot_Hit_1"));
+		AddSoundIfExists(OutSounds.GettingHitSounds, TEXT("/Game/Audio/SFX/Kingbot/S_Kingbot_GettingHit_1.S_Kingbot_GettingHit_1"));
+		AddSoundIfExists(OutSounds.StepsSounds, TEXT("/Game/Audio/SFX/Kingbot/S_Kingbot_Steps_1.S_Kingbot_Steps_1"));
+		return;
+	}
+
+	if (TypeKey == TEXT("Gigantus"))
+	{
+		AddSoundIfExists(OutSounds.HitSounds, TEXT("/Game/Audio/SFX/Gigantus/S_Gigantus_Hit_1.S_Gigantus_Hit_1"));
+		AddSoundIfExists(OutSounds.GettingHitSounds, TEXT("/Game/Audio/SFX/Gigantus/S_Gigantus_GettingHit_1.S_Gigantus_GettingHit_1"));
+		AddSoundIfExists(OutSounds.StepsSounds, TEXT("/Game/Audio/SFX/Gigantus/S_Gigantus_Steps_1.S_Gigantus_Steps_1"));
+		return;
 	}
 }
 
@@ -609,9 +629,7 @@ static FEnemyTypeSounds* GetOrLoadEnemyTypeSounds(const FString& TypeKey)
 		return Existing;
 
 	FEnemyTypeSounds NewSounds;
-	LoadSoundVariants(NewSounds.HitSounds, TypeKey, TEXT("Hit"));
-	LoadSoundVariants(NewSounds.GettingHitSounds, TypeKey, TEXT("GettingHit"));
-	LoadSoundVariants(NewSounds.StepsSounds, TypeKey, TEXT("Steps"));
+	LoadNoamTrimEnemySounds(NewSounds, TypeKey);
 
 	UE_LOG(LogTemp, Log, TEXT("EnemyTypeSounds: Loaded '%s' — Hit=%d GettingHit=%d Steps=%d"),
 		*TypeKey, NewSounds.HitSounds.Num(), NewSounds.GettingHitSounds.Num(), NewSounds.StepsSounds.Num());
@@ -2690,8 +2708,8 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 					.AutoHeight()
 					.HAlign(HAlign_Center)
 					[
-						SNew(STextBlock)
-						.Text(FText::FromString(TEXT("Restarting...")))
+						SAssignNew(PlayerHUD.VictoryActionText, STextBlock)
+						.Text(FText::FromString(TEXT("R - Restart Run    Esc - Exit")))
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 18))
 						.ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.40f, 0.22f, 0.60f)))
 					]
@@ -2841,6 +2859,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 		GameFlow.bInitialized = true;
 		GameFlow.OwnerWorld = World;
 		GameFlow.CheckpointsCollected = 0;
+		GameFlow.PortalTriggerRadius = 500.0f;
 
 		for (TActorIterator<APointLight> It(World); It; ++It)
 		{
@@ -2866,8 +2885,14 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 
 				GameFlow.Checkpoints.Add(CP);
 			}
-			else if (Name.Contains(TEXT("Portal_Light")) || Name.Contains(TEXT("Portal_Beacon")))
+			else if (Name.Contains(TEXT("Portal_Light")))
 			{
+				GameFlow.PortalLightActor = Light;
+				GameFlow.PortalLocation = Light->GetActorLocation();
+			}
+			else if (Name.Contains(TEXT("Portal_Beacon")) && !GameFlow.PortalLightActor.IsValid())
+			{
+				// Fallback only: prefer explicit Portal_Light when both exist.
 				GameFlow.PortalLightActor = Light;
 				GameFlow.PortalLocation = Light->GetActorLocation();
 			}
@@ -2894,6 +2919,27 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 				{
 					GameFlow.OriginalDirLightIntensity = DirComp->Intensity;
 				}
+				break;
+			}
+		}
+
+		// Prefer explicit portal trigger actor when available.
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* Actor = *It;
+			if (!IsValid(Actor)) continue;
+
+			const FString Name = Actor->GetName();
+			if (Name.Contains(TEXT("PortalTrigger")) || Name.Contains(TEXT("BP_PortalTrigger")))
+			{
+				GameFlow.PortalTriggerActor = Actor;
+				GameFlow.PortalLocation = Actor->GetActorLocation();
+
+				FVector BoundsOrigin = FVector::ZeroVector;
+				FVector BoundsExtent = FVector::ZeroVector;
+				Actor->GetActorBounds(true, BoundsOrigin, BoundsExtent);
+				const float RadiusFromBounds = FMath::Max(BoundsExtent.X, BoundsExtent.Y);
+				GameFlow.PortalTriggerRadius = FMath::Max(RadiusFromBounds + 150.0f, 500.0f);
 				break;
 			}
 		}
@@ -2925,8 +2971,35 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 			GameFlow.DirectionalLightActor.IsValid() ? *GameFlow.DirectionalLightActor->GetName() : TEXT("NONE"));
 	}
 
-	// Skip if already won or dead
-	if (GameFlow.bVictory || PlayerHUD.bDead) return;
+	// If dead, don't update game-flow logic (death screen handles restart)
+	if (PlayerHUD.bDead) return;
+
+	// Victory mode: wait for explicit player choice (no auto-reset).
+	if (GameFlow.bVictory)
+	{
+		APlayerController* PC = Cast<APlayerController>(Player->GetController());
+		if (!PC) return;
+
+		if (PC->WasInputKeyJustPressed(EKeys::R))
+		{
+			// Reset both HUD and GameFlow state before level transition.
+			PlayerHUD = FPlayerHUDState();
+			GameFlow = FGameFlowState();
+			EnemyAIStates.Empty();
+			BlockingActors.Empty();
+			MusicSystem = FMusicState();
+			PlayerFootsteps = FPlayerFootstepState();
+			EnemyTypeSoundCache.Empty();
+
+			FString LevelName = UGameplayStatics::GetCurrentLevelName(World, true);
+			UGameplayStatics::OpenLevel(World, FName(*LevelName));
+		}
+		else if (PC->WasInputKeyJustPressed(EKeys::Escape))
+		{
+			UKismetSystemLibrary::QuitGame(World, PC, EQuitPreference::Quit, false);
+		}
+		return;
+	}
 
 	double CurrentTime = World->GetTimeSeconds();
 	FVector PlayerLoc = Player->GetActorLocation();
@@ -3129,18 +3202,30 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 		}
 	}
 
-	// --- Victory condition: reach the portal ---
-	if (GameFlow.PortalLightActor.IsValid() || !GameFlow.PortalLocation.IsZero())
+	// --- Victory condition: reach the portal after all checkpoints are recovered ---
+	const bool bAllCheckpointsRecovered =
+		(GameFlow.TotalCheckpoints <= 0) || (GameFlow.CheckpointsCollected >= GameFlow.TotalCheckpoints);
+	if (bAllCheckpointsRecovered && (GameFlow.PortalTriggerActor.IsValid() || GameFlow.PortalLightActor.IsValid() || !GameFlow.PortalLocation.IsZero()))
 	{
 		// Use stored location (portal light may have been destroyed by checkpoint logic if it happened to match)
 		FVector PortalLoc = GameFlow.PortalLocation;
+		float TriggerRadius = GameFlow.PortalTriggerRadius;
+		if (GameFlow.PortalTriggerActor.IsValid())
+		{
+			PortalLoc = GameFlow.PortalTriggerActor->GetActorLocation();
+			FVector BoundsOrigin = FVector::ZeroVector;
+			FVector BoundsExtent = FVector::ZeroVector;
+			GameFlow.PortalTriggerActor->GetActorBounds(true, BoundsOrigin, BoundsExtent);
+			TriggerRadius = FMath::Max(FMath::Max(BoundsExtent.X, BoundsExtent.Y) + 150.0f, 500.0f);
+		}
 		if (GameFlow.PortalLightActor.IsValid())
 		{
 			PortalLoc = GameFlow.PortalLightActor->GetActorLocation();
+			TriggerRadius = FMath::Max(TriggerRadius, 500.0f);
 		}
 
-		float DistToPortal = FVector::Dist(PlayerLoc, PortalLoc);
-		if (DistToPortal < 500.0f)
+		const float DistToPortal2D = FVector::Dist2D(PlayerLoc, PortalLoc);
+		if (DistToPortal2D < TriggerRadius)
 		{
 			GameFlow.bVictory = true;
 			GameFlow.VictoryStartTime = CurrentTime;
@@ -3177,38 +3262,15 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 						GameFlow.CheckpointsCollected, GameFlow.TotalCheckpoints)));
 			}
 
-			// Disable player input
+			// Freeze gameplay but keep menu-selection keys active.
 			APlayerController* PC = Cast<APlayerController>(Player->GetController());
 			if (PC)
 			{
-				PC->DisableInput(PC);
+				PC->SetIgnoreMoveInput(true);
+				PC->SetIgnoreLookInput(true);
+				PC->SetInputMode(FInputModeUIOnly());
+				PC->bShowMouseCursor = true;
 			}
-
-			// Restart level after 5 seconds
-			FTimerHandle VictoryRestartTimer;
-			TWeakObjectPtr<UWorld> WeakWorld(World);
-			World->GetTimerManager().SetTimer(
-				VictoryRestartTimer,
-				[WeakWorld]()
-				{
-					if (WeakWorld.IsValid())
-					{
-						// Reset both HUD and GameFlow state before level transition
-						PlayerHUD = FPlayerHUDState();
-						GameFlow = FGameFlowState();
-						EnemyAIStates.Empty();
-						BlockingActors.Empty();
-						MusicSystem = FMusicState();
-						PlayerFootsteps = FPlayerFootstepState();
-						EnemyTypeSoundCache.Empty();
-
-						FString LevelName = UGameplayStatics::GetCurrentLevelName(WeakWorld.Get(), true);
-						UGameplayStatics::OpenLevel(WeakWorld.Get(), FName(*LevelName));
-					}
-				},
-				5.0f,
-				false
-			);
 		}
 	}
 }
@@ -3247,6 +3309,10 @@ void UGameplayHelperLibrary::StartIntroSequence(ACharacter* Character, UAnimSequ
 	IntroComp->FadeInDuration = FadeInDuration;
 	IntroComp->CameraDriftDuration = CameraDriftDuration;
 	IntroComp->InitialBlackHoldDuration = InitialBlackHoldDuration;
+	IntroComp->bEnableTitlePrelude = false;
+	IntroComp->TitleFadeInDuration = 1.0f;
+	IntroComp->TitleHoldDuration = 6.0f;
+	IntroComp->TitleFadeOutDuration = 1.0f;
 	IntroComp->RegisterComponent();
 	Character->AddInstanceComponent(IntroComp);
 

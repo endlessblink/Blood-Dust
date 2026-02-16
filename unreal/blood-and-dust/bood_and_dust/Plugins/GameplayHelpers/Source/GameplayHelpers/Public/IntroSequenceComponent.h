@@ -15,7 +15,9 @@ class USpringArmComponent;
 class UAnimSequence;
 class USoundBase;
 class UAudioComponent;
-class AActor;
+class ACameraActor;
+class AStaticMeshActor;
+class APointLight;
 class UNiagaraComponent;
 
 UENUM()
@@ -55,16 +57,19 @@ public:
 	float InitialBlackHoldDuration = 0.3f;
 
 	UPROPERTY()
-	float TitleFadeInDuration = 0.6f;
-
-	UPROPERTY()
-	float TitleHoldDuration = 2.2f;
-
-	UPROPERTY()
-	float TitleFadeOutDuration = 0.7f;
-
-	UPROPERTY()
 	USoundBase* GettingUpSound = nullptr;
+
+	UPROPERTY()
+	bool bEnableTitlePrelude = true;
+
+	UPROPERTY()
+	float TitleFadeInDuration = 1.0f;
+
+	UPROPERTY()
+	float TitleHoldDuration = 6.0f;
+
+	UPROPERTY()
+	float TitleFadeOutDuration = 1.0f;
 
 	void StartSequence();
 
@@ -84,14 +89,19 @@ private:
 	FName OriginalCameraSocket;
 	FName TrackedBoneName;
 	TArray<TWeakObjectPtr<UAudioComponent>> PausedAudioComponents;
-	TWeakObjectPtr<AActor> PreviousViewTarget;
-	TArray<TWeakObjectPtr<AActor>> SpawnedTitleActors;
-	TArray<TWeakObjectPtr<UNiagaraComponent>> SpawnedTitleNiagara;
+	TWeakObjectPtr<AActor> OriginalViewTarget;
+	TWeakObjectPtr<ACameraActor> TitleCamera;
+	TWeakObjectPtr<AStaticMeshActor> TitleMeshActor;
+	TWeakObjectPtr<AStaticMeshActor> TitleBackdropActor;
+	TWeakObjectPtr<APointLight> TitleLightA;
+	TWeakObjectPtr<APointLight> TitleLightB;
+	TWeakObjectPtr<UNiagaraComponent> TitleFXA;
+	TWeakObjectPtr<UNiagaraComponent> TitleFXB;
 
 	void UpdateCameraFromBone();
 	FName FindHeadBone() const;
 	void TransitionTo(EIntroState NewState);
+	void StartMainIntroPhase();
 	bool SetupTitleScene();
 	void CleanupTitleScene();
-	void StartMainIntroPhase();
 };

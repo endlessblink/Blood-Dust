@@ -3,23 +3,22 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
-#include "Camera/CameraActor.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/CapsuleComponent.h"
-#include "Materials/MaterialInterface.h"
-#include "Engine/StaticMeshActor.h"
-#include "Engine/StaticMesh.h"
-#include "GameFramework/Actor.h"
-#include "Engine/PointLight.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
+#include "Camera/CameraActor.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/PointLight.h"
 #include "Components/PointLightComponent.h"
-#include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
+#include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
+#include "Materials/MaterialInterface.h"
+#include "Engine/StaticMesh.h"
 
 UIntroSequenceComponent::UIntroSequenceComponent()
 {
@@ -98,27 +97,212 @@ void UIntroSequenceComponent::StartSequence()
 	CachedPC->DisableInput(CachedPC.Get());
 
 	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [4] Starting camera fade"));
-	if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
-	{
-		CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
-	}
-
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [11] Enabling tick, activating"));
-	SetComponentTickEnabled(true);
-	Activate();
-	if (SetupTitleScene())
+	if (!bEnableTitlePrelude)
 	{
 		if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
 		{
-			CamMgr->StartCameraFade(1.0f, 0.0f, TitleFadeInDuration, FLinearColor::Black, false, false);
+			CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
 		}
+	}
+	else
+	{
+		if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
+		{
+			CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
+		}
+	}
+
+	SetComponentTickEnabled(true);
+	Activate();
+
+	// Fail-safe title prelude: if setup fails, immediately continue with the original intro flow.
+	if (bEnableTitlePrelude && SetupTitleScene())
+	{
 		TransitionTo(EIntroState::TitleFadingIn);
-		UE_LOG(LogTemp, Display, TEXT("IntroSequence: [12] StartSequence complete, entering TitleFadingIn"));
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title scene setup failed, skipping to intro animation"));
 	StartMainIntroPhase();
+}
+
+bool UIntroSequenceComponent::SetupTitleScene()
+{
+	if (!CachedCharacter.IsValid() || !CachedPC.IsValid())
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	UStaticMesh* TitleMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Title/Meshes/SM_Title_BloodAndRust.SM_Title_BloodAndRust"));
+	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* TitleMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Title/Materials/M_Title_BloodAndRust.M_Title_BloodAndRust"));
+	UMaterialInterface* BackdropMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Title/Materials/M_IntroBackdrop_Black.M_IntroBackdrop_Black"));
+
+	if (!TitleMesh || !CubeMesh || !BackdropMat)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, missing title assets"));
+		return false;
+	}
+
+	const FVector CharLoc = CachedCharacter->GetActorLocation();
+	const FVector Forward = CachedCharacter->GetActorForwardVector().GetSafeNormal();
+	const FVector Right = CachedCharacter->GetActorRightVector().GetSafeNormal();
+
+	const FVector TitleLoc = CharLoc + Forward * 650.0f + FVector(0.0f, 0.0f, 130.0f);
+	const FVector CameraLoc = TitleLoc - Forward * 500.0f + FVector(0.0f, 0.0f, 40.0f);
+	const FRotator CameraRot = (TitleLoc - CameraLoc).Rotation();
+
+	TitleCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), CameraLoc, CameraRot);
+	if (!TitleCamera.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, camera spawn"));
+		CleanupTitleScene();
+		return false;
+	}
+
+	TitleMeshActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), TitleLoc, FRotator(0.0f, CachedCharacter->GetActorRotation().Yaw + 180.0f, 0.0f));
+	if (!TitleMeshActor.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, mesh spawn"));
+		CleanupTitleScene();
+		return false;
+	}
+	TitleMeshActor->SetActorScale3D(FVector(2.2f));
+	if (UStaticMeshComponent* MeshComp = TitleMeshActor->GetStaticMeshComponent())
+	{
+		MeshComp->SetStaticMesh(TitleMesh);
+		if (TitleMat)
+		{
+			MeshComp->SetMaterial(0, TitleMat);
+		}
+	}
+
+	const FVector BackdropLoc = TitleLoc + Forward * 180.0f;
+	TitleBackdropActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BackdropLoc, FRotator::ZeroRotator);
+	if (!TitleBackdropActor.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, backdrop spawn"));
+		CleanupTitleScene();
+		return false;
+	}
+	TitleBackdropActor->SetActorScale3D(FVector(18.0f, 0.2f, 10.0f));
+	if (UStaticMeshComponent* BackdropComp = TitleBackdropActor->GetStaticMeshComponent())
+	{
+		BackdropComp->SetStaticMesh(CubeMesh);
+		BackdropComp->SetMaterial(0, BackdropMat);
+	}
+
+	TitleLightA = World->SpawnActor<APointLight>(APointLight::StaticClass(), TitleLoc + Right * 180.0f + FVector(0.0f, 0.0f, -60.0f), FRotator::ZeroRotator);
+	TitleLightB = World->SpawnActor<APointLight>(APointLight::StaticClass(), TitleLoc - Right * 180.0f + FVector(0.0f, 0.0f, -60.0f), FRotator::ZeroRotator);
+	for (TWeakObjectPtr<APointLight> Light : { TitleLightA, TitleLightB })
+	{
+		if (Light.IsValid())
+		{
+			if (UPointLightComponent* PointComp = Cast<UPointLightComponent>(Light->GetLightComponent()))
+			{
+				PointComp->SetIntensity(4500.0f);
+				PointComp->SetLightColor(FLinearColor(1.0f, 0.42f, 0.08f));
+				PointComp->SetAttenuationRadius(420.0f);
+			}
+		}
+	}
+
+	UNiagaraSystem* FXSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/FX/NS_FloatingDust.NS_FloatingDust"));
+	if (FXSystem)
+	{
+		TitleFXA = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			World, FXSystem, TitleLoc + Right * 140.0f + FVector(0.0f, 0.0f, -55.0f),
+			FRotator::ZeroRotator, FVector(0.9f), true, true, ENCPoolMethod::None, true);
+		TitleFXB = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			World, FXSystem, TitleLoc - Right * 140.0f + FVector(0.0f, 0.0f, -55.0f),
+			FRotator::ZeroRotator, FVector(0.9f), true, true, ENCPoolMethod::None, true);
+	}
+
+	OriginalViewTarget = CachedPC->GetViewTarget();
+	CachedPC->SetViewTargetWithBlend(TitleCamera.Get(), 0.0f);
+	if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
+	{
+		CamMgr->StartCameraFade(1.0f, 0.0f, TitleFadeInDuration, FLinearColor::Black, false, false);
+	}
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: Title prelude started"));
+
+	return true;
+}
+
+void UIntroSequenceComponent::CleanupTitleScene()
+{
+	if (TitleFXA.IsValid())
+	{
+		TitleFXA->Deactivate();
+		TitleFXA->DestroyComponent();
+	}
+	if (TitleFXB.IsValid())
+	{
+		TitleFXB->Deactivate();
+		TitleFXB->DestroyComponent();
+	}
+	if (TitleLightA.IsValid())
+	{
+		TitleLightA->Destroy();
+	}
+	if (TitleLightB.IsValid())
+	{
+		TitleLightB->Destroy();
+	}
+	if (TitleMeshActor.IsValid())
+	{
+		TitleMeshActor->Destroy();
+	}
+	if (TitleBackdropActor.IsValid())
+	{
+		TitleBackdropActor->Destroy();
+	}
+	if (TitleCamera.IsValid())
+	{
+		TitleCamera->Destroy();
+	}
+}
+
+void UIntroSequenceComponent::StartMainIntroPhase()
+{
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [5] Finding head bone"));
+	FName ActualHeadBone = FindHeadBone();
+	if (ActualHeadBone == NAME_None)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: No head bone found, skipping sequence"));
+		CachedPC->EnableInput(CachedPC.Get());
+		return;
+	}
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [6] Head bone = %s"), *ActualHeadBone.ToString());
+
+	OriginalCameraSocket = CachedCamera->GetAttachSocketName();
+
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [7] Deactivating spring arm"));
+	if (CachedSpringArm.IsValid())
+	{
+		CachedSpringArm->SetActive(false);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [8] Detaching camera"));
+	CachedCamera->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	TrackedBoneName = ActualHeadBone;
+
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [9] UpdateCameraFromBone"));
+	UpdateCameraFromBone();
+
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [10] Caching anim duration"));
+	if (GettingUpAnimation)
+	{
+		AnimationDuration = GettingUpAnimation->GetPlayLength();
+		UE_LOG(LogTemp, Display, TEXT("IntroSequence: Animation duration = %.2f"), AnimationDuration);
+	}
+
+	TransitionTo(EIntroState::FadingIn);
 	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [12] StartSequence complete, entering FadingIn"));
 }
 
@@ -164,190 +348,6 @@ void UIntroSequenceComponent::TransitionTo(EIntroState NewState)
 	StateTimer = 0.0f;
 }
 
-bool UIntroSequenceComponent::SetupTitleScene()
-{
-	if (!CachedCharacter.IsValid() || !CachedPC.IsValid())
-	{
-		return false;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return false;
-	}
-
-	UStaticMesh* TitleMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Title/Meshes/SM_Title_BloodAndRust.SM_Title_BloodAndRust"));
-	if (!TitleMesh)
-	{
-		return false;
-	}
-
-	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	UMaterialInterface* BackdropMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Title/Materials/M_IntroBackdrop_Black.M_IntroBackdrop_Black"));
-	UNiagaraSystem* FireSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/FX/NS_FloatingDust.NS_FloatingDust"));
-
-	const FVector CharLoc = CachedCharacter->GetActorLocation();
-	const FVector Forward = CachedCharacter->GetActorForwardVector().GetSafeNormal();
-	const FVector Right = CachedCharacter->GetActorRightVector().GetSafeNormal();
-	const FVector Up = FVector::UpVector;
-
-	const FVector SceneOrigin = CharLoc + Forward * 500.0f + Up * 220.0f;
-	const FVector CameraLoc = SceneOrigin - Forward * 520.0f + Up * 70.0f;
-	const FRotator CameraRot = (SceneOrigin - CameraLoc).Rotation();
-
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = CachedCharacter.Get();
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-	ACameraActor* TitleCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), CameraLoc, CameraRot, SpawnParams);
-	if (!TitleCamera)
-	{
-		return false;
-	}
-	SpawnedTitleActors.Add(TitleCamera);
-
-	AStaticMeshActor* TitleActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), SceneOrigin, Forward.Rotation(), SpawnParams);
-	if (!TitleActor)
-	{
-		CleanupTitleScene();
-		return false;
-	}
-	if (UStaticMeshComponent* MeshComp = TitleActor->GetStaticMeshComponent())
-	{
-		MeshComp->SetStaticMesh(TitleMesh);
-		MeshComp->SetWorldScale3D(FVector(1.8f, 1.8f, 1.8f));
-		MeshComp->SetMobility(EComponentMobility::Movable);
-		MeshComp->SetCastShadow(true);
-	}
-	SpawnedTitleActors.Add(TitleActor);
-
-	if (CubeMesh)
-	{
-		const FVector BackdropLoc = SceneOrigin + Forward * 180.0f + Up * 10.0f;
-		AStaticMeshActor* BackdropActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BackdropLoc, Forward.Rotation(), SpawnParams);
-		if (BackdropActor)
-		{
-			if (UStaticMeshComponent* BackdropComp = BackdropActor->GetStaticMeshComponent())
-			{
-				BackdropComp->SetStaticMesh(CubeMesh);
-				BackdropComp->SetWorldScale3D(FVector(24.0f, 24.0f, 20.0f));
-				BackdropComp->SetMobility(EComponentMobility::Movable);
-				if (BackdropMaterial)
-				{
-					BackdropComp->SetMaterial(0, BackdropMaterial);
-				}
-			}
-			SpawnedTitleActors.Add(BackdropActor);
-		}
-	}
-
-	// Warm lights to make dust particles read like embers/fire.
-	const TArray<FVector> LightOffsets = {
-		Right * 210.0f + Up * 100.0f,
-		-Right * 210.0f + Up * 100.0f,
-		Forward * 130.0f + Up * 120.0f
-	};
-	for (const FVector& Offset : LightOffsets)
-	{
-		APointLight* LightActor = World->SpawnActor<APointLight>(APointLight::StaticClass(), SceneOrigin + Offset, FRotator::ZeroRotator, SpawnParams);
-		if (LightActor && LightActor->GetLightComponent())
-		{
-			if (UPointLightComponent* PointComp = Cast<UPointLightComponent>(LightActor->GetLightComponent()))
-			{
-				PointComp->SetIntensity(9000.0f);
-				PointComp->SetAttenuationRadius(420.0f);
-				PointComp->SetLightColor(FLinearColor(1.0f, 0.32f, 0.06f));
-				PointComp->SetUseTemperature(true);
-				PointComp->SetTemperature(2000.0f);
-			}
-			SpawnedTitleActors.Add(LightActor);
-		}
-	}
-
-	if (FireSystem)
-	{
-		const TArray<FVector> FxOffsets = {
-			Right * 180.0f - Up * 10.0f,
-			-Right * 180.0f - Up * 10.0f,
-			Forward * 60.0f - Up * 20.0f
-		};
-		for (const FVector& Offset : FxOffsets)
-		{
-			UNiagaraComponent* NiagaraComp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-				World,
-				FireSystem,
-				SceneOrigin + Offset,
-				FRotator(0.0f, FMath::FRandRange(0.0f, 360.0f), 0.0f),
-				FVector(1.6f, 1.6f, 1.6f),
-				true,
-				true
-			);
-			if (NiagaraComp)
-			{
-				SpawnedTitleNiagara.Add(NiagaraComp);
-			}
-		}
-	}
-
-	PreviousViewTarget = CachedPC->GetViewTarget();
-	CachedPC->SetViewTarget(TitleCamera);
-	return true;
-}
-
-void UIntroSequenceComponent::CleanupTitleScene()
-{
-	for (const TWeakObjectPtr<UNiagaraComponent>& Comp : SpawnedTitleNiagara)
-	{
-		if (Comp.IsValid())
-		{
-			Comp->DestroyComponent();
-		}
-	}
-	SpawnedTitleNiagara.Empty();
-
-	for (const TWeakObjectPtr<AActor>& Actor : SpawnedTitleActors)
-	{
-		if (Actor.IsValid())
-		{
-			Actor->Destroy();
-		}
-	}
-	SpawnedTitleActors.Empty();
-}
-
-void UIntroSequenceComponent::StartMainIntroPhase()
-{
-	if (!CachedCharacter.IsValid() || !CachedCamera.IsValid() || !CachedPC.IsValid())
-	{
-		TransitionTo(EIntroState::Complete);
-		return;
-	}
-
-	FName ActualHeadBone = FindHeadBone();
-	if (ActualHeadBone == NAME_None)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: No head bone found, skipping sequence"));
-		CachedPC->EnableInput(CachedPC.Get());
-		TransitionTo(EIntroState::Complete);
-		return;
-	}
-
-	OriginalCameraSocket = CachedCamera->GetAttachSocketName();
-
-	if (CachedSpringArm.IsValid())
-	{
-		CachedSpringArm->SetActive(false);
-	}
-
-	CachedCamera->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-	TrackedBoneName = ActualHeadBone;
-	UpdateCameraFromBone();
-
-	AnimationDuration = GettingUpAnimation ? GettingUpAnimation->GetPlayLength() : 0.0f;
-	TransitionTo(EIntroState::FadingIn);
-}
-
 void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -358,8 +358,9 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 	case EIntroState::TitleFadingIn:
 	{
-		if (StateTimer >= TitleFadeInDuration)
+		if (StateTimer >= FMath::Max(TitleFadeInDuration, 0.01f))
 		{
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleFadingIn complete -> TitleShowing"));
 			TransitionTo(EIntroState::TitleShowing);
 		}
 		break;
@@ -367,14 +368,12 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 	case EIntroState::TitleShowing:
 	{
-		if (StateTimer >= TitleHoldDuration)
+		if (StateTimer >= FMath::Max(TitleHoldDuration, 0.01f))
 		{
-			if (CachedPC.IsValid())
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleShowing complete -> TitleFadingOut"));
+			if (CachedPC.IsValid() && CachedPC->PlayerCameraManager)
 			{
-				if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
-				{
-					CamMgr->StartCameraFade(0.0f, 1.0f, TitleFadeOutDuration, FLinearColor::Black, false, true);
-				}
+				CachedPC->PlayerCameraManager->StartCameraFade(0.0f, 1.0f, TitleFadeOutDuration, FLinearColor::Black, false, true);
 			}
 			TransitionTo(EIntroState::TitleFadingOut);
 		}
@@ -383,20 +382,18 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 	case EIntroState::TitleFadingOut:
 	{
-		if (StateTimer >= TitleFadeOutDuration)
+		if (StateTimer >= FMath::Max(TitleFadeOutDuration, 0.01f))
 		{
-			CleanupTitleScene();
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleFadingOut complete -> MainIntro"));
 			if (CachedPC.IsValid())
 			{
-				if (PreviousViewTarget.IsValid())
+				AActor* ViewTarget = OriginalViewTarget.IsValid() ? OriginalViewTarget.Get() : CachedCharacter.Get();
+				if (ViewTarget)
 				{
-					CachedPC->SetViewTarget(PreviousViewTarget.Get());
-				}
-				else if (CachedCharacter.IsValid())
-				{
-					CachedPC->SetViewTarget(CachedCharacter.Get());
+					CachedPC->SetViewTargetWithBlend(ViewTarget, 0.0f);
 				}
 			}
+			CleanupTitleScene();
 			StartMainIntroPhase();
 		}
 		break;
@@ -526,6 +523,7 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 	case EIntroState::Complete:
 	{
+		CleanupTitleScene();
 		if (CachedPC.IsValid())
 		{
 			CachedPC->EnableInput(CachedPC.Get());

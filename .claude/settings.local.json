@@ -308,7 +308,9 @@
       "Bash(while pgrep:*)",
       "Bash(for f in \"/media/endlessblink/data/my-projects/ai-development/game-dev/ai-game-production-lecture/unreal/blood-and-dust/bood_and_dust/Saved/Logs/\"*.log)",
       "Bash(do grep \"setup_blendspace.*idle\\\\|setup_blendspace.*walk\\\\|setup_blendspace.*Sample\" \"$f\")",
-      "mcp__unrealMCP__get_editor_log"
+      "mcp__unrealMCP__get_editor_log",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
