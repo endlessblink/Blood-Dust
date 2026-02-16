@@ -24,6 +24,12 @@ class GAMEPLAYHELPERS_API UGameplayHelperLibrary : public UBlueprintFunctionLibr
 
 public:
 	/**
+	 * Runtime intro gate used by HUD/game-flow systems to hide gameplay UI while intro is active.
+	 */
+	static void SetIntroSequenceActive(ACharacter* Character, bool bActive);
+	static bool IsIntroSequenceActive(const ACharacter* Character);
+
+	/**
 	 * Set the character's max walk speed at runtime.
 	 * Wraps CharacterMovementComponent->MaxWalkSpeed = NewSpeed.
 	 */

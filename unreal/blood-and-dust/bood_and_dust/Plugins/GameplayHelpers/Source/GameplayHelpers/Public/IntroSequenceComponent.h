@@ -15,11 +15,16 @@ class USpringArmComponent;
 class UAnimSequence;
 class USoundBase;
 class UAudioComponent;
+class AActor;
+class UNiagaraComponent;
 
 UENUM()
 enum class EIntroState : uint8
 {
 	PendingStart,
+	TitleFadingIn,
+	TitleShowing,
+	TitleFadingOut,
 	FadingIn,
 	PlayingAnimation,
 	DriftingCamera,
@@ -50,6 +55,15 @@ public:
 	float InitialBlackHoldDuration = 0.3f;
 
 	UPROPERTY()
+	float TitleFadeInDuration = 0.6f;
+
+	UPROPERTY()
+	float TitleHoldDuration = 2.2f;
+
+	UPROPERTY()
+	float TitleFadeOutDuration = 0.7f;
+
+	UPROPERTY()
 	USoundBase* GettingUpSound = nullptr;
 
 	void StartSequence();
@@ -70,8 +84,14 @@ private:
 	FName OriginalCameraSocket;
 	FName TrackedBoneName;
 	TArray<TWeakObjectPtr<UAudioComponent>> PausedAudioComponents;
+	TWeakObjectPtr<AActor> PreviousViewTarget;
+	TArray<TWeakObjectPtr<AActor>> SpawnedTitleActors;
+	TArray<TWeakObjectPtr<UNiagaraComponent>> SpawnedTitleNiagara;
 
 	void UpdateCameraFromBone();
 	FName FindHeadBone() const;
 	void TransitionTo(EIntroState NewState);
+	bool SetupTitleScene();
+	void CleanupTitleScene();
+	void StartMainIntroPhase();
 };

@@ -382,7 +382,8 @@ struct FMinimapState
 	FSlateBrush MapBrush;
 
 	// Dot brushes (rounded circles)
-	FSlateBrush PlayerDotBrush;
+	FSlateBrush PlayerGlowBrush;    // large semi-transparent orange halo
+	FSlateBrush PlayerDotBrush;     // solid bright orange center
 	FSlateBrush CheckpointActiveBrush;
 	FSlateBrush CheckpointCollectedBrush;
 
@@ -390,10 +391,11 @@ struct FMinimapState
 	TSharedPtr<SOverlay> RootWidget;
 	TSharedPtr<SMinimapMarkerLayer> MarkerLayer;
 
-	// Marker slot layout: [checkpoints 0..15] [player 16]
+	// Marker slot layout: [checkpoints 0..15] [player glow 16] [player dot 17]
 	static constexpr int32 MaxCheckpointMarkers = 16;
-	static constexpr int32 PlayerSlot = MaxCheckpointMarkers; // 16
-	static constexpr int32 TotalMarkers = PlayerSlot + 1;     // 17
+	static constexpr int32 PlayerGlowSlot = MaxCheckpointMarkers;     // 16
+	static constexpr int32 PlayerDotSlot = MaxCheckpointMarkers + 1;  // 17
+	static constexpr int32 TotalMarkers = PlayerDotSlot + 1;          // 18
 
 	// World bounds for coordinate mapping (auto-detected from landscape)
 	FVector2D WorldMin = FVector2D(-15000, -15000);
@@ -404,8 +406,9 @@ static FMinimapState MinimapState;
 // Minimap display constants (2x size)
 static constexpr float MinimapWidth = 700.0f;
 static constexpr float MinimapHeight = 436.0f;  // 700 * (637/1024) preserving aspect ratio
-static constexpr float MinimapPlayerMarkerSize = 16.0f;
-static constexpr float MinimapCheckpointMarkerSize = 14.0f;
+static constexpr float MinimapPlayerGlowSize = 36.0f;  // glow halo behind player
+static constexpr float MinimapPlayerMarkerSize = 14.0f;
+static constexpr float MinimapCheckpointMarkerSize = 12.0f;
 
 // Inner map area (fraction of widget where markers move, inside the ornate frame)
 // Tightened inward to keep markers well within the painted map, off the frame border
@@ -567,9 +570,9 @@ static FString GetEnemyTypeKey(AActor* Actor)
 {
 	if (!Actor) return FString();
 	FString ClassName = Actor->GetClass()->GetName();
-	if (ClassName.Contains(TEXT("Bell")))    return TEXT("Bell");
-	if (ClassName.Contains(TEXT("KingBot"))) return TEXT("Kingbot");
-	if (ClassName.Contains(TEXT("Giganto"))) return TEXT("Gigantus");
+	if (ClassName.Contains(TEXT("Bell"), ESearchCase::IgnoreCase)) return TEXT("Bell");
+	if (ClassName.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Kingbot"), ESearchCase::IgnoreCase)) return TEXT("Kingbot");
+	if (ClassName.Contains(TEXT("Gigantus"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Giganto"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Gigant"), ESearchCase::IgnoreCase)) return TEXT("Gigantus");
 	return FString();
 }
 
@@ -3232,6 +3235,12 @@ void UGameplayHelperLibrary::StartIntroSequence(ACharacter* Character, UAnimSequ
 	}
 
 	UIntroSequenceComponent* IntroComp = NewObject<UIntroSequenceComponent>(Character);
+	if (!GettingUpSound)
+	{
+		GettingUpSound = Cast<USoundBase>(StaticLoadObject(
+			USoundBase::StaticClass(), nullptr,
+			TEXT("/Game/Audio/SFX/Hero/S_Robot_GettingUp.S_Robot_GettingUp")));
+	}
 	IntroComp->GettingUpAnimation = GettingUpAnimation;
 	IntroComp->GettingUpSound = GettingUpSound;
 	IntroComp->HeadBoneName = HeadBoneName;
@@ -3321,13 +3330,17 @@ void UGameplayHelperLibrary::ManageMinimap(ACharacter* Player)
 			UE_LOG(LogTemp, Warning, TEXT("ManageMinimap: Failed to load /Game/UI/Textures/T_Minimap"));
 		}
 
-		// Create circular dot brushes (player + soul checkpoints only)
+		// Player: bright orange dot with soft glow halo
+		MinimapState.PlayerGlowBrush = FSlateRoundedBoxBrush(
+			FLinearColor(1.0f, 0.50f, 0.05f, 0.35f), MinimapPlayerGlowSize * 0.5f);
 		MinimapState.PlayerDotBrush = FSlateRoundedBoxBrush(
-			FLinearColor(0.90f, 0.70f, 0.15f, 1.0f), MinimapPlayerMarkerSize * 0.5f);
+			FLinearColor(1.0f, 0.55f, 0.05f, 1.0f), MinimapPlayerMarkerSize * 0.5f);
+		// Checkpoints: bright white with slight blue tint (stands out on golden map)
 		MinimapState.CheckpointActiveBrush = FSlateRoundedBoxBrush(
-			FLinearColor(0.95f, 0.80f, 0.30f, 1.0f), MinimapCheckpointMarkerSize * 0.5f);
+			FLinearColor(1.0f, 1.0f, 0.85f, 0.9f), MinimapCheckpointMarkerSize * 0.5f,
+			FLinearColor(0.80f, 0.65f, 0.20f, 1.0f), 2.0f); // gold outline
 		MinimapState.CheckpointCollectedBrush = FSlateRoundedBoxBrush(
-			FLinearColor(0.30f, 0.22f, 0.10f, 0.4f), MinimapCheckpointMarkerSize * 0.5f);
+			FLinearColor(0.25f, 0.20f, 0.10f, 0.3f), MinimapCheckpointMarkerSize * 0.5f);
 
 		// Create custom marker layer (draws markers directly via OnPaint — no RenderTransform)
 		TSharedRef<SMinimapMarkerLayer> Markers = SNew(SMinimapMarkerLayer);
@@ -3420,9 +3433,13 @@ void UGameplayHelperLibrary::ManageMinimap(ACharacter* Player)
 			ML.SetMarker(i, FVector2D::ZeroVector, 0, nullptr, false);
 	}
 
-	// Player marker — slot 16 (drawn last = on top)
-	FVector2D PlayerPos = WorldToMinimapPos(Player->GetActorLocation(), MinimapPlayerMarkerSize);
-	ML.SetMarker(FMinimapState::PlayerSlot, PlayerPos, MinimapPlayerMarkerSize, &MinimapState.PlayerDotBrush, true);
+	// Player glow halo — slot 16 (drawn behind the dot)
+	FVector2D PlayerGlowPos = WorldToMinimapPos(Player->GetActorLocation(), MinimapPlayerGlowSize);
+	ML.SetMarker(FMinimapState::PlayerGlowSlot, PlayerGlowPos, MinimapPlayerGlowSize, &MinimapState.PlayerGlowBrush, true);
+
+	// Player dot — slot 17 (drawn last = on top)
+	FVector2D PlayerDotPos = WorldToMinimapPos(Player->GetActorLocation(), MinimapPlayerMarkerSize);
+	ML.SetMarker(FMinimapState::PlayerDotSlot, PlayerDotPos, MinimapPlayerMarkerSize, &MinimapState.PlayerDotBrush, true);
 
 	ML.RequestRepaint();
 }
