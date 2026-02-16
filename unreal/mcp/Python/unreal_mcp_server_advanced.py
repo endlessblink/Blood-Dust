@@ -2066,6 +2066,109 @@ def set_character_properties(
         return {"success": False, "message": str(e)}
 
 @mcp.tool()
+def set_anim_sequence_root_motion(
+    anim_sequence_path: str,
+    enable_root_motion: bool,
+) -> Dict[str, Any]:
+    """
+    Enable or disable root motion extraction on an AnimSequence asset.
+
+    Parameters:
+    - anim_sequence_path: Content path to AnimSequence (e.g., "/Game/Characters/Enemies/Bell/Animations/Walk")
+    - enable_root_motion: True to enable root motion, False for in-place locomotion
+
+    Returns:
+        Dictionary with previous and new root motion state.
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "anim_sequence_path": anim_sequence_path,
+            "enable_root_motion": enable_root_motion,
+        }
+        response = unreal.send_command("set_anim_sequence_root_motion", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"set_anim_sequence_root_motion error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
+def set_anim_state_always_reset_on_entry(
+    anim_blueprint_path: str,
+    state_name: str,
+    always_reset_on_entry: bool,
+    state_machine_name: str = "",
+) -> Dict[str, Any]:
+    """
+    Set the "Always Reset on Entry" flag for a state in an AnimBlueprint state machine.
+
+    Parameters:
+    - anim_blueprint_path: Content path to AnimBlueprint
+    - state_name: State name in the state machine (e.g., "Walk")
+    - always_reset_on_entry: True to force state reset on every entry, False to preserve continuity
+    - state_machine_name: Optional specific state machine graph name
+
+    Returns:
+        Dictionary with state update result and compile status.
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "anim_blueprint_path": anim_blueprint_path,
+            "state_name": state_name,
+            "always_reset_on_entry": always_reset_on_entry,
+        }
+        if state_machine_name:
+            params["state_machine_name"] = state_machine_name
+
+        response = unreal.send_command("set_anim_state_always_reset_on_entry", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"set_anim_state_always_reset_on_entry error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
+def set_state_machine_max_transitions_per_frame(
+    anim_blueprint_path: str,
+    max_transitions_per_frame: int,
+    state_machine_name: str = "",
+) -> Dict[str, Any]:
+    """
+    Set MaxTransitionsPerFrame on an AnimBlueprint state machine.
+
+    Parameters:
+    - anim_blueprint_path: Content path to AnimBlueprint
+    - max_transitions_per_frame: Max transitions allowed in one update tick (commonly 1)
+    - state_machine_name: Optional specific state machine graph name
+
+    Returns:
+        Dictionary with state machine update result and compile status.
+    """
+    unreal = get_unreal_connection()
+    if not unreal:
+        return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+    try:
+        params = {
+            "anim_blueprint_path": anim_blueprint_path,
+            "max_transitions_per_frame": max_transitions_per_frame,
+        }
+        if state_machine_name:
+            params["state_machine_name"] = state_machine_name
+
+        response = unreal.send_command("set_state_machine_max_transitions_per_frame", params)
+        return response or {"success": False, "message": "No response from Unreal"}
+    except Exception as e:
+        logger.error(f"set_state_machine_max_transitions_per_frame error: {e}")
+        return {"success": False, "message": str(e)}
+
+@mcp.tool()
 def auto_fit_capsule(
     blueprint_path: str,
 ) -> Dict[str, Any]:

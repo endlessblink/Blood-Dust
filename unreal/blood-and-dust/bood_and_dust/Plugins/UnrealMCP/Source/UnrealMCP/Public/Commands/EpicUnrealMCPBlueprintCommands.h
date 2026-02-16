@@ -53,4 +53,13 @@ private:
     // Update existing character blueprint properties (AnimBP, mesh, etc.)
     TSharedPtr<FJsonObject> HandleSetCharacterProperties(const TSharedPtr<FJsonObject>& Params);
 
-}; 
+    // Set root motion enable/disable on an AnimSequence asset.
+    TSharedPtr<FJsonObject> HandleSetAnimSequenceRootMotion(const TSharedPtr<FJsonObject>& Params);
+
+    // Set bAlwaysResetOnEntry on a specific state inside an AnimBlueprint state machine.
+    TSharedPtr<FJsonObject> HandleSetAnimStateAlwaysResetOnEntry(const TSharedPtr<FJsonObject>& Params);
+
+    // Set MaxTransitionsPerFrame on an AnimBlueprint state machine.
+    TSharedPtr<FJsonObject> HandleSetStateMachineMaxTransitionsPerFrame(const TSharedPtr<FJsonObject>& Params);
+
+};

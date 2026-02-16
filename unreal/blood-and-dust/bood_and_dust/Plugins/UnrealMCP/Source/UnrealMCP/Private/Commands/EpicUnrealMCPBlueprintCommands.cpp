@@ -166,6 +166,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     {
         return HandleSetCharacterProperties(Params);
     }
+    else if (CommandType == TEXT("set_anim_sequence_root_motion"))
+    {
+        return HandleSetAnimSequenceRootMotion(Params);
+    }
+    else if (CommandType == TEXT("set_anim_state_always_reset_on_entry"))
+    {
+        return HandleSetAnimStateAlwaysResetOnEntry(Params);
+    }
+    else if (CommandType == TEXT("set_state_machine_max_transitions_per_frame"))
+    {
+        return HandleSetStateMachineMaxTransitionsPerFrame(Params);
+    }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
@@ -3985,4 +3997,268 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetCharacterPrope
 	}
 	Result->SetArrayField(TEXT("changes"), ChangesArray);
 	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetAnimSequenceRootMotion(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AnimSequencePath;
+    if (!Params->TryGetStringField(TEXT("anim_sequence_path"), AnimSequencePath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_sequence_path' parameter"));
+    }
+
+    bool bEnableRootMotion = false;
+    if (!Params->TryGetBoolField(TEXT("enable_root_motion"), bEnableRootMotion))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'enable_root_motion' parameter"));
+    }
+
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AnimSequencePath);
+    UAnimSequence* AnimSequence = Cast<UAnimSequence>(LoadedAsset);
+    if (!AnimSequence)
+    {
+        AnimSequence = LoadObject<UAnimSequence>(nullptr, *AnimSequencePath);
+    }
+    if (!AnimSequence)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimSequence: %s"), *AnimSequencePath));
+    }
+
+    const bool bPrevious = AnimSequence->bEnableRootMotion;
+    AnimSequence->Modify();
+    AnimSequence->bEnableRootMotion = bEnableRootMotion;
+    AnimSequence->MarkPackageDirty();
+    UEditorAssetLibrary::SaveLoadedAsset(AnimSequence);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("anim_sequence_path"), AnimSequencePath);
+    Result->SetBoolField(TEXT("previous_enable_root_motion"), bPrevious);
+    Result->SetBoolField(TEXT("enable_root_motion"), AnimSequence->bEnableRootMotion);
+    Result->SetStringField(TEXT("message"), TEXT("AnimSequence root motion updated"));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetAnimStateAlwaysResetOnEntry(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AnimBPPath;
+    if (!Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_blueprint_path' parameter"));
+    }
+
+    FString StateName;
+    if (!Params->TryGetStringField(TEXT("state_name"), StateName) || StateName.IsEmpty())
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_name' parameter"));
+    }
+
+    FString StateMachineName;
+    Params->TryGetStringField(TEXT("state_machine_name"), StateMachineName);
+
+    bool bAlwaysResetOnEntry = false;
+    if (!Params->TryGetBoolField(TEXT("always_reset_on_entry"), bAlwaysResetOnEntry))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'always_reset_on_entry' parameter"));
+    }
+
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AnimBPPath);
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(LoadedAsset);
+    if (!AnimBP)
+    {
+        AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+    }
+    if (!AnimBP)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+    }
+
+    TArray<UAnimGraphNode_StateMachine*> MatchingStateMachines;
+    for (UEdGraph* Graph : AnimBP->FunctionGraphs)
+    {
+        if (!Graph || Graph->GetFName() != FName("AnimGraph"))
+        {
+            continue;
+        }
+
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UAnimGraphNode_StateMachine* SMNode = Cast<UAnimGraphNode_StateMachine>(Node);
+            if (!SMNode || !SMNode->EditorStateMachineGraph)
+            {
+                continue;
+            }
+
+            if (StateMachineName.IsEmpty() ||
+                SMNode->EditorStateMachineGraph->GetName().Equals(StateMachineName, ESearchCase::IgnoreCase))
+            {
+                MatchingStateMachines.Add(SMNode);
+            }
+        }
+    }
+
+    if (MatchingStateMachines.Num() == 0)
+    {
+        if (StateMachineName.IsEmpty())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No state machines found in AnimBlueprint AnimGraph"));
+        }
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("State machine not found: %s"), *StateMachineName));
+    }
+
+    UAnimStateNode* FoundState = nullptr;
+    FString FoundStateMachineName;
+    for (UAnimGraphNode_StateMachine* SMNode : MatchingStateMachines)
+    {
+        UAnimationStateMachineGraph* SMGraph = SMNode->EditorStateMachineGraph;
+        if (!SMGraph)
+        {
+            continue;
+        }
+
+        for (UEdGraphNode* Node : SMGraph->Nodes)
+        {
+            UAnimStateNode* StateNode = Cast<UAnimStateNode>(Node);
+            if (!StateNode)
+            {
+                continue;
+            }
+
+            const FString CandidateName = StateNode->BoundGraph ? StateNode->BoundGraph->GetName() : StateNode->GetName();
+            if (CandidateName.Equals(StateName, ESearchCase::IgnoreCase))
+            {
+                FoundState = StateNode;
+                FoundStateMachineName = SMGraph->GetName();
+                break;
+            }
+        }
+
+        if (FoundState)
+        {
+            break;
+        }
+    }
+
+    if (!FoundState)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("State not found: %s"), *StateName));
+    }
+
+    const bool bPrevious = FoundState->bAlwaysResetOnEntry;
+    FoundState->Modify();
+    FoundState->bAlwaysResetOnEntry = bAlwaysResetOnEntry;
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+    FKismetEditorUtilities::CompileBlueprint(AnimBP);
+    AnimBP->MarkPackageDirty();
+    UEditorAssetLibrary::SaveLoadedAsset(AnimBP);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), AnimBP->Status != EBlueprintStatus::BS_Error);
+    Result->SetStringField(TEXT("anim_blueprint_path"), AnimBPPath);
+    Result->SetStringField(TEXT("state_machine_name"), FoundStateMachineName);
+    Result->SetStringField(TEXT("state_name"), StateName);
+    Result->SetBoolField(TEXT("previous_always_reset_on_entry"), bPrevious);
+    Result->SetBoolField(TEXT("always_reset_on_entry"), FoundState->bAlwaysResetOnEntry);
+    Result->SetNumberField(TEXT("compile_status"), static_cast<int32>(AnimBP->Status));
+    if (AnimBP->Status == EBlueprintStatus::BS_Error)
+    {
+        Result->SetStringField(TEXT("warning"), TEXT("AnimBlueprint compiled with errors; check editor compiler output"));
+    }
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetStateMachineMaxTransitionsPerFrame(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AnimBPPath;
+    if (!Params->TryGetStringField(TEXT("anim_blueprint_path"), AnimBPPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_blueprint_path' parameter"));
+    }
+
+    double MaxTransitionsPerFrameRaw = 1.0;
+    if (!Params->TryGetNumberField(TEXT("max_transitions_per_frame"), MaxTransitionsPerFrameRaw))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'max_transitions_per_frame' parameter"));
+    }
+    int32 MaxTransitionsPerFrame = static_cast<int32>(MaxTransitionsPerFrameRaw);
+    MaxTransitionsPerFrame = FMath::Clamp(MaxTransitionsPerFrame, 1, 128);
+
+    FString StateMachineName;
+    Params->TryGetStringField(TEXT("state_machine_name"), StateMachineName);
+
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AnimBPPath);
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(LoadedAsset);
+    if (!AnimBP)
+    {
+        AnimBP = LoadObject<UAnimBlueprint>(nullptr, *AnimBPPath);
+    }
+    if (!AnimBP)
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load AnimBlueprint: %s"), *AnimBPPath));
+    }
+
+    UAnimGraphNode_StateMachine* TargetStateMachine = nullptr;
+    for (UEdGraph* Graph : AnimBP->FunctionGraphs)
+    {
+        if (!Graph || Graph->GetFName() != FName("AnimGraph"))
+        {
+            continue;
+        }
+
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UAnimGraphNode_StateMachine* SMNode = Cast<UAnimGraphNode_StateMachine>(Node);
+            if (!SMNode || !SMNode->EditorStateMachineGraph)
+            {
+                continue;
+            }
+
+            if (StateMachineName.IsEmpty() ||
+                SMNode->EditorStateMachineGraph->GetName().Equals(StateMachineName, ESearchCase::IgnoreCase))
+            {
+                TargetStateMachine = SMNode;
+                break;
+            }
+        }
+
+        if (TargetStateMachine)
+        {
+            break;
+        }
+    }
+
+    if (!TargetStateMachine)
+    {
+        if (StateMachineName.IsEmpty())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No state machine found in AnimBlueprint AnimGraph"));
+        }
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("State machine not found: %s"), *StateMachineName));
+    }
+
+    const int32 PreviousValue = TargetStateMachine->Node.MaxTransitionsPerFrame;
+    TargetStateMachine->Modify();
+    TargetStateMachine->Node.MaxTransitionsPerFrame = MaxTransitionsPerFrame;
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+    FKismetEditorUtilities::CompileBlueprint(AnimBP);
+    AnimBP->MarkPackageDirty();
+    UEditorAssetLibrary::SaveLoadedAsset(AnimBP);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), AnimBP->Status != EBlueprintStatus::BS_Error);
+    Result->SetStringField(TEXT("anim_blueprint_path"), AnimBPPath);
+    Result->SetStringField(TEXT("state_machine_name"), TargetStateMachine->EditorStateMachineGraph->GetName());
+    Result->SetNumberField(TEXT("previous_max_transitions_per_frame"), PreviousValue);
+    Result->SetNumberField(TEXT("max_transitions_per_frame"), TargetStateMachine->Node.MaxTransitionsPerFrame);
+    Result->SetNumberField(TEXT("compile_status"), static_cast<int32>(AnimBP->Status));
+    if (AnimBP->Status == EBlueprintStatus::BS_Error)
+    {
+        Result->SetStringField(TEXT("warning"), TEXT("AnimBlueprint compiled with errors; check editor compiler output"));
+    }
+    return Result;
 }

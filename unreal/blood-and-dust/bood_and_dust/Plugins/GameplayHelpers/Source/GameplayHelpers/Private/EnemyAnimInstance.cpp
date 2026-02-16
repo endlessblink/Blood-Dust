@@ -48,30 +48,36 @@ void UEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	}
 
 	// Target speed from CMC ground velocity (ignore Z for jumps/falls)
-	float TargetSpeed = CachedCMC->Velocity.Size2D();
+	const float TargetSpeed = CachedCMC->Velocity.Size2D();
 
-	// Smooth interpolation — prevents jitter from causing animation pops
-	Speed = FMath::FInterpTo(Speed, TargetSpeed, DeltaSeconds, 5.0f);
+	// Surgical loop fix: stabilize speed to prevent rapid Idle<->Walk/Run re-entry.
+	// Fast rise keeps responsiveness, slower decay filters brief zero-velocity spikes.
+	const float RiseInterp = 18.0f;
+	const float FallInterp = 6.0f;
+	const float Interp = (TargetSpeed >= AnimSpeed) ? RiseInterp : FallInterp;
+	AnimSpeed = FMath::FInterpTo(AnimSpeed, TargetSpeed, DeltaSeconds, Interp);
 
-	// Dead-zone snap: tiny velocities from physics settling → treat as zero
-	if (Speed < 3.0f)
+	// Dead-zone snap: only fully stop when close to zero.
+	if (AnimSpeed < 2.5f)
 	{
-		Speed = 0.0f;
+		AnimSpeed = 0.0f;
 	}
 
-	// Also set LocSpeed BP variable for AnimGraph BlendSpace binding.
-	// The EventGraph also computes LocSpeed, but C++ is more reliable —
-	// this ensures the BlendSpace always gets the correct speed value.
-	if (FProperty* Prop = GetClass()->FindPropertyByName(FName("LocSpeed")))
+	// Write both Speed and LocSpeed via reflection so BP state machines and
+	// BlendSpaces can bind whichever variable they use.
+	for (const FName PropName : { FName("Speed"), FName("LocSpeed") })
 	{
-		void* ValPtr = Prop->ContainerPtrToValuePtr<void>(this);
-		if (FFloatProperty* FP = CastField<FFloatProperty>(Prop))
+		if (FProperty* Prop = GetClass()->FindPropertyByName(PropName))
 		{
-			FP->SetPropertyValue(ValPtr, Speed);
-		}
-		else if (FDoubleProperty* DP = CastField<FDoubleProperty>(Prop))
-		{
-			DP->SetPropertyValue(ValPtr, (double)Speed);
+			void* ValPtr = Prop->ContainerPtrToValuePtr<void>(this);
+			if (FFloatProperty* FP = CastField<FFloatProperty>(Prop))
+			{
+				FP->SetPropertyValue(ValPtr, AnimSpeed);
+			}
+			else if (FDoubleProperty* DP = CastField<FDoubleProperty>(Prop))
+			{
+				DP->SetPropertyValue(ValPtr, (double)AnimSpeed);
+			}
 		}
 	}
 }

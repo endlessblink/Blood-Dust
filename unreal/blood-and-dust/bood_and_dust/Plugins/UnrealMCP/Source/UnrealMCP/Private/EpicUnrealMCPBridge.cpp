@@ -581,7 +581,10 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("create_anim_blueprint") ||
                      CommandType == TEXT("setup_locomotion_state_machine") ||
                      CommandType == TEXT("setup_blendspace_locomotion") ||
-                     CommandType == TEXT("set_character_properties"))
+                     CommandType == TEXT("set_character_properties") ||
+                     CommandType == TEXT("set_anim_sequence_root_motion") ||
+                     CommandType == TEXT("set_anim_state_always_reset_on_entry") ||
+                     CommandType == TEXT("set_state_machine_max_transitions_per_frame"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }

@@ -556,9 +556,9 @@ static TMap<TWeakObjectPtr<AActor>, FEnemyAIStateData> EnemyAIStates;
 
 struct FEnemyTypeSounds
 {
-	USoundBase* Hit = nullptr;
-	USoundBase* GettingHit = nullptr;
-	USoundBase* Steps = nullptr;
+	TArray<USoundBase*> HitSounds;
+	TArray<USoundBase*> GettingHitSounds;
+	TArray<USoundBase*> StepsSounds;
 };
 
 static TMap<FString, FEnemyTypeSounds> EnemyTypeSoundCache;
@@ -575,6 +575,30 @@ static FString GetEnemyTypeKey(AActor* Actor)
 
 enum class EEnemySoundType : uint8 { Hit, GettingHit, Steps };
 
+static void LoadSoundVariants(TArray<USoundBase*>& OutArray, const FString& TypeKey, const FString& Category)
+{
+	// Try numbered variants first: S_{Type}_{Category}_1, _2, _3, ...
+	for (int32 i = 1; i <= 8; ++i)
+	{
+		FString Path = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_%s_%d.S_%s_%s_%d"),
+			*TypeKey, *TypeKey, *Category, i, *TypeKey, *Category, i);
+		USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path));
+		if (Sound)
+			OutArray.Add(Sound);
+		else
+			break; // Stop at first missing number
+	}
+	// Fall back to unnumbered if no variants found
+	if (OutArray.Num() == 0)
+	{
+		FString Path = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_%s.S_%s_%s"),
+			*TypeKey, *TypeKey, *Category, *TypeKey, *Category);
+		USoundBase* Sound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path));
+		if (Sound)
+			OutArray.Add(Sound);
+	}
+}
+
 static FEnemyTypeSounds* GetOrLoadEnemyTypeSounds(const FString& TypeKey)
 {
 	if (TypeKey.IsEmpty()) return nullptr;
@@ -582,22 +606,22 @@ static FEnemyTypeSounds* GetOrLoadEnemyTypeSounds(const FString& TypeKey)
 		return Existing;
 
 	FEnemyTypeSounds NewSounds;
-	FString HitPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_Hit.S_%s_Hit"), *TypeKey, *TypeKey, *TypeKey);
-	FString GettingHitPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_GettingHit.S_%s_GettingHit"), *TypeKey, *TypeKey, *TypeKey);
-	FString StepsPath = FString::Printf(TEXT("/Game/Audio/SFX/%s/S_%s_Steps.S_%s_Steps"), *TypeKey, *TypeKey, *TypeKey);
+	LoadSoundVariants(NewSounds.HitSounds, TypeKey, TEXT("Hit"));
+	LoadSoundVariants(NewSounds.GettingHitSounds, TypeKey, TEXT("GettingHit"));
+	LoadSoundVariants(NewSounds.StepsSounds, TypeKey, TEXT("Steps"));
 
-	NewSounds.Hit = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *HitPath));
-	NewSounds.GettingHit = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *GettingHitPath));
-	NewSounds.Steps = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *StepsPath));
-
-	UE_LOG(LogTemp, Log, TEXT("EnemyTypeSounds: Loaded '%s' — Hit=%s GettingHit=%s Steps=%s"),
-		*TypeKey,
-		NewSounds.Hit ? TEXT("OK") : TEXT("MISSING"),
-		NewSounds.GettingHit ? TEXT("OK") : TEXT("MISSING"),
-		NewSounds.Steps ? TEXT("OK") : TEXT("MISSING"));
+	UE_LOG(LogTemp, Log, TEXT("EnemyTypeSounds: Loaded '%s' — Hit=%d GettingHit=%d Steps=%d"),
+		*TypeKey, NewSounds.HitSounds.Num(), NewSounds.GettingHitSounds.Num(), NewSounds.StepsSounds.Num());
 
 	EnemyTypeSoundCache.Add(TypeKey, NewSounds);
 	return EnemyTypeSoundCache.Find(TypeKey);
+}
+
+static USoundBase* PickRandomSound(const TArray<USoundBase*>& Sounds)
+{
+	if (Sounds.Num() == 0) return nullptr;
+	if (Sounds.Num() == 1) return Sounds[0];
+	return Sounds[FMath::RandRange(0, Sounds.Num() - 1)];
 }
 
 static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundType SoundType)
@@ -610,13 +634,13 @@ static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundTyp
 	USoundBase* Sound = nullptr;
 	switch (SoundType)
 	{
-	case EEnemySoundType::Hit:        Sound = Sounds->Hit; break;
-	case EEnemySoundType::GettingHit: Sound = Sounds->GettingHit; break;
-	case EEnemySoundType::Steps:      Sound = Sounds->Steps; break;
+	case EEnemySoundType::Hit:        Sound = PickRandomSound(Sounds->HitSounds); break;
+	case EEnemySoundType::GettingHit: Sound = PickRandomSound(Sounds->GettingHitSounds); break;
+	case EEnemySoundType::Steps:      Sound = PickRandomSound(Sounds->StepsSounds); break;
 	}
 	if (Sound)
 	{
-		UGameplayStatics::PlaySoundAtLocation(World, Sound, EnemyActor->GetActorLocation(), 1.0f, 1.0f);
+		UGameplayStatics::PlaySoundAtLocation(World, Sound, EnemyActor->GetActorLocation(), 0.3f, 1.0f);
 	}
 }
 
@@ -1126,8 +1150,8 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	{
 		State.bInitialized = true;
 
-		// Per-instance base randomization
-		State.SpeedMultiplier = FMath::FRandRange(0.65f, 1.35f);
+		// Per-instance base randomization (kept tight to avoid locomotion foot sliding).
+		State.SpeedMultiplier = FMath::FRandRange(0.85f, 1.15f);
 		State.AggroRangeMultiplier = FMath::FRandRange(0.7f, 1.3f);
 		State.ReactionDelay = FMath::FRandRange(0.1f, 1.5f);
 		State.AttackCooldownJitter = FMath::FRandRange(-0.5f, 1.0f);
@@ -1153,27 +1177,27 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			switch (State.Personality)
 			{
 			case EEnemyPersonality::Berserker:
-				State.SpeedMultiplier *= 1.6f;         // Very fast
+				State.SpeedMultiplier *= 1.2f;         // Fast, but still within run clip range
 				State.AggroRangeMultiplier *= 0.5f;    // Only reacts when close
 				State.AttackCooldownJitter -= 1.0f;    // Attacks rapidly
 				State.ReactionDelay *= 0.2f;           // Near-instant reaction
 				State.DamageMultiplier = 0.7f;         // Lower damage per hit
 				break;
 			case EEnemyPersonality::Stalker:
-				State.SpeedMultiplier *= 0.55f;        // Slow, menacing approach
+				State.SpeedMultiplier *= 0.8f;         // Slow, menacing approach
 				State.AggroRangeMultiplier *= 2.0f;    // Notices player from far
 				State.ReactionDelay *= 2.5f;           // Long stare before moving
 				State.WobbleAmplitude *= 2.0f;         // Weaving approach
 				State.DamageMultiplier = 1.0f;
 				break;
 			case EEnemyPersonality::Brute:
-				State.SpeedMultiplier *= 0.8f;         // Slow and heavy
+				State.SpeedMultiplier *= 0.9f;         // Slow and heavy
 				State.WobbleAmplitude *= 0.2f;         // Charges straight
 				State.AttackCooldownJitter += 0.5f;    // Slower attacks
 				State.DamageMultiplier = 1.8f;         // Hits HARD
 				break;
 			case EEnemyPersonality::Crawler:
-				State.SpeedMultiplier *= 0.4f;         // Creeping
+				State.SpeedMultiplier *= 0.75f;        // Creeping
 				State.AggroRangeMultiplier *= 1.4f;    // Aware
 				State.ReactionDelay *= 0.5f;           // Quick to start crawling
 				State.AnimPlayRateVariation *= 0.8f;   // Slower anim
@@ -1888,7 +1912,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 	// Update CMC walk speed (includes per-instance variation)
 	if (MoveComp)
 	{
-		MoveComp->MaxWalkSpeed = MoveSpeed * State.SpeedMultiplier;
+		const float RawSpeed = MoveSpeed * State.SpeedMultiplier;
+		// Keep authored speed profile; animation graph should adapt to movement, not vice-versa.
+		MoveComp->MaxWalkSpeed = RawSpeed;
 	}
 
 	// Process pending damage (delayed from attack windup)

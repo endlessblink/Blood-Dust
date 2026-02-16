@@ -17,9 +17,9 @@ class GAMEPLAYHELPERS_API UEnemyAnimInstance : public UAnimInstance
 	GENERATED_BODY()
 
 public:
-	/** Smoothed ground speed for BlendSpace1D (0 = idle, ~300 = walk). */
+	/** Native cached speed used by C++ update logic. */
 	UPROPERTY(BlueprintReadOnly, Category = "Locomotion")
-	float Speed = 0.0f;
+	float AnimSpeed = 0.0f;
 
 	/** True when the enemy is dead — freezes the current pose. */
 	UPROPERTY(BlueprintReadOnly, Category = "State")
