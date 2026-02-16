@@ -27,16 +27,8 @@ public:
 
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
-	virtual void NativeThreadSafeUpdateAnimation(float DeltaSeconds) override;
 
 private:
 	TWeakObjectPtr<ACharacter> CachedCharacter;
 	TWeakObjectPtr<UCharacterMovementComponent> CachedCMC;
-
-	// Direct FAnimNode_BlendSpacePlayer driving via struct reflection.
-	// Bypasses AnimGraph pin binding which can get corrupted during programmatic creation.
-	FStructProperty* CachedBSNodeProp = nullptr;
-	FProperty* CachedBSXProp = nullptr;
-	bool bBSLookupDone = false;
-	int32 DiagFrameCounter = 0;
 };

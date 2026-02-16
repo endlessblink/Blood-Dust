@@ -38,6 +38,8 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
@@ -1381,6 +1383,58 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			FString EnemyType = ClassName;
 			EnemyType.RemoveFromStart(TEXT("BP_"));
 
+			// Bell-specific skeleton compatibility enforcement:
+			// never run Bell with the deprecated SK_Bell_New_Skeleton.
+			if (EnemyType == TEXT("Bell"))
+			{
+				USkeleton* TargetBellSkeleton = LoadObject<USkeleton>(
+					nullptr,
+					TEXT("/Game/Characters/Enemies/Bell/SK_Bell_Skeleton.SK_Bell_Skeleton"));
+
+				if (TargetBellSkeleton)
+				{
+					USkeletalMesh* CurrentMesh = InitMesh->GetSkeletalMeshAsset();
+					USkeleton* CurrentSkel = CurrentMesh ? CurrentMesh->GetSkeleton() : nullptr;
+
+					if (CurrentSkel != TargetBellSkeleton)
+					{
+						USkeletalMesh* CompatibleMesh = nullptr;
+						const TCHAR* BellMeshCandidates[] = {
+							TEXT("/Game/Characters/Enemies/Bell/SK_Bell.SK_Bell"),
+							TEXT("/Game/Characters/Enemies/Bell/SK_Bell_Anim.SK_Bell_Anim"),
+							TEXT("/Game/Characters/Enemies/Bell/SK_Bell_New.SK_Bell_New")
+						};
+
+						for (const TCHAR* Path : BellMeshCandidates)
+						{
+							if (USkeletalMesh* Candidate = LoadObject<USkeletalMesh>(nullptr, Path))
+							{
+								if (Candidate->GetSkeleton() == TargetBellSkeleton)
+								{
+									CompatibleMesh = Candidate;
+									break;
+								}
+							}
+						}
+
+						if (CompatibleMesh)
+						{
+							InitMesh->SetSkeletalMesh(CompatibleMesh);
+							UE_LOG(LogTemp, Warning, TEXT("EnemyAI INIT [%s]: Switched Bell mesh to %s for SK_Bell_Skeleton compatibility"),
+								*Enemy->GetName(), *CompatibleMesh->GetPathName());
+						}
+						else
+						{
+							UE_LOG(LogTemp, Error, TEXT("EnemyAI INIT [%s]: No Bell mesh found with SK_Bell_Skeleton"), *Enemy->GetName());
+						}
+					}
+				}
+				else
+				{
+					UE_LOG(LogTemp, Error, TEXT("EnemyAI INIT [%s]: Failed to load SK_Bell_Skeleton"), *Enemy->GetName());
+				}
+			}
+
 			FString AnimBPPath = FString::Printf(
 				TEXT("/Game/Characters/Enemies/%s/ABP_BG_%s.ABP_BG_%s_C"),
 				*EnemyType, *EnemyType, *EnemyType
@@ -1444,8 +1498,9 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		bool DiagAnimValid = DiagAnim != nullptr;
 		FString DiagAnimClass = DiagAnim ? DiagAnim->GetClass()->GetName() : TEXT("NULL");
 
-		// Check AnimInstance Speed property via reflection
+		// Check AnimInstance Speed AND LocSpeed properties via reflection
 		float DiagAnimSpeed = -1.f;
+		float DiagLocSpeed = -1.f;
 		if (DiagAnim)
 		{
 			FProperty* SpeedProp = DiagAnim->GetClass()->FindPropertyByName(FName("Speed"));
@@ -1456,6 +1511,15 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 					DiagAnimSpeed = FP->GetPropertyValue(SpeedPtr);
 				else if (FDoubleProperty* DP = CastField<FDoubleProperty>(SpeedProp))
 					DiagAnimSpeed = (float)DP->GetPropertyValue(SpeedPtr);
+			}
+			FProperty* LocSpeedProp = DiagAnim->GetClass()->FindPropertyByName(FName("LocSpeed"));
+			if (LocSpeedProp)
+			{
+				void* LocSpeedPtr = LocSpeedProp->ContainerPtrToValuePtr<void>(DiagAnim);
+				if (FFloatProperty* FP = CastField<FFloatProperty>(LocSpeedProp))
+					DiagLocSpeed = FP->GetPropertyValue(LocSpeedPtr);
+				else if (FDoubleProperty* DP = CastField<FDoubleProperty>(LocSpeedProp))
+					DiagLocSpeed = (float)DP->GetPropertyValue(LocSpeedPtr);
 			}
 		}
 
@@ -1471,10 +1535,10 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		FVector CurLoc = Enemy->GetActorLocation();
 		float LocDelta = FVector::Dist(CurLoc, State.SpawnLocation); // rough distance from spawn
 
-		UE_LOG(LogTemp, Warning, TEXT("DIAG [%s] State=%s MoveMode=%d HasFloor=%d Vel=%.1f Vel2D=%.1f MaxSpeed=%.1f AnimMode=%d AnimClass=%s AnimBP=%s AnimSpeed=%.1f bPause=%d VisTick=%d MeshTick=%d HasCtrl=%d Dist=%.0f"),
+		UE_LOG(LogTemp, Warning, TEXT("DIAG [%s] State=%s MoveMode=%d HasFloor=%d Vel=%.1f Vel2D=%.1f MaxSpeed=%.1f AnimMode=%d AnimClass=%s AnimBP=%s Speed=%.1f LocSpeed=%.1f bPause=%d VisTick=%d MeshTick=%d HasCtrl=%d Dist=%.0f"),
 			*Enemy->GetName(), StateNames[StateIdx], DiagMoveMode, DiagHasFloor,
 			DiagVel, DiagVel2D, DiagMaxSpeed,
-			DiagAnimMode, *DiagAnimClass, *DiagAnimBPClass, DiagAnimSpeed,
+			DiagAnimMode, *DiagAnimClass, *DiagAnimBPClass, DiagAnimSpeed, DiagLocSpeed,
 			(int32)DiagPauseAnims, DiagVisTick, (int32)DiagMeshTickEnabled,
 			(int32)DiagHasController, DistToPlayer);
 	}
