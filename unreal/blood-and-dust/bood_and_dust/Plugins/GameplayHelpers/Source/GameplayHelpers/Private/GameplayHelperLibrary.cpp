@@ -3406,7 +3406,7 @@ void UGameplayHelperLibrary::StartIntroSequence(ACharacter* Character, UAnimSequ
 	IntroComp->FadeInDuration = FadeInDuration;
 	IntroComp->CameraDriftDuration = CameraDriftDuration;
 	IntroComp->InitialBlackHoldDuration = InitialBlackHoldDuration;
-	IntroComp->bEnableTitlePrelude = false;
+	IntroComp->bEnableTitlePrelude = true;
 	IntroComp->TitleFadeInDuration = 1.0f;
 	IntroComp->TitleHoldDuration = 6.0f;
 	IntroComp->TitleFadeOutDuration = 1.0f;

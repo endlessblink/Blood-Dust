@@ -97,19 +97,9 @@ void UIntroSequenceComponent::StartSequence()
 	CachedPC->DisableInput(CachedPC.Get());
 
 	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [4] Starting camera fade"));
-	if (!bEnableTitlePrelude)
+	if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
 	{
-		if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
-		{
-			CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
-		}
-	}
-	else
-	{
-		if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
-		{
-			CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
-		}
+		CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
 	}
 
 	SetComponentTickEnabled(true);
@@ -182,15 +172,17 @@ bool UIntroSequenceComponent::SetupTitleScene()
 		}
 	}
 
-	const FVector BackdropLoc = TitleLoc + Forward * 180.0f;
-	TitleBackdropActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BackdropLoc, FRotator::ZeroRotator);
+	const FVector CamForward = TitleCamera->GetActorForwardVector().GetSafeNormal();
+	const FVector BackdropLoc = CameraLoc + CamForward * 220.0f;
+	const FRotator BackdropRot = FRotationMatrix::MakeFromY(CamForward).Rotator();
+	TitleBackdropActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BackdropLoc, BackdropRot);
 	if (!TitleBackdropActor.IsValid())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, backdrop spawn"));
 		CleanupTitleScene();
 		return false;
 	}
-	TitleBackdropActor->SetActorScale3D(FVector(18.0f, 0.2f, 10.0f));
+	TitleBackdropActor->SetActorScale3D(FVector(60.0f, 0.05f, 40.0f));
 	if (UStaticMeshComponent* BackdropComp = TitleBackdropActor->GetStaticMeshComponent())
 	{
 		BackdropComp->SetStaticMesh(CubeMesh);
