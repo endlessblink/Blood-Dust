@@ -3032,6 +3032,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 			if (!CP.LightActor.IsValid())
 			{
 				CP.State = ECheckpointState::Collected;
+				GameFlow.CheckpointsCollected = FMath::Min(GameFlow.CheckpointsCollected + 1, GameFlow.TotalCheckpoints);
 				continue;
 			}
 
@@ -3143,6 +3144,21 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 					(1.0f - GameFlow.DimPerCheckpoint * GameFlow.CheckpointsCollected) * 100.0f);
 			}
 		}
+	}
+
+	// Keep counter synchronized with actual checkpoint states to avoid
+	// stale "not all recovered" gate blocking when actors were invalidated externally.
+	int32 CollectedByState = 0;
+	for (const FCheckpointData& CP : GameFlow.Checkpoints)
+	{
+		if (CP.State == ECheckpointState::Collected)
+		{
+			CollectedByState++;
+		}
+	}
+	if (CollectedByState != GameFlow.CheckpointsCollected)
+	{
+		GameFlow.CheckpointsCollected = CollectedByState;
 	}
 
 	// --- Golden flash animation (0.5s) ---
