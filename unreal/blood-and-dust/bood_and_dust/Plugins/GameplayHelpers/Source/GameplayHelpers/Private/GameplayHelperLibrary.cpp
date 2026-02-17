@@ -44,6 +44,17 @@
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "InputCoreTypes.h"
 
+namespace
+{
+	constexpr bool kEnableEnemySfx = false;
+	constexpr bool kEnablePlayerMovementSfx = false;
+	constexpr float kSfxGlobalVolume = 0.75f;
+	constexpr float kPlayerStepVolume = 0.0f;
+	constexpr float kEnemyHitVolume = 0.36f;
+	constexpr float kEnemyStepVolume = 0.24f;
+	constexpr float kUiSfxVolume = 0.75f;
+}
+
 void UGameplayHelperLibrary::SetCharacterWalkSpeed(ACharacter* Character, float NewSpeed)
 {
 	if (!Character)
@@ -106,7 +117,7 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		}
 	}
 
-	AnimInst->PlaySlotAnimationAsDynamicMontage(
+	UAnimMontage* Montage = AnimInst->PlaySlotAnimationAsDynamicMontage(
 		AnimSequence,
 		FName("DefaultSlot"),
 		BlendIn,
@@ -117,63 +128,8 @@ void UGameplayHelperLibrary::PlayAnimationOneShot(ACharacter* Character, UAnimSe
 		0.0f    // InTimeToStartMontageAt
 	);
 
-	// Fire AnimNotify_PlaySound events from the source AnimSequence via timers.
-	// Dynamic montages do NOT copy notifies from source sequences, so we manually
-	// read notify events and schedule UGameplayStatics::PlaySoundAtLocation calls.
-
-	// Hero hit sound random selection: load both variants once, swap randomly at runtime.
-	static USoundBase* HeroHit1 = nullptr;
-	static USoundBase* HeroHit2 = nullptr;
-	static bool bHeroHitsLoaded = false;
-	if (!bHeroHitsLoaded)
-	{
-		bHeroHitsLoaded = true;
-		HeroHit1 = Cast<USoundBase>(StaticLoadObject(
-			USoundBase::StaticClass(), nullptr,
-			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_1.S_Hero_Hit_1")));
-		HeroHit2 = Cast<USoundBase>(StaticLoadObject(
-			USoundBase::StaticClass(), nullptr,
-			TEXT("/Game/Audio/SFX/Hero/S_Hero_Hit_2.S_Hero_Hit_2")));
-	}
-
-	for (const FAnimNotifyEvent& NotifyEvent : AnimSequence->Notifies)
-	{
-		UAnimNotify_PlaySound* SoundNotify = Cast<UAnimNotify_PlaySound>(NotifyEvent.Notify);
-		if (SoundNotify && SoundNotify->Sound)
-		{
-			float NotifyTime = NotifyEvent.GetTriggerTime() / FMath::Max(PlayRate, 0.01f);
-			TWeakObjectPtr<AActor> WeakActor(Character);
-			USoundBase* Sound = SoundNotify->Sound;
-			float Volume = SoundNotify->VolumeMultiplier;
-			float Pitch = SoundNotify->PitchMultiplier;
-
-			// If this is a hero hit sound, randomly pick between both variants
-			if (HeroHit1 && HeroHit2 && (Sound == HeroHit1 || Sound == HeroHit2))
-			{
-				Sound = FMath::RandBool() ? HeroHit1 : HeroHit2;
-			}
-
-			FTimerHandle SoundTimerHandle;
-			Character->GetWorldTimerManager().SetTimer(
-				SoundTimerHandle,
-				[WeakActor, Sound, Volume, Pitch]()
-				{
-					if (WeakActor.IsValid())
-					{
-						UGameplayStatics::PlaySoundAtLocation(
-							WeakActor->GetWorld(),
-							Sound,
-							WeakActor->GetActorLocation(),
-							Volume,
-							Pitch
-						);
-					}
-				},
-				FMath::Max(NotifyTime, 0.01f),
-				false
-			);
-		}
-	}
+	// Keep one authoritative SFX path.
+	// Animation SoundNotifies are handled by the animation system directly.
 
 	// Set timer to restore movement speed after animation completes
 	if (bStopMovement && MovementComp)
@@ -545,6 +501,8 @@ struct FEnemyAIStateData
 	float PartnerAttackCooldown = 0.0f;
 	TWeakObjectPtr<AActor> AutoDiscoveredPartner;
 	bool bPartnerSearchDone = false;
+	double LastEnemyStepTime = 0.0;
+	double LastGettingHitSfxTime = -100.0;
 
 	// Floating health bar
 	TWeakObjectPtr<UWidgetComponent> HealthBarComponent;
@@ -576,7 +534,7 @@ static FString GetEnemyTypeKey(AActor* Actor)
 	if (!Actor) return FString();
 	FString ClassName = Actor->GetClass()->GetName();
 	if (ClassName.Contains(TEXT("Bell"), ESearchCase::IgnoreCase)) return TEXT("Bell");
-	if (ClassName.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Kingbot"), ESearchCase::IgnoreCase)) return TEXT("Kingbot");
+	if (ClassName.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Kingbot"), ESearchCase::IgnoreCase)) return TEXT("KingBot");
 	if (ClassName.Contains(TEXT("Gigantus"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Giganto"), ESearchCase::IgnoreCase) || ClassName.Contains(TEXT("Gigant"), ESearchCase::IgnoreCase)) return TEXT("Gigantus");
 	return FString();
 }
@@ -605,7 +563,7 @@ static void LoadNoamTrimEnemySounds(FEnemyTypeSounds& OutSounds, const FString& 
 		return;
 	}
 
-	if (TypeKey == TEXT("Kingbot"))
+	if (TypeKey == TEXT("KingBot"))
 	{
 		AddSoundIfExists(OutSounds.HitSounds, TEXT("/Game/Audio/SFX/Kingbot/S_Kingbot_Hit_1.S_Kingbot_Hit_1"));
 		AddSoundIfExists(OutSounds.GettingHitSounds, TEXT("/Game/Audio/SFX/Kingbot/S_Kingbot_GettingHit_1.S_Kingbot_GettingHit_1"));
@@ -645,8 +603,9 @@ static USoundBase* PickRandomSound(const TArray<USoundBase*>& Sounds)
 	return Sounds[FMath::RandRange(0, Sounds.Num() - 1)];
 }
 
-static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundType SoundType)
+static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundType SoundType, float PitchScale = 1.0f)
 {
+	if (!kEnableEnemySfx) return;
 	if (!World || !EnemyActor) return;
 	FString TypeKey = GetEnemyTypeKey(EnemyActor);
 	FEnemyTypeSounds* Sounds = GetOrLoadEnemyTypeSounds(TypeKey);
@@ -661,7 +620,16 @@ static void PlayEnemyTypeSound(UWorld* World, AActor* EnemyActor, EEnemySoundTyp
 	}
 	if (Sound)
 	{
-		UGameplayStatics::PlaySoundAtLocation(World, Sound, EnemyActor->GetActorLocation(), 0.3f, 1.0f);
+		const bool bStep = (SoundType == EEnemySoundType::Steps);
+		float BaseVolume = bStep ? kEnemyStepVolume : kEnemyHitVolume;
+		// Bell steps: keep subtle but audible. Bell hits: slightly emphasized.
+		if (TypeKey == TEXT("Bell"))
+		{
+			BaseVolume = bStep ? 0.24f : 0.46f;
+		}
+		const float Pitch = (bStep ? FMath::FRandRange(0.96f, 1.04f) : FMath::FRandRange(0.92f, 1.08f)) * PitchScale;
+		const FVector SoundLoc = EnemyActor->GetActorLocation();
+		UGameplayStatics::PlaySoundAtLocation(World, Sound, SoundLoc, BaseVolume, Pitch);
 	}
 }
 
@@ -786,6 +754,10 @@ static FPlayerFootstepState PlayerFootsteps;
 
 static void UpdatePlayerFootsteps(ACharacter* Player)
 {
+	if (!kEnablePlayerMovementSfx)
+	{
+		return;
+	}
 	if (!Player) return;
 	UWorld* World = Player->GetWorld();
 	if (!World) return;
@@ -876,7 +848,7 @@ static void UpdatePlayerFootsteps(ACharacter* Player)
 			// Slight pitch variation for naturalness
 			float PitchVar = FMath::FRandRange(0.95f, 1.05f);
 			UGameplayStatics::PlaySoundAtLocation(
-				World, StepSound, Player->GetActorLocation(), 1.0f, PitchVar);
+				World, StepSound, Player->GetActorLocation(), kPlayerStepVolume, PitchVar);
 		}
 
 		PlayerFootsteps.bLeftFoot = !PlayerFootsteps.bLeftFoot;
@@ -1028,7 +1000,40 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 			UE_LOG(LogTemp, Log, TEXT("ApplyMeleeDamage: %s blocked! %.0f -> %.0f"),
 				*Victim->GetName(), Damage, EffectiveDamage);
 		}
+		// Enemy durability tuning for player attacks
+		if (bAttackerIsPlayer && !bVictimIsPlayer)
+		{
+			const FString VictimClass = Victim->GetClass()->GetName();
+			if (VictimClass.Contains(TEXT("Bell"), ESearchCase::IgnoreCase))
+			{
+				EffectiveDamage *= 0.60f;
+			}
+			else if (VictimClass.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase))
+			{
+				EffectiveDamage *= 0.85f;
+			}
+			else if (VictimClass.Contains(TEXT("Giganto"), ESearchCase::IgnoreCase)
+				|| VictimClass.Contains(TEXT("Gigantus"), ESearchCase::IgnoreCase))
+			{
+				EffectiveDamage *= 0.80f;
+			}
+		}
 		CurrentHealth -= EffectiveDamage;
+
+		// Enemy attack-hit SFX: play only on confirmed damage to player.
+		// This keeps timing tied to real hits and prevents random far-away punch sounds.
+		if (!bAttackerIsPlayer && bVictimIsPlayer)
+		{
+			static TMap<TWeakObjectPtr<AActor>, double> LastEnemyHitSfxTime;
+			const TWeakObjectPtr<AActor> AttackerKey(Attacker);
+			const double Now = World->GetTimeSeconds();
+			double& LastTime = LastEnemyHitSfxTime.FindOrAdd(AttackerKey);
+			if ((Now - LastTime) >= 0.40)
+			{
+				PlayEnemyTypeSound(World, Attacker, EEnemySoundType::Hit);
+				LastTime = Now;
+			}
+		}
 
 		// NOTE: Attack SFX removed from here — will be added via AnimNotify later
 		// for proper animation-synced timing.
@@ -1050,6 +1055,21 @@ void UGameplayHelperLibrary::ApplyMeleeDamage(ACharacter* Attacker, float Damage
 		if (Victim == PlayerCharFlash && CurrentHealth > 0.f)
 		{
 			PlayerHUD.DamageFlashStartTime = World->GetTimeSeconds();
+
+			// Player hit reaction animation (non-lethal only)
+			static UAnimSequence* PlayerHitAnim = nullptr;
+			static bool bPlayerHitAnimTried = false;
+			if (!bPlayerHitAnimTried)
+			{
+				bPlayerHitAnimTried = true;
+				PlayerHitAnim = Cast<UAnimSequence>(StaticLoadObject(
+					UAnimSequence::StaticClass(), nullptr,
+					TEXT("/Game/Characters/Robot/Animations/getting-hit.getting-hit")));
+			}
+			if (PlayerHitAnim)
+			{
+				PlayAnimationOneShot(PlayerCharFlash, PlayerHitAnim, 1.0f, 0.06f, 0.12f, false, true);
+			}
 		}
 
 		// Blood VFX (graceful null if asset missing)
@@ -1227,6 +1247,15 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 			default: // Normal
 				State.DamageMultiplier = 1.0f;
 				break;
+			}
+
+			// KingBot-specific stability tuning to reduce "wobbly" locomotion feel.
+			const FString InitClassName = Enemy->GetClass()->GetName();
+			if (InitClassName.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase))
+			{
+				State.WobbleAmplitude *= 0.25f;
+				State.SpeedMultiplier = FMath::Clamp(State.SpeedMultiplier, 0.95f, 1.05f);
+				State.AnimPlayRateVariation = 1.0f;
 			}
 
 			// Select attack animation based on personality + available pool
@@ -1603,7 +1632,7 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		if (!State.bHealthInitialized)
 		{
 			State.bHealthInitialized = true;
-			HP = 60.f; // Bell: swarmer, dies fast
+			HP = 110.f; // Bell: should survive several player hits
 			FString ClassName = Enemy->GetClass()->GetName();
 			if (ClassName.Contains(TEXT("KingBot")))
 			{
@@ -1683,6 +1712,12 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 	USkeletalMeshComponent* MeshComp = Enemy->GetMesh();
 	UCharacterMovementComponent* MoveComp = Enemy->GetCharacterMovement();
+	UCapsuleComponent* LiveCapsule = Enemy->GetCapsuleComponent();
+	if (HP > 0.f && LiveCapsule)
+	{
+		// Keep live enemies physically blocking the player while in combat.
+		LiveCapsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+	}
 
 	// --- DEATH STATE ---
 	if (HP <= 0.f)
@@ -1746,8 +1781,8 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 				}
 			}
 
-			// Play per-type enemy death sound (reuse GettingHit as death cry)
-			PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit);
+			// Play per-type enemy death sound: reuse GettingHit, but slower pitch.
+			PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit, 0.78f);
 		}
 		else
 		{
@@ -1890,18 +1925,29 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 		UAnimSequence* UsedHitReactAnim = State.ChosenHitReactAnim ? State.ChosenHitReactAnim : HitReactAnim;
 		// Stagger immunity: 0.5s cooldown after last hit-react to prevent infinite stagger lock
 		bool bStaggerImmune = (State.LastHitReactEndTime > 0.0 && (CurrentTime - State.LastHitReactEndTime) < 0.5);
-		if (State.CurrentState != EEnemyAIState::HitReact && UsedHitReactAnim && !bStaggerImmune)
+		if (State.CurrentState != EEnemyAIState::HitReact && !bStaggerImmune)
 		{
 			State.PreHitReactState = State.CurrentState;
 			State.CurrentState = EEnemyAIState::HitReact;
 			State.HitReactStartTime = CurrentTime;
 			State.bPendingDamage = false;
 
-			// Play hit react — bForceInterrupt instantly stops any attack montage
-			PlayAnimationOneShot(Enemy, UsedHitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
+			// Play hit react when available; otherwise still force a brief stagger.
+			if (UsedHitReactAnim)
+			{
+				PlayAnimationOneShot(Enemy, UsedHitReactAnim, 1.0f, 0.1f, 0.15f, false, /*bForceInterrupt=*/true);
+			}
+			else if (MoveComp)
+			{
+				MoveComp->StopMovementImmediately();
+			}
 
-			// Play getting-hit sound immediately when enemy takes damage
-			PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit);
+			// Avoid audio spam when multiple hits land in a tight window.
+			if ((CurrentTime - State.LastGettingHitSfxTime) >= 0.45)
+			{
+				PlayEnemyTypeSound(World, Enemy, EEnemySoundType::GettingHit);
+				State.LastGettingHitSfxTime = CurrentTime;
+			}
 		}
 	}
 	State.PreviousHealth = HP;
@@ -2061,7 +2107,28 @@ void UGameplayHelperLibrary::UpdateEnemyAI(ACharacter* Enemy, float AggroRange, 
 
 			// Queue delayed damage — gives player a window to stun/interrupt the attack
 			State.bPendingDamage = true;
-			State.PendingDamageTime = CurrentTime + 0.35;
+			float WindupDelay = 0.50f;
+			if (UsedAttackAnim)
+			{
+				// Land hit around the "contact" part of the swing.
+				WindupDelay = FMath::Clamp(UsedAttackAnim->GetPlayLength() * 0.58f, 0.30f, 0.85f);
+			}
+			// Per-enemy timing overrides for better visual sync.
+			const FString EnemyClassName = Enemy->GetClass()->GetName();
+			if (EnemyClassName.Contains(TEXT("Giganto"), ESearchCase::IgnoreCase)
+				|| EnemyClassName.Contains(TEXT("Gigantus"), ESearchCase::IgnoreCase))
+			{
+				WindupDelay = UsedAttackAnim ? FMath::Clamp(UsedAttackAnim->GetPlayLength() * 0.68f, 0.45f, 1.10f) : 0.70f;
+			}
+			else if (EnemyClassName.Contains(TEXT("KingBot"), ESearchCase::IgnoreCase))
+			{
+				WindupDelay = UsedAttackAnim ? FMath::Clamp(UsedAttackAnim->GetPlayLength() * 0.60f, 0.35f, 0.90f) : 0.55f;
+			}
+			else if (EnemyClassName.Contains(TEXT("Bell"), ESearchCase::IgnoreCase))
+			{
+				WindupDelay = UsedAttackAnim ? FMath::Clamp(UsedAttackAnim->GetPlayLength() * 0.52f, 0.28f, 0.75f) : 0.42f;
+			}
+			State.PendingDamageTime = CurrentTime + WindupDelay;
 			State.PendingDamageAmount = AttackDamage * State.DamageMultiplier;
 			State.PendingDamageRadius = AttackRadius;
 		}
@@ -3090,7 +3157,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 				}
 				if (CheckpointSound)
 				{
-					UGameplayStatics::PlaySound2D(World, CheckpointSound, 1.0f, 1.0f);
+					UGameplayStatics::PlaySound2D(World, CheckpointSound, kUiSfxVolume, 1.0f);
 				}
 
 				// Trigger golden flash
@@ -3218,30 +3285,44 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 		}
 	}
 
-	// --- Victory condition: reach the portal after all checkpoints are recovered ---
+	// --- Victory condition ---
 	const bool bAllCheckpointsRecovered =
 		(GameFlow.TotalCheckpoints <= 0) || (GameFlow.CheckpointsCollected >= GameFlow.TotalCheckpoints);
-	if (bAllCheckpointsRecovered && (GameFlow.PortalTriggerActor.IsValid() || GameFlow.PortalLightActor.IsValid() || !GameFlow.PortalLocation.IsZero()))
+	const bool bHasPortalTarget =
+		GameFlow.PortalTriggerActor.IsValid() || GameFlow.PortalLightActor.IsValid() || !GameFlow.PortalLocation.IsZero();
+	if (bAllCheckpointsRecovered)
 	{
-		// Use stored location (portal light may have been destroyed by checkpoint logic if it happened to match)
-		FVector PortalLoc = GameFlow.PortalLocation;
-		float TriggerRadius = GameFlow.PortalTriggerRadius;
-		if (GameFlow.PortalTriggerActor.IsValid())
+		bool bReachedVictory = false;
+		if (!bHasPortalTarget)
 		{
-			PortalLoc = GameFlow.PortalTriggerActor->GetActorLocation();
-			FVector BoundsOrigin = FVector::ZeroVector;
-			FVector BoundsExtent = FVector::ZeroVector;
-			GameFlow.PortalTriggerActor->GetActorBounds(true, BoundsOrigin, BoundsExtent);
-			TriggerRadius = FMath::Max(FMath::Max(BoundsExtent.X, BoundsExtent.Y) + 150.0f, 500.0f);
+			// Fallback: if no portal actor was found in this level, complete immediately.
+			UE_LOG(LogTemp, Warning, TEXT("ManageGameFlow: No portal target found; completing victory on all checkpoints recovered"));
+			bReachedVictory = true;
 		}
-		if (GameFlow.PortalLightActor.IsValid())
+		else
 		{
-			PortalLoc = GameFlow.PortalLightActor->GetActorLocation();
-			TriggerRadius = FMath::Max(TriggerRadius, 500.0f);
+			// Use stored location (portal light may have been destroyed by checkpoint logic if it happened to match)
+			FVector PortalLoc = GameFlow.PortalLocation;
+			float TriggerRadius = GameFlow.PortalTriggerRadius;
+			if (GameFlow.PortalTriggerActor.IsValid())
+			{
+				PortalLoc = GameFlow.PortalTriggerActor->GetActorLocation();
+				FVector BoundsOrigin = FVector::ZeroVector;
+				FVector BoundsExtent = FVector::ZeroVector;
+				GameFlow.PortalTriggerActor->GetActorBounds(true, BoundsOrigin, BoundsExtent);
+				TriggerRadius = FMath::Max(FMath::Max(BoundsExtent.X, BoundsExtent.Y) + 150.0f, 500.0f);
+			}
+			if (GameFlow.PortalLightActor.IsValid())
+			{
+				PortalLoc = GameFlow.PortalLightActor->GetActorLocation();
+				TriggerRadius = FMath::Max(TriggerRadius, 500.0f);
+			}
+
+			const float DistToPortal2D = FVector::Dist2D(PlayerLoc, PortalLoc);
+			bReachedVictory = (DistToPortal2D < TriggerRadius);
 		}
 
-		const float DistToPortal2D = FVector::Dist2D(PlayerLoc, PortalLoc);
-		if (DistToPortal2D < TriggerRadius)
+		if (bReachedVictory)
 		{
 			GameFlow.bVictory = true;
 			GameFlow.VictoryStartTime = CurrentTime;
@@ -3258,7 +3339,7 @@ void UGameplayHelperLibrary::ManageGameFlow(ACharacter* Player)
 			}
 			if (VictorySound)
 			{
-				UGameplayStatics::PlaySound2D(World, VictorySound, 1.0f, 1.0f);
+				UGameplayStatics::PlaySound2D(World, VictorySound, kUiSfxVolume, 1.0f);
 			}
 
 			UE_LOG(LogTemp, Log, TEXT("ManageGameFlow: VICTORY! %d/%d souls recovered"),

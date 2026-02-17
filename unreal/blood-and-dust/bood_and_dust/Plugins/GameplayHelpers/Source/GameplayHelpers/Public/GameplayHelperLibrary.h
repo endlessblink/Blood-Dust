@@ -68,7 +68,7 @@ public:
 	static void UpdateEnemyAI(
 		ACharacter* Enemy,
 		float AggroRange = 1500.0f,
-		float AttackRange = 200.0f,
+		float AttackRange = 260.0f,
 		float LeashDistance = 3000.0f,
 		float MoveSpeed = 400.0f,
 		float AttackCooldown = 2.0f,

@@ -445,7 +445,7 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 			if (GettingUpSound)
 			{
 				UE_LOG(LogTemp, Display, TEXT("IntroSequence: [TICK] Playing sound"));
-				UGameplayStatics::PlaySound2D(GetWorld(), GettingUpSound);
+				UGameplayStatics::PlaySound2D(GetWorld(), GettingUpSound, 0.7f, 1.0f);
 			}
 
 			TransitionTo(EIntroState::PlayingAnimation);
