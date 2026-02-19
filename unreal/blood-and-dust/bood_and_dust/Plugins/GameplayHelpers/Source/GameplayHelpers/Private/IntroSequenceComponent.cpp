@@ -11,6 +11,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
 #include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/PointLight.h"
 #include "Components/PointLightComponent.h"
@@ -67,7 +68,7 @@ FName UIntroSequenceComponent::FindHeadBone() const
 
 void UIntroSequenceComponent::StartSequence()
 {
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [1] StartSequence enter"));
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: [1] StartSequence enter"));
 
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	if (!Character)
@@ -84,7 +85,7 @@ void UIntroSequenceComponent::StartSequence()
 		return;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [2] Finding camera/spring arm"));
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: [2] Finding camera/spring arm"));
 	CachedCamera = Character->FindComponentByClass<UCameraComponent>();
 	CachedSpringArm = Character->FindComponentByClass<USpringArmComponent>();
 	if (!CachedCamera.IsValid())
@@ -92,11 +93,14 @@ void UIntroSequenceComponent::StartSequence()
 		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: No camera component found, skipping"));
 		return;
 	}
+	// Fundamental viewport safety: always run player camera unconstrained.
+	CachedCamera->bConstrainAspectRatio = false;
+	CachedCamera->AspectRatio = 16.0f / 9.0f;
 
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [3] Disabling input"));
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: [3] Disabling input"));
 	CachedPC->DisableInput(CachedPC.Get());
 
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [4] Starting camera fade"));
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: [4] Starting camera fade"));
 	if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
 	{
 		CamMgr->StartCameraFade(1.0f, 1.0f, 0.01f, FLinearColor::Black, false, true);
@@ -105,14 +109,23 @@ void UIntroSequenceComponent::StartSequence()
 	SetComponentTickEnabled(true);
 	Activate();
 
-	// Fail-safe title prelude: if setup fails, immediately continue with the original intro flow.
-	if (bEnableTitlePrelude && SetupTitleScene())
+	// Deterministic path: always attempt title prelude first.
+	if (SetupTitleScene())
 	{
 		TransitionTo(EIntroState::TitleFadingIn);
 		return;
 	}
-
-	StartMainIntroPhase();
+	UE_LOG(LogTemp, Error, TEXT("IntroSequence[v2-seqfix]: Prelude setup failed. Aborting intro sequence."));
+	if (CachedPC.IsValid())
+	{
+		if (APlayerCameraManager* CamMgr = CachedPC->PlayerCameraManager)
+		{
+			CamMgr->StartCameraFade(1.0f, 0.0f, 0.2f, FLinearColor::Black, false, false);
+		}
+		CachedPC->EnableInput(CachedPC.Get());
+	}
+	SetComponentTickEnabled(false);
+	Deactivate();
 }
 
 bool UIntroSequenceComponent::SetupTitleScene()
@@ -135,7 +148,7 @@ bool UIntroSequenceComponent::SetupTitleScene()
 
 	if (!TitleMesh || !CubeMesh || !BackdropMat)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, missing title assets"));
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence[v2-seqfix]: Title setup failed, missing title/backdrop assets"));
 		return false;
 	}
 
@@ -150,15 +163,22 @@ bool UIntroSequenceComponent::SetupTitleScene()
 	TitleCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), CameraLoc, CameraRot);
 	if (!TitleCamera.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, camera spawn"));
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence[v2-seqfix]: Title setup failed, camera spawn"));
 		CleanupTitleScene();
 		return false;
+	}
+	if (UCameraComponent* TitleCamComp = TitleCamera->GetCameraComponent())
+	{
+		// Prevent any pillarbox/letterbox carryover from intro camera.
+		TitleCamComp->bConstrainAspectRatio = false;
+		TitleCamComp->AspectRatio = 16.0f / 9.0f;
+		TitleCamComp->FieldOfView = 55.0f;
 	}
 
 	TitleMeshActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), TitleLoc, FRotator(0.0f, CachedCharacter->GetActorRotation().Yaw + 180.0f, 0.0f));
 	if (!TitleMeshActor.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, mesh spawn"));
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence[v2-seqfix]: Title setup failed, mesh spawn"));
 		CleanupTitleScene();
 		return false;
 	}
@@ -166,6 +186,8 @@ bool UIntroSequenceComponent::SetupTitleScene()
 	if (UStaticMeshComponent* MeshComp = TitleMeshActor->GetStaticMeshComponent())
 	{
 		MeshComp->SetStaticMesh(TitleMesh);
+		MeshComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		MeshComp->SetCastShadow(false);
 		if (TitleMat)
 		{
 			MeshComp->SetMaterial(0, TitleMat);
@@ -173,12 +195,13 @@ bool UIntroSequenceComponent::SetupTitleScene()
 	}
 
 	const FVector CamForward = TitleCamera->GetActorForwardVector().GetSafeNormal();
-	const FVector BackdropLoc = CameraLoc + CamForward * 220.0f;
+	// Backdrop must be BEHIND the title from camera perspective (not in front of it).
+	const FVector BackdropLoc = TitleLoc + CamForward * 260.0f;
 	const FRotator BackdropRot = FRotationMatrix::MakeFromY(CamForward).Rotator();
 	TitleBackdropActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), BackdropLoc, BackdropRot);
 	if (!TitleBackdropActor.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("IntroSequence: Title setup failed, backdrop spawn"));
+		UE_LOG(LogTemp, Warning, TEXT("IntroSequence[v2-seqfix]: Title setup failed, backdrop spawn"));
 		CleanupTitleScene();
 		return false;
 	}
@@ -187,6 +210,8 @@ bool UIntroSequenceComponent::SetupTitleScene()
 	{
 		BackdropComp->SetStaticMesh(CubeMesh);
 		BackdropComp->SetMaterial(0, BackdropMat);
+		BackdropComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		BackdropComp->SetCastShadow(false);
 	}
 
 	TitleLightA = World->SpawnActor<APointLight>(APointLight::StaticClass(), TitleLoc + Right * 180.0f + FVector(0.0f, 0.0f, -60.0f), FRotator::ZeroRotator);
@@ -221,7 +246,24 @@ bool UIntroSequenceComponent::SetupTitleScene()
 	{
 		CamMgr->StartCameraFade(1.0f, 0.0f, TitleFadeInDuration, FLinearColor::Black, false, false);
 	}
-	UE_LOG(LogTemp, Display, TEXT("IntroSequence: Title prelude started"));
+	UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: Title prelude started"));
+
+	// Safety cleanup: if any state transition is interrupted, force-remove title scene actors.
+	const float SafetyDelay = FMath::Max(TitleFadeInDuration + TitleHoldDuration + TitleFadeOutDuration + 1.0f, 2.0f);
+	TWeakObjectPtr<UIntroSequenceComponent> WeakThis(this);
+	FTimerHandle SafetyCleanupTimer;
+	World->GetTimerManager().SetTimer(
+		SafetyCleanupTimer,
+		[WeakThis]()
+		{
+			if (WeakThis.IsValid())
+			{
+				WeakThis->CleanupTitleScene();
+			}
+		},
+		SafetyDelay,
+		false
+	);
 
 	return true;
 }
@@ -262,6 +304,17 @@ void UIntroSequenceComponent::CleanupTitleScene()
 
 void UIntroSequenceComponent::StartMainIntroPhase()
 {
+	// Ensure no title-prelude actors can leak into gameplay view.
+	CleanupTitleScene();
+	if (CachedPC.IsValid() && CachedCharacter.IsValid())
+	{
+		CachedPC->SetViewTargetWithBlend(CachedCharacter.Get(), 0.0f);
+	}
+	if (CachedCamera.IsValid())
+	{
+		CachedCamera->bConstrainAspectRatio = false;
+	}
+
 	UE_LOG(LogTemp, Display, TEXT("IntroSequence: [5] Finding head bone"));
 	FName ActualHeadBone = FindHeadBone();
 	if (ActualHeadBone == NAME_None)
@@ -352,7 +405,7 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 		if (StateTimer >= FMath::Max(TitleFadeInDuration, 0.01f))
 		{
-			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleFadingIn complete -> TitleShowing"));
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: TitleFadingIn complete -> TitleShowing"));
 			TransitionTo(EIntroState::TitleShowing);
 		}
 		break;
@@ -362,7 +415,7 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 		if (StateTimer >= FMath::Max(TitleHoldDuration, 0.01f))
 		{
-			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleShowing complete -> TitleFadingOut"));
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: TitleShowing complete -> TitleFadingOut"));
 			if (CachedPC.IsValid() && CachedPC->PlayerCameraManager)
 			{
 				CachedPC->PlayerCameraManager->StartCameraFade(0.0f, 1.0f, TitleFadeOutDuration, FLinearColor::Black, false, true);
@@ -376,7 +429,7 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 		if (StateTimer >= FMath::Max(TitleFadeOutDuration, 0.01f))
 		{
-			UE_LOG(LogTemp, Display, TEXT("IntroSequence: TitleFadingOut complete -> MainIntro"));
+			UE_LOG(LogTemp, Display, TEXT("IntroSequence[v2-seqfix]: TitleFadingOut complete -> MainIntro"));
 			if (CachedPC.IsValid())
 			{
 				AActor* ViewTarget = OriginalViewTarget.IsValid() ? OriginalViewTarget.Get() : CachedCharacter.Get();
@@ -516,6 +569,14 @@ void UIntroSequenceComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	case EIntroState::Complete:
 	{
 		CleanupTitleScene();
+		if (CachedPC.IsValid() && CachedCharacter.IsValid())
+		{
+			CachedPC->SetViewTargetWithBlend(CachedCharacter.Get(), 0.0f);
+		}
+		if (CachedCamera.IsValid())
+		{
+			CachedCamera->bConstrainAspectRatio = false;
+		}
 		if (CachedPC.IsValid())
 		{
 			CachedPC->EnableInput(CachedPC.Get());

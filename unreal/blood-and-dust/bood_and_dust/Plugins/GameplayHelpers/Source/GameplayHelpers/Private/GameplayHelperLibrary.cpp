@@ -364,6 +364,16 @@ struct FMinimapState
 };
 static FMinimapState MinimapState;
 
+static bool IsIntroSequenceRunning(ACharacter* Player)
+{
+	if (!Player)
+	{
+		return false;
+	}
+	const UIntroSequenceComponent* IntroComp = Player->FindComponentByClass<UIntroSequenceComponent>();
+	return IntroComp && IntroComp->IsActive();
+}
+
 // Minimap display constants (2x size)
 static constexpr float MinimapWidth = 700.0f;
 static constexpr float MinimapHeight = 436.0f;  // 700 * (637/1024) preserving aspect ratio
@@ -2433,6 +2443,20 @@ void UGameplayHelperLibrary::ManagePlayerHUD(ACharacter* Player)
 	UWorld* World = Player->GetWorld();
 	if (!World) return;
 
+	// During intro cinematic, suppress gameplay HUD layers.
+	if (IsIntroSequenceRunning(Player))
+	{
+		if (PlayerHUD.RootWidget.IsValid())
+		{
+			PlayerHUD.RootWidget->SetVisibility(EVisibility::Collapsed);
+		}
+		return;
+	}
+	if (PlayerHUD.RootWidget.IsValid())
+	{
+		PlayerHUD.RootWidget->SetVisibility(EVisibility::Visible);
+	}
+
 	// Reset if world changed (level restart)
 	if (PlayerHUD.bCreated && (!PlayerHUD.OwnerWorld.IsValid() || PlayerHUD.OwnerWorld.Get() != World))
 	{
@@ -3433,6 +3457,16 @@ void UGameplayHelperLibrary::ManageMinimap(ACharacter* Player)
 	if (!Player) return;
 	UWorld* World = Player->GetWorld();
 	if (!World) return;
+
+	// During intro cinematic, hide minimap entirely.
+	if (IsIntroSequenceRunning(Player))
+	{
+		if (MinimapState.RootWidget.IsValid())
+		{
+			MinimapState.RootWidget->SetVisibility(EVisibility::Collapsed);
+		}
+		return;
+	}
 
 	// Reset if world changed (level restart)
 	if (MinimapState.bCreated && (!MinimapState.OwnerWorld.IsValid() || MinimapState.OwnerWorld.Get() != World))
